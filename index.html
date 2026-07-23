@@ -4467,6 +4467,15 @@
     // Wave 19(4/23/24) — per-scout roster fields: renewal month (drives the amber pill +
     // the digest), a display-only den label, and a private one-line note.
     h += '<div class="row" style="margin-bottom:10px;align-items:flex-end">' +
+      // Den (rank) is editable here, not just at add time: scouts imported from Trail's End
+      // arrive with no den, and a scout who moves up mid-year needs correcting. This drives
+      // the adventure lists, advance-dens and den attendance — the label below is cosmetic.
+      '<label class="fld">Den<select data-ch="scout-den" data-id="' + s.id + '">' +
+      '<option value="">No den</option>' +
+      DENS.map(function (d) {
+        return '<option value="' + esc(d) + '"' + (s.den === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+      }).join('') +
+      '</select></label>' +
       '<label class="fld">Registration renews<input type="month" data-ch="scout-renew" data-id="' + s.id + '" value="' + esc(s.renewalMonth || '') + '"></label>' +
       '<label class="fld">Den label (optional)<input data-ch="scout-denlabel" data-id="' + s.id + '" value="' + esc(s.denLabel || '') + '" placeholder="Wolf — Mrs. K" style="width:160px"></label>' +
       '<label class="fld" style="flex:1 1 200px">Note<input data-ch="scout-note" data-id="' + s.id + '" value="' + esc(s.note || '') + '" placeholder="e.g. application turned in 9/12"></label>' +
@@ -6244,9 +6253,12 @@
     if (o.unmatched.length) {
       g += '<p class="small" style="margin:0 0 8px">' +
         (o.createMissing
-          ? '<strong>' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's') + ' will be created</strong> (no den) and imported: '
+          ? '<strong>' + o.unmatched.length + ' scout' + (o.unmatched.length === 1 ? '' : 's') + ' not on your roster will be added</strong> (with no den) and imported: '
           : '<strong>Skipped — not on your roster:</strong> ') +
         esc(o.unmatched.join(', ')) + '</p>' +
+        (o.createMissing
+          ? '<p class="small muted" style="margin:0 0 8px">Set their dens and archive anyone no longer active from the <strong>Scouts</strong> tab afterwards.</p>'
+          : '') +
         '<div class="row no-print" style="margin-bottom:10px">' +
         '<button type="button" class="btn small' + (o.createMissing ? ' primary' : '') + '" data-act="te-live-create" aria-pressed="' + (o.createMissing ? 'true' : 'false') + '">' +
         (o.createMissing
@@ -7004,7 +7016,10 @@
     var py = state.budget.programYear;
     var isCurrentSeason = arc.year === py || arc.year === py + 1;
     return { kind: 'te-preview', report: 'sales', archive: arc, matched: m.matched.length, unmatched: m.unmatched,
-      existsYear: existsYear, isCurrentSeason: isCurrentSeason, createMissing: false };
+      // Default ON: Trail's End is the roster of record during the sale, so a name it knows
+      // and we don't is almost always a real scout. They're created with no den; the owner
+      // then sets dens and archives anyone no longer active from the Scouts tab.
+      existsYear: existsYear, isCurrentSeason: isCurrentSeason, createMissing: true };
   }
   // Wave 16 — what the live import WILL write, honoring the create-missing toggle.
   // Online + wagon only; storefront credit deliberately never imports (it lives in the
@@ -8453,11 +8468,12 @@
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
-    if (ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note') {
+    if (ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' || ch === 'scout-den') {
       var scEd = getScout(el.dataset.id);
       if (!scEd) return;
       if (ch === 'scout-renew') scEd.renewalMonth = el.value;
       else if (ch === 'scout-denlabel') scEd.denLabel = el.value;
+      else if (ch === 'scout-den') scEd.den = DENS.indexOf(el.value) === -1 ? '' : el.value;
       else scEd.note = el.value;
       commit(); return;
     }
