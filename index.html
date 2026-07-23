@@ -6277,6 +6277,20 @@
       (arc.scouts.length === 1 ? '' : 's') + ' match your roster' +
       (o.unmatched.length ? ' · <span class="muted">not on roster: ' + esc(o.unmatched.join(', ')) + '</span>' : '') +
       '. <span class="muted">Archiving is a historical record — names are saved either way.</span></p>';
+    // Carry last season's sellers onto this year's roster. Names only: no sales are
+    // imported, so archiving stays non-destructive to the current season.
+    if (o.unmatched.length) {
+      g += '<div class="row no-print" style="margin:0 0 12px">' +
+        '<button type="button" class="btn small' + (o.addRoster ? ' primary' : '') + '" data-act="te-add-roster" aria-pressed="' + (o.addRoster ? 'true' : 'false') + '">' +
+        (o.addRoster
+          ? 'Will add the ' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's') + ' to the roster — tap to skip'
+          : 'Also add the ' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's') + ' to the roster') +
+        '</button></div>' +
+        '<p class="small muted" style="margin:-4px 0 12px">' +
+        (o.addRoster
+          ? 'Carries last season’s scouts onto this year’s roster (names only — no sales are imported). Set their dens and archive anyone who moved on from the <strong>Scouts</strong> tab.'
+          : 'The archive is saved either way; your roster is left alone.') + '</p>';
+    }
     // Wave 16 — live-season update details (what "Update this season" will actually write).
     g += '<hr class="divider"><p class="eyebrow">Update this season’s standings</p>';
     if (o.isCurrentSeason) {
@@ -6305,8 +6319,8 @@
         '<div class="row no-print" style="margin-bottom:10px">' +
         '<button type="button" class="btn small' + (o.createMissing ? ' primary' : '') + '" data-act="te-live-create" aria-pressed="' + (o.createMissing ? 'true' : 'false') + '">' +
         (o.createMissing
-          ? 'Will create the ' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's') + ' — tap to skip them instead'
-          : 'Also create the ' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's')) + '</button></div>';
+          ? 'Will add the ' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's') + ' and import their sales — tap to skip'
+          : 'Also add the ' + o.unmatched.length + ' missing scout' + (o.unmatched.length === 1 ? '' : 's') + ' and import their sales') + '</button></div>';
     }
     g += '<p class="eyebrow" style="margin-top:6px">Top locations</p><div class="tbl-wrap"><table>' +
       '<thead><tr><th scope="col">Location</th><th scope="col" class="num">Trips</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
@@ -7050,6 +7064,25 @@
     });
     return { matched: matched, unmatched: unmatched };
   }
+  // Add any seller from a Trail's End report who isn't already on the roster. Shared by the
+  // live-season import and the past-season archive (carrying last year's scouts forward).
+  // Case-insensitive, so an existing scout is never duplicated; existing rows are never
+  // touched. New scouts arrive with no den — the owner sets dens and archives anyone no
+  // longer active from the Scouts tab. Returns how many were added.
+  function teAddMissingScouts(arcScouts) {
+    var have = {};
+    state.scouts.forEach(function (s) { have[String(s.name || '').trim().toLowerCase()] = true; });
+    var added = 0;
+    arcScouts.forEach(function (s) {
+      var k = String(s.name || '').trim().toLowerCase();
+      if (!k || have[k]) return;
+      state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '' });
+      have[k] = true;
+      added += 1;
+    });
+    if (added) state.scouts.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return added;
+  }
   function teBuildSalesPreview(arc) {
     var m = teMatchScouts(arc.scouts);
     // Same-kind replacement only — a Wave 7 'season' close-out for the same year coexists.
@@ -7062,7 +7095,10 @@
       // Default ON: Trail's End is the roster of record during the sale, so a name it knows
       // and we don't is almost always a real scout. They're created with no den; the owner
       // then sets dens and archives anyone no longer active from the Scouts tab.
-      existsYear: existsYear, isCurrentSeason: isCurrentSeason, createMissing: true };
+      // addRoster does the same for the PAST-season path: saving an archive also carries
+      // last year's sellers onto this year's roster (names only — the money stays in the
+      // archive and never touches the current season).
+      existsYear: existsYear, isCurrentSeason: isCurrentSeason, createMissing: true, addRoster: true };
   }
   // Wave 16 — what the live import WILL write, honoring the create-missing toggle.
   // Online + wagon only; storefront credit deliberately never imports (it lives in the
@@ -7090,17 +7126,7 @@
     var o = ui.overlay;
     if (!o || o.report !== 'sales' || !o.archive) return;
     var arc = o.archive;
-    if (o.createMissing) {
-      var have = {};
-      state.scouts.forEach(function (s) { have[String(s.name || '').trim().toLowerCase()] = true; });
-      arc.scouts.forEach(function (s) {
-        var k = String(s.name || '').trim().toLowerCase();
-        if (!k || have[k]) return;
-        state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '' });
-        have[k] = true;
-      });
-      state.scouts.sort(function (a, b) { return a.name.localeCompare(b.name); });
-    }
+    if (o.createMissing) teAddMissingScouts(arc.scouts);
     var m = teMatchScouts(arc.scouts); // re-match AFTER any creation, against live state
     state.entries = state.entries.filter(function (e) { return e.source !== 'te-import'; });
     var today = todayISO(), updated = 0;
@@ -7154,9 +7180,13 @@
     // Replace only the same-kind entry — never a Wave 7 'season' close-out of the same year.
     state.archives = state.archives.map(function (a) { if (a.kind === 'trails-end' && a.year === record.year) { replaced = true; return record; } return a; });
     if (!replaced) state.archives.push(record);
+    // Carry last year's sellers onto the roster (names only — no sales are imported; the
+    // figures live in the archive record above).
+    var addedScouts = o.addRoster ? teAddMissingScouts(arc.scouts) : 0;
     ui.overlay = null;
     commit();
-    showToast((replaced ? 'Replaced ' : 'Saved ') + record.year + ' season in Past seasons');
+    showToast((replaced ? 'Replaced ' : 'Saved ') + record.year + ' season in Past seasons' +
+      (addedScouts ? ' · added ' + addedScouts + ' scout' + (addedScouts === 1 ? '' : 's') + ' to the roster' : ''));
   }
   function handleTeFile(input) {
     var file = input.files && input.files[0];
@@ -8172,6 +8202,14 @@
     if (act === 'te-live-create') {
       if (ui.overlay && ui.overlay.kind === 'te-preview' && ui.overlay.report === 'sales') {
         ui.overlay.createMissing = !ui.overlay.createMissing;
+        render();
+      }
+      return;
+    }
+    // Past-season archive: also carry that season's sellers onto the current roster.
+    if (act === 'te-add-roster') {
+      if (ui.overlay && ui.overlay.kind === 'te-preview' && ui.overlay.report === 'sales') {
+        ui.overlay.addRoster = !ui.overlay.addRoster;
         render();
       }
       return;
