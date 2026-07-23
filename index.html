@@ -3178,6 +3178,36 @@
   // is published at all. When it's false the `standings`, `goals` and `derby` keys are
   // ABSENT from the document — not merely hidden in the UI — because all three carry scout
   // names or pack money. That gives a widely-shared link a calendar-only mode.
+  // Reduce a list of scout names to what parents are allowed to see: FIRST NAMES ONLY.
+  // A last initial is appended only where two or more scouts share a first name, so a
+  // parent can still pick their own child out of the standings. Returns a parallel array
+  // (same length/order as the input) so callers can map it back onto their rows.
+  //
+  // Scouts imported from Trail's End arrive with full names, so this runs at publication
+  // time rather than trusting whoever typed the roster. Leaders keep seeing full names.
+  function shortNames(names) {
+    var parts = names.map(function (n) {
+      var t = String(n == null ? '' : n).trim().split(/\s+/).filter(Boolean);
+      return { first: t.length ? t[0] : '', initial: t.length > 1 ? t[t.length - 1].charAt(0).toUpperCase() : '' };
+    });
+    // Count DISTINCT people per first name, not occurrences: the same child can legitimately
+    // appear twice in one list (a derby winner who also took a design award), and that must
+    // not be mistaken for a clash — it would append an initial nobody needed.
+    var byFirst = {};
+    parts.forEach(function (p, i) {
+      var k = p.first.toLowerCase();
+      if (!k) return;
+      var full = String(names[i] == null ? '' : names[i]).trim().toLowerCase().replace(/\s+/g, ' ');
+      if (!byFirst[k]) byFirst[k] = {};
+      byFirst[k][full] = true;
+    });
+    return parts.map(function (p) {
+      if (!p.first) return '';
+      var group = byFirst[p.first.toLowerCase()];
+      var dupe = group && Object.keys(group).length > 1;
+      return (dupe && p.initial) ? p.first + ' ' + p.initial + '.' : p.first;
+    });
+  }
   function buildParentView(src, opts) {
     var withStandings = (opts && typeof opts.showStandings === 'boolean')
       ? opts.showStandings : standingsEnabled();
@@ -3225,10 +3255,16 @@
 
       var pack = computePackTotals();
       var totals = computeScoutTotals();
-      var standings = rankBy(visibleScoutRows(totals), function (r) { return r.t.combined; })
-        .map(function (r) {
+      var ranked = rankBy(visibleScoutRows(totals), function (r) { return r.t.combined; });
+      // Children's LAST names never leave the leaders' ledger. The published copy carries
+      // first names only — a last initial is added solely to tell two same-named scouts
+      // apart, so a parent can still find their own child on the board. Names arriving
+      // from a Trail's End import are full names, which is exactly why this happens here,
+      // at the point of publication, rather than being left to whoever typed the roster.
+      var publicNames = shortNames(ranked.map(function (r) { return r.name; }));
+      var standings = ranked.map(function (r, i) {
           return {
-            name: String(r.name || ''),
+            name: publicNames[i],
             den: String(r.den || ''),               // the rank only — never s.denLabel or s.note
             combinedCents: r.t.combined,
             goalPct: (pack.target && !r.archived) ? Math.round(goalBaseOf(r) / pack.target * 100) : null
@@ -3248,15 +3284,22 @@
       }
 
       var winners = derbyWinners() || [];
-      var awards = (state.derby.awards || []).map(function (aw) {
-        return { award: String(aw.award || ''), racerName: String(aw.racerName || '') };
+      var rawAwards = state.derby.awards || [];
+      // Same first-names-only rule for the derby board: winners and design awards are
+      // children too. Collisions are resolved across the whole derby list at once.
+      var derbyNames = shortNames(
+        winners.map(function (w) { return w.scoutName; })
+          .concat(rawAwards.map(function (aw) { return aw.racerName; }))
+      );
+      var awards = rawAwards.map(function (aw, i) {
+        return { award: String(aw.award || ''), racerName: derbyNames[winners.length + i] };
       });
       var derby = null;
       if (state.derby.name || state.derby.date || winners.length || awards.length) {
         derby = {
           name: String(state.derby.name || ''),
           date: String(state.derby.date || ''),
-          winners: winners.map(function (w) { return { place: w.place, scoutName: String(w.scoutName || '') }; }),
+          winners: winners.map(function (w, i) { return { place: w.place, scoutName: derbyNames[i] }; }),
           awards: awards
         };
       }
