@@ -2911,7 +2911,13 @@
   function ensureMyMemberDoc(mods, user, docId) {
     var fs = mods.fs, db = sync.db, uid = user.uid;
     var ref = fs.doc(db, 'packs', docId, 'members', uid);
-    return fs.getDoc(ref).then(function (snap) {
+    // A denied read here must NOT abort the bootstrap. A rule set whose members `read`
+    // only allows existing members (the natural way to write it) denies a brand-new
+    // signer the read of their OWN record — chicken-and-egg: you can't become a member
+    // because you aren't one yet. Treat a denial as "no doc yet" and carry on to the
+    // create, which the rules judge on its own merits (owner / invite / join code).
+    return fs.getDoc(ref).catch(function () { return { exists: function () { return false; } }; })
+      .then(function (snap) {
       if (snap.exists()) {
         var cur = (snap.data() || {}).role || 'pending';
         // The pack owner is always an admin — self-heal if a rogue admin ever demoted

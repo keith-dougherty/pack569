@@ -243,7 +243,10 @@ service cloud.firestore {
         allow write: if myRole() in ['admin', 'editor'];
       }
       match /members/{uid} {
-        allow read: if isMember();
+        // Anyone signed in may read their OWN record — required for bootstrap: a brand-new
+        // signer has to be able to look up (and find nothing at) their own membership
+        // before they can create it. Without this, nobody can ever become the first member.
+        allow read: if isMember() || request.auth.uid == uid;
         allow create: if request.auth.uid == uid
           && ( request.resource.data.role == 'pending'
                || ownerUid() == request.auth.uid
@@ -486,6 +489,7 @@ a bad id and lands you on the wrong pack.
 | The welcome / sign-in screen when you expected the app | You're signed out. Single-pack mode has no anonymous fallback — sign in with Google. |
 | "Waiting for approval" | You signed in but no admin has approved you yet. |
 | Console warning about `PACK_DOC_ID` | The value isn't a valid 64-hex id; the app fell back to passphrase mode. Re-copy it from the Pack tab. |
+| **"Offline — (Missing or insufficient permissions.)" plus "Accounts aren't fully set up", while signed in with Google** | Your rules are missing `\|\| request.auth.uid == uid` on the members **read** (see Part C). Without it, a brand-new signer can't read their own membership record to discover they don't have one yet, so they can never create it — and with no member record the ledger is denied too. Re-publish the Part C rules exactly as written and reload. |
 
 To go back to passphrase mode, set `PACK_DOC_ID = null`, redeploy, and type the passphrase on
 each leader's device again. Nothing in the cloud has to change — it's the same pack, the same
