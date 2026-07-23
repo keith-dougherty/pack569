@@ -1,0 +1,2 @@
+# Local pre-change backups made before each build wave — kept on disk, not in git.
+.index.pre-*.html
