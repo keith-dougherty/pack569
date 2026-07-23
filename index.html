@@ -4172,12 +4172,14 @@
       '<div class="row" style="flex-wrap:wrap">' +
       '<button type="button" class="btn primary" data-act="export-ics">Download calendar (.ics)</button>' +
       '<button type="button" class="btn" data-act="import-ics">Import .ics…</button>' +
+      '<button type="button" class="btn" data-act="paste-ics">Paste calendar link or text…</button>' +
       '<input type="file" id="icsFile" accept=".ics,text/calendar" hidden>' +
       '</div>' +
       '<p class="small muted" style="margin:8px 0 0">Export a .ics and import it into BAND on a computer ' +
       '(band.us → Event → ⋯ → Import Events), or subscribe in Google/Apple/Outlook. Import brings a .ics ' +
-      'from BAND back in as dated activities you can adjust. BAND has no live sync, so this is a file you ' +
-      'move over — and only dated events (storefronts, meetings, dated activities) export.</p></div>';
+      'from BAND back in as dated activities you can adjust — from a downloaded file, or by pasting a ' +
+      'calendar link (or its text). BAND has no live sync, so this is a one-time pull, not a subscription — ' +
+      'and only dated events (storefronts, meetings, dated activities) export.</p></div>';
 
     // Selected-day detail
     h += '<div class="card">';
@@ -6061,6 +6063,26 @@
   function renderOverlay() {
     if (!ui.overlay) return '';
     var o = ui.overlay;
+    if (o.kind === 'ics-paste') {
+      var busy = !!o.busy;
+      var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Paste calendar"><div class="overlay-inner">' +
+        '<div class="row no-print" style="margin-bottom:12px">' +
+        '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+        '<button type="button" class="btn primary" data-act="ics-paste-go"' + (busy ? ' disabled' : '') + '>' +
+        (busy ? 'Fetching…' : 'Add to calendar') + '</button></div>' +
+        '<div class="card"><h2 class="section display">Paste calendar link or text</h2>';
+      if (o.linkBlocked) {
+        h += '<div class="warn" style="margin:0 0 10px">That calendar service won’t let the page read the link directly. ' +
+          '<strong>Open the link in your browser, select all (⌘/Ctrl-A), copy, and paste the calendar text here instead.</strong> ' +
+          '(For a BAND <code>webcal://</code> link, change the start to <code>https://</code> to open it.)</div>';
+      }
+      h += '<textarea class="export-box" data-ch="ics-paste-text" style="height:150px" ' +
+        'placeholder="Paste a calendar link (https:// or webcal://) — or the whole calendar text, starting with BEGIN:VCALENDAR">' + esc(o.text || '') + '</textarea>' +
+        '<p class="small muted" style="margin:8px 0 0">Events come in as dated activities you can edit or delete. Duplicates are skipped. ' +
+        'A link only works if that calendar allows it — if it doesn’t, paste the calendar’s text instead.</p>' +
+        '</div></div></div>';
+      return h;
+    }
     if (o.kind === 'summary') {
       var pack = computePackTotals();
       var totals = computeScoutTotals();
@@ -6733,34 +6755,76 @@
     });
     return out;
   }
+  // Parse .ics text and add its events as dated activities, skipping duplicates. Shared by
+  // the file picker and the paste box. `noneMsg` is shown when the text held no events.
+  function applyIcsText(text, noneMsg) {
+    var events = [];
+    try { events = parseICS(String(text)); } catch (e) { events = []; }
+    if (!events.length) { showToast(noneMsg || 'No calendar events found.'); return 0; }
+    var added = 0, skipped = 0;
+    events.forEach(function (evt) {
+      var name = evt.name + (evt.time ? ' (' + fmtClock(evt.time) + ')' : '');
+      var lower = name.toLowerCase();
+      var dupe = state.budget.activities.some(function (a) {
+        return a.date === evt.date && String(a.name || '').toLowerCase() === lower;
+      });
+      if (dupe) { skipped++; return; }
+      state.budget.activities.push({
+        id: uid(), slot: dateToSlot(evt.date), name: name, date: evt.date, estCents: 0, actualCents: 0, perScout: false, familyPays: false
+      });
+      added++;
+    });
+    var tail = skipped ? ', skipped ' + skipped + ' already there' : '';
+    if (added) { commit(); showToast('Imported ' + added + ' event' + (added === 1 ? '' : 's') + tail); }
+    else showToast('Imported 0 events' + tail);
+    return added;
+  }
   function handleIcsImportFile(input) {
     var file = input.files && input.files[0];
     input.value = '';
     if (!file) return;
     var reader = new FileReader();
-    reader.onload = function () {
-      var events = [];
-      try { events = parseICS(String(reader.result)); } catch (e) { events = []; }
-      if (!events.length) { showToast('No calendar events found in that file.'); return; }
-      var added = 0, skipped = 0;
-      events.forEach(function (evt) {
-        var name = evt.name + (evt.time ? ' (' + fmtClock(evt.time) + ')' : '');
-        var lower = name.toLowerCase();
-        var dupe = state.budget.activities.some(function (a) {
-          return a.date === evt.date && String(a.name || '').toLowerCase() === lower;
-        });
-        if (dupe) { skipped++; return; }
-        state.budget.activities.push({
-          id: uid(), slot: dateToSlot(evt.date), name: name, date: evt.date, estCents: 0, actualCents: 0, perScout: false, familyPays: false
-        });
-        added++;
-      });
-      var tail = skipped ? ', skipped ' + skipped + ' already there' : '';
-      if (added) { commit(); showToast('Imported ' + added + ' event(s)' + tail); }
-      else showToast('Imported 0 event(s)' + tail);
-    };
+    reader.onload = function () { applyIcsText(String(reader.result), 'No calendar events found in that file.'); };
     reader.onerror = function () { showToast('Couldn’t read that file — try again.'); };
     reader.readAsText(file);
+  }
+  // Paste-box submit: the input is either the calendar TEXT (BEGIN:VCALENDAR…) or a link.
+  // Text is parsed straight away. A link is attempted with fetch — which works for feeds
+  // that allow cross-origin reads, but many (BAND included) don't, so a failure explains
+  // how to paste the contents instead. webcal:// is rewritten to https:// for the fetch.
+  function submitIcsPaste() {
+    var o = ui.overlay;
+    if (!o || o.kind !== 'ics-paste') return;
+    // Read the live textarea in case the button was tapped before a blur committed o.text.
+    var ta = document.querySelector('[data-ch="ics-paste-text"]');
+    if (ta) o.text = ta.value;
+    var raw = String(o.text || '').trim();
+    if (!raw) { showToast('Paste your calendar link or the calendar text first.'); return; }
+    if (/BEGIN:VCALENDAR|BEGIN:VEVENT/i.test(raw)) {
+      var n = applyIcsText(raw, 'That text has no calendar events — make sure you copied the whole calendar.');
+      if (n) ui.overlay = null;
+      render();
+      return;
+    }
+    if (/^(https?:|webcal:)/i.test(raw)) {
+      var url = raw.replace(/^webcal:/i, 'https:');
+      o.busy = true; render();
+      fetch(url).then(function (r) { return r.text(); }).then(function (txt) {
+        if (!ui.overlay || ui.overlay.kind !== 'ics-paste') return;
+        if (!/BEGIN:VCALENDAR|BEGIN:VEVENT/i.test(txt)) throw new Error('not-ics');
+        var added = applyIcsText(txt, 'That link returned no calendar events.');
+        if (added) ui.overlay = null;
+        render();
+      }).catch(function () {
+        if (!ui.overlay || ui.overlay.kind !== 'ics-paste') return;
+        // The common case: the calendar host blocks cross-origin browser reads (CORS).
+        ui.overlay.busy = false;
+        ui.overlay.linkBlocked = true;   // switch the copy to "paste the contents instead"
+        render();
+      });
+      return;
+    }
+    showToast('That doesn’t look like a calendar link or calendar text.');
   }
 
   /* ---------------- Wave 13: Trail's End import ---------------- */
@@ -8150,6 +8214,8 @@
       return;
     }
     if (act === 'close-overlay') { ui.overlay = null; render(); return; }
+    if (act === 'paste-ics') { ui.overlay = { kind: 'ics-paste', text: '' }; render(); return; }
+    if (act === 'ics-paste-go') { submitIcsPaste(); return; }
     if (act === 'copy-summary') {
       copyText(summaryText(), function () { ui.overlay.copied = true; render(); });
       return;
@@ -8481,6 +8547,8 @@
     // should ever fire for them.
     if (parentMode() || gateMode()) return;
     var ch = el.dataset.ch;
+    // Paste-calendar box: keep the text on the overlay, no persist/re-render while typing.
+    if (ch === 'ics-paste-text') { if (ui.overlay && ui.overlay.kind === 'ics-paste') ui.overlay.text = el.value; return; }
     // Wave 11 — new-storefront name draft is transient; sync it without persisting/re-rendering.
     if (ch === 'sf-new-name') { ui.sfDraft.name = el.value; return; }
     if (ch === 'commission') { state.commissionPct = el.value; commit(); return; }
