@@ -714,6 +714,72 @@
   }
   .acct-select:hover { border-color: var(--accent); }
   .acct-select:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  /* ---------- Parent phase ---------- */
+  /* Parents (and not-yet-approved users) get a SEPARATE app — renderParentApp — built only
+     from the sanitized packs/{docId}/public/view document. No new tokens: every color here
+     derives from existing vars (so all four theme blocks stay in sync), and the contrast
+     comes from classes that already pass AA (.pill, .ev-badge, .bar, .muted). */
+  .badge-store { background: var(--accent-soft); color: var(--accent-text); }
+  .pv-row { padding: 10px 2px; border-bottom: 1px solid var(--line); }
+  .pv-row:last-child { border-bottom: none; }
+  .pv-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .pv-title { font-weight: 650; }
+  .pv-when { font-size: 0.85rem; color: var(--ink-soft); margin-top: 2px; }
+  .pv-detail { font-size: 0.85rem; margin-top: 2px; }
+  .pv-times { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+  .pv-time {
+    font-size: 0.78rem; font-variant-numeric: tabular-nums; background: var(--surface-2);
+    color: var(--ink-soft); border-radius: 99px; padding: 2px 8px;
+  }
+  .pv-stand {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    padding: 8px 2px; border-bottom: 1px dashed var(--line);
+  }
+  .pv-stand:last-child { border-bottom: none; }
+  .pv-rank { min-width: 1.8em; text-align: right; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .pv-name { font-weight: 650; flex: 1 1 130px; min-width: 0; }
+  .pv-total { font-weight: 650; }
+  .pv-pct { font-size: 0.85rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 3.4em; text-align: right; }
+  .pv-foot { margin-top: 4px; }
+  /* The normal print sheet hides <main> (only overlays print). Parents have no overlays,
+     so let their schedule print instead of a blank page. */
+  @media print { body.parent-mode main { display: block !important; } }
+
+  /* ---------- Join link ---------- */
+  /* Self-serve parent sign-up: the three link gates (welcome / waiting / closed) and the
+     admin "Parent sign-up link" card. No new tokens — every colour derives from existing
+     vars, so all four theme blocks stay in sync and AA contrast is inherited from
+     .card/.muted/.warn/.btn, which already pass. */
+  .sync-pill[hidden] { display: none; }
+  .join-gate { max-width: 440px; margin: 22px auto 0; text-align: center; }
+  .join-mark { color: var(--accent); display: inline-flex; margin-bottom: 6px; }
+  .join-mark svg { width: 46px; height: 46px; }
+  .join-gate h2.section { margin: 0 0 8px; }
+  .join-gate p { margin: 0 0 10px; }
+  .join-gate p:last-child { margin-bottom: 0; }
+  .join-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 14px; }
+  .join-link-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .join-link-in {
+    flex: 1 1 240px; min-width: 0;
+    font: 0.8rem/1.4 ui-monospace, Menlo, monospace;
+    background: var(--surface-2); color: var(--ink);
+  }
+  .join-opt { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; font-size: 0.9rem; }
+  .join-opt input[type="checkbox"] {
+    width: 20px; height: 20px; min-height: 20px; margin: 2px 0 0;
+    flex: 0 0 auto; accent-color: var(--accent);
+  }
+  /* Single-pack switch-over: the admin-only "Pack ID" line (a 64-char hash, so it has to be
+     free to wrap on a phone). Same tokens as .join-link-in — nothing new. */
+  .pack-id-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; margin-top: 4px; }
+  .pack-id {
+    flex: 1 1 240px; min-width: 0;
+    font: 0.78rem/1.5 ui-monospace, Menlo, monospace;
+    background: var(--surface-2); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+    overflow-wrap: anywhere; word-break: break-all;
+  }
 </style>
 
 <div class="topbar no-print">
@@ -744,7 +810,9 @@
   //   4. Project settings → Your apps → add a Web app → copy the config object
   //      (apiKey, authDomain, projectId, …) and paste it below in place of null:
   //        var FIREBASE_CONFIG = { apiKey: '…', authDomain: '…', projectId: '…' };
-  //   5. Every leader opens this page and enters the same passphrase (Pack tab).
+  //   5. Every leader opens this page and enters the same passphrase (Pack tab) —
+  //      or, better, publish the Part C rules and set PACK_DOC_ID below so nobody
+  //      ever types a passphrase at all.
   // Leave as null for device-only mode — the app is fully functional without it.
   // ---------------------------------------------------------------------------
   var FIREBASE_CONFIG = {
@@ -755,6 +823,47 @@
     messagingSenderId: "852781428950",
     appId: "1:852781428950:web:4a85f90d0518d783f95977"
   };
+
+  // ---------------------------------------------------------------------------
+  // SINGLE-PACK MODE — the pack id baked in, so NOBODY ever types a passphrase.
+  //
+  // Set this to THIS pack's Firestore document id (the 64-character lowercase hex
+  // string shown on the Pack tab → Shared sync → "Pack ID", admins only) and the
+  // passphrase disappears from the app entirely: leaders open the page, sign in
+  // with Google, and the admin approves them from the Members card.
+  // Leave it as null to keep the classic passphrase behaviour — every path in this
+  // file then behaves exactly as it did before this constant existed.
+  //
+  // *** PUBLISH THE PART C SECURITY RULES BEFORE YOU SET THIS. ***
+  // Under the Part B rules the ledger is protected ONLY by the doc id being the
+  // unguessable hash of a private passphrase. Baking that id into a public page
+  // while Part B is live would hand every visitor read AND write access. So when
+  // this is set the app refuses to sync at all until a Google sign-in has resolved
+  // a member role under the strict rules: no anonymous sign-in, no ledger
+  // subscription, no writes — just a full-screen "publish the rules" setup gate.
+  // See SETUP.md, and follow its order: Part A → Part C rules → sign in and claim
+  // admin → copy the Pack ID → paste it here → redeploy.
+  // ---------------------------------------------------------------------------
+  var PACK_DOC_ID = null;
+
+  // The id is a sha256 hex digest — anything else is a paste accident, and a
+  // half-applied one would be worse than none at all (a wrong pack, or a pack id
+  // published under Part B rules). Malformed → treated as null, warned once.
+  var PACK_DOC_ID_RE = /^[0-9a-f]{64}$/;
+  var packDocIdWarned = false;
+  function fixedPackId() {
+    if (PACK_DOC_ID === null || PACK_DOC_ID === undefined) return null;
+    if (typeof PACK_DOC_ID === 'string' && PACK_DOC_ID_RE.test(PACK_DOC_ID)) return PACK_DOC_ID;
+    if (!packDocIdWarned) {
+      packDocIdWarned = true;
+      try {
+        console.warn('PACK_DOC_ID is not a 64-character lowercase hex pack id — ignoring it ' +
+          'and falling back to passphrase mode. Copy the value from the Pack tab → Pack ID.');
+      } catch (e) { /* no console */ }
+    }
+    return null;
+  }
+  function fixedPackMode() { return fixedPackId() !== null; }
 
   /* ---------------- State ---------------- */
   var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
@@ -1206,7 +1315,10 @@
     advOpen: {},         // Wave 3 — { scoutId: true } expanded per-scout elective rows
     sfDraft: { name: '', dates: [] }, // Wave 11 — transient new-storefront draft (name + queued dates); NOT persisted
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
-    repeatOffer: null   // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
+    repeatOffer: null,  // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
+    // Parent phase — the parent/pending app's own tiny ui state (never persisted).
+    parentTab: 'schedule',    // 'schedule' | 'standings'
+    parentEarlierOpen: false  // "Earlier this year" disclosure on the parent Schedule tab
   };
 
   // Wave 15 — warn loudly on the FIRST failed save (not every keystroke); keep trying on
@@ -2069,6 +2181,18 @@
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
     membersUnsub: null,        // second onSnapshot (the members subcollection)
     redirectChecked: false,    // one-time getRedirectResult() guard (mobile Google fallback)
+    // ---- Parent phase (runtime-only, like everything above — never persisted) ----
+    feed: null,                // which document this session is subscribed to: 'ledger' | 'parent' | null
+    parentView: null,          // the sanitized packs/{docId}/public/view payload (parents/pending only)
+    parentUnsub: null,         // onSnapshot for that derived doc
+    invites: [],               // outstanding packs/{docId}/invites/* (admins only)
+    invitesUnsub: null,        // onSnapshot for the invites subcollection
+    invitesUnavailable: false, // invites read denied (older Part C rules) → hide the invite UI ONLY
+    // ---- Self-serve join link (runtime-only, never persisted in the ledger) ----
+    joinCfg: null,             // packs/{docId}/public/join = { open, mode, code, showStandings }
+    joinUnsub: null,           // onSnapshot for that config doc (leaders only)
+    joinUnavailable: false,    // join-config read denied (older Part C rules) → hide the admin card ONLY
+    joinRejected: null,        // null | 'closed' | 'badcode' — a link visitor who can't join
     deviceId: (function () {
       try {
         var id = localStorage.getItem(SYNC_DEVICE_KEY);
@@ -2090,6 +2214,226 @@
     syncStop();
     syncStart();
   }
+
+  // ---- Self-serve parent join link ------------------------------------------------------
+  // ONE link for everyone — leaders and families alike:  <page-url>?pack=<docId>&join=<code>
+  // The visitor taps "Sign in with Google" and lands in the approval queue as 'pending' with
+  // NO pack content; an admin then accepts them as editor/viewer/parent. The link never
+  // grants access by itself (locked in the rules too — there is no auto-approve path).
+  // Nobody needs the passphrase — it stays a leaders-only secret, and a leader's device
+  // ignores a stray ?pack= param entirely (activeJoin()).
+  //
+  // The link is remembered in its OWN localStorage key — never in the ledger JSON — so a
+  // refresh or a return visit still works, and the params are scrubbed out of the address
+  // bar the moment they're read so the code isn't left sitting in a shared screenshot.
+  var JOIN_KEY = 'pack-planner-join';
+  var JOIN_DOC_RE = /^[0-9a-f]{64}$/;        // sha256 hex — the pack's Firestore doc id
+  var JOIN_CODE_RE = /^[A-Za-z0-9]{1,64}$/;  // short rotatable code (10 chars base36 today)
+  // Pure: pull { docId, code } out of a query string and/or a hash (both are tolerated, and
+  // '#/?pack=…' style hash routes too). Returns null when there is no usable `pack` param —
+  // missing, malformed, or not a sha256 hex id.
+  //
+  // Single-pack mode (PACK_DOC_ID set): the pack is implicit, so the link is just
+  // '?join=<code>' and any `pack` param that turns up is IGNORED — a stray or forged one
+  // can never re-point this page at another pack. With PACK_DOC_ID null this behaves
+  // exactly as before, `pack` param and all (backward compatibility for old links).
+  function parseJoinParams(search, hash) {
+    var fixed = fixedPackId();
+    function pick(raw) {
+      if (!raw) return null;
+      var body = String(raw).replace(/^[#?]/, '');
+      var pre = body.match(/^[^?&=]*\?/);          // e.g. the '/?' in '#/?pack=…'
+      if (pre) body = body.slice(pre[0].length);
+      if (!body) return null;
+      var out = {};
+      body.split('&').forEach(function (pair) {
+        if (!pair) return;
+        var ix = pair.indexOf('=');
+        var k = ix === -1 ? pair : pair.slice(0, ix);
+        var v = ix === -1 ? '' : pair.slice(ix + 1);
+        try { k = decodeURIComponent(k); v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { return; }
+        if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = v;
+      });
+      var docId;
+      if (fixed) {
+        docId = fixed;                             // implicit pack; `out.pack` deliberately unread
+      } else {
+        if (!out.pack) return null;
+        docId = String(out.pack).trim().toLowerCase();
+        if (!JOIN_DOC_RE.test(docId)) return null; // garbage param → ignored outright
+      }
+      var code = String(out.join || '').trim();
+      if (code && !JOIN_CODE_RE.test(code)) code = '';
+      if (fixed && !code) return null;             // nothing to remember without a code
+      return { docId: docId, code: code };
+    }
+    return pick(search) || pick(hash);
+  }
+  // Does this URL carry either of our params at all (valid or not)? Used only in single-pack
+  // mode, so a stray '?pack=…' still gets scrubbed out of the address bar even though it was
+  // ignored. In passphrase mode nothing calls this — the strip behaviour is untouched.
+  function hasJoinParams(search, hash) {
+    function has(raw) { return /(^|[?&#])(pack|join)=/.test(String(raw == null ? '' : raw)); }
+    return has(search) || has(hash);
+  }
+  function loadJoin() {
+    var raw = null;
+    try { raw = localStorage.getItem(JOIN_KEY); } catch (e) { return null; }
+    if (!raw) return null;
+    var o = null;
+    try { o = JSON.parse(raw); } catch (e2) { return null; }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    var docId = String(o.docId || '').trim().toLowerCase();
+    if (!JOIN_DOC_RE.test(docId)) return null;
+    var code = String(o.code || '').trim();
+    if (code && !JOIN_CODE_RE.test(code)) code = '';
+    return { docId: docId, code: code };
+  }
+  function saveJoin(rec) {
+    try { localStorage.setItem(JOIN_KEY, JSON.stringify({ docId: rec.docId, code: rec.code })); }
+    catch (e) { /* storage blocked — the link still works for this page load */ }
+  }
+  function clearJoin() {
+    try { localStorage.removeItem(JOIN_KEY); } catch (e) { /* storage blocked */ }
+  }
+  // The join record actually IN FORCE for this session. A passphrase ALWAYS wins: a leader's
+  // device ignores a stray ?pack= link completely. EVERY consumer (doc id, landing screen,
+  // member creation, the gate screens) reads this — never loadJoin() directly.
+  // Single-pack mode: the passphrase is gone, so it can't suppress anything — but a stored
+  // link for a DIFFERENT pack is ignored outright (it can't re-point this page, and its code
+  // would never match ours anyway).
+  function activeJoin() {
+    if (!FIREBASE_CONFIG) return null;
+    var fixed = fixedPackId();
+    if (fixed) {
+      var rec = loadJoin();
+      return (rec && rec.docId === fixed) ? rec : null;
+    }
+    if (syncPass()) return null;
+    return loadJoin();
+  }
+  // Which pack this session is on, and why. Split out of syncStart so the precedence is
+  // one testable expression: PACK_DOC_ID > passphrase > stored join link > device-only.
+  // The baked-in id wins over EVERYTHING, so neither a stray '?pack=' link nor a leftover
+  // passphrase on some device can aim this page at another pack.
+  function syncDocIdSource() {
+    if (!FIREBASE_CONFIG) return { kind: 'none' };
+    var fixed = fixedPackId();
+    if (fixed) return { kind: 'fixed', docId: fixed };
+    if (syncPass()) return { kind: 'pass' };
+    var j = activeJoin();
+    if (j && j.docId) return { kind: 'join', docId: j.docId };
+    return { kind: 'none' };
+  }
+  // Rebuild the current URL without the pack/join params (keeping any others, and any
+  // hash route), then replace it in place so the code leaves the address bar.
+  function stripJoinParams() {
+    function strip(raw, lead) {
+      if (!raw) return '';
+      var body = raw.charAt(0) === lead ? raw.slice(1) : raw;
+      var prefix = '';
+      var pre = body.match(/^[^?&=]*\?/);
+      if (pre) { prefix = pre[0]; body = body.slice(prefix.length); }
+      var kept = body ? body.split('&').filter(function (p) {
+        var k = p.split('=')[0];
+        return k !== 'pack' && k !== 'join';
+      }) : [];
+      if (!kept.length) {
+        var bare = prefix.replace(/\?$/, '');
+        return bare ? lead + bare : '';
+      }
+      return lead + prefix + kept.join('&');
+    }
+    try {
+      if (!window.history || !history.replaceState) return;
+      var url = location.pathname + strip(location.search, '?') + strip(location.hash, '#');
+      history.replaceState(null, '', url || location.pathname);
+    } catch (e) { /* older engines — the link still works, it just stays in the bar */ }
+  }
+  // Read the link params once at start-up, remember them, and scrub them from the URL.
+  // Deliberately persists even on a leader's device (activeJoin() is what ignores it), so
+  // clearing the passphrase later still lands them on the pack the link pointed at.
+  function consumeJoinParams() {
+    var rec = null;
+    try { rec = parseJoinParams(location.search, location.hash); } catch (e) { rec = null; }
+    if (rec) { saveJoin(rec); stripJoinParams(); return rec; }
+    // Single-pack mode: a '?pack=' param is meaningless here, but leaving it in the address
+    // bar would imply it did something. Scrub it. (Passphrase mode is untouched: an
+    // unusable param is left exactly where it was, as it always has been.)
+    try {
+      if (fixedPackMode() && hasJoinParams(location.search, location.hash)) stripJoinParams();
+    } catch (e2) { /* never block boot over the address bar */ }
+    return null;
+  }
+  // 10 chars of base36. Rotating writes a new one, which invalidates every shared link.
+  function newJoinCode() {
+    var chars = 'abcdefghijklmnopqrstuvwxyz0123456789', out = '', buf = null;
+    try { buf = new Uint8Array(10); crypto.getRandomValues(buf); } catch (e) { buf = null; }
+    for (var i = 0; i < 10; i++) {
+      out += chars.charAt((buf ? buf[i] : Math.floor(Math.random() * 256)) % 36);
+    }
+    return out;
+  }
+  // Single-pack mode drops the '?pack=' parameter — the pack is baked into the page, so the
+  // link is just the code. Passphrase mode keeps the two-parameter form exactly as before.
+  function joinLinkUrl() {
+    var fixed = fixedPackId();
+    if (!fixed && !sync.docId) return '';
+    var code = (sync.joinCfg && typeof sync.joinCfg.code === 'string') ? sync.joinCfg.code : '';
+    var base = location.origin + location.pathname;
+    if (fixed) return base + '?join=' + encodeURIComponent(code);
+    return base + '?pack=' + sync.docId + '&join=' + encodeURIComponent(code);
+  }
+  function joinOpen() { return !!(sync.joinCfg && sync.joinCfg.open === true); }
+  // Locked to 'request' by owner directive — link sign-ups ALWAYS wait for an admin.
+  // A legacy config doc carrying mode:'auto' is ignored here and refused by the rules.
+  function joinMode() { return 'request'; }
+  // Standings (names + totals + derby winners) in the parent view. Default TRUE — a pack with
+  // no join config behaves exactly as it always has.
+  function standingsEnabled() { return !(sync.joinCfg && sync.joinCfg.showStandings === false); }
+
+  // ---- SAFETY: the single-pack-mode cloud gate --------------------------------------------
+  // The pack id is public the moment it's baked into this page, so in single-pack mode the
+  // ONLY thing standing between a stranger and the ledger is the Part C security rules. This
+  // device therefore refuses to touch the pack's cloud data until it has PROVEN they're in
+  // force — which it can only do by signing in with Google and having the accounts layer
+  // resolve a member role without a permission-denied.
+  //
+  //   sync.user === null          → not signed in (and single-pack mode never signs anyone in
+  //                                 anonymously, so this is the only signed-out state)
+  //   sync.accountsUnavailable    → packmeta/members reads were denied ⇒ the strict rules are
+  //                                 NOT published ⇒ the ledger is wide open ⇒ stay away
+  //
+  // Blocked means: no ledger subscription, no parent-view subscription, no push, no writes.
+  // In passphrase mode (PACK_DOC_ID null) this is always false and nothing changes.
+  function fixedSyncBlocked() {
+    if (!fixedPackMode()) return false;
+    return !sync.user || sync.accountsUnavailable;
+  }
+  // Additionally: no feed at all until a role actually resolved. (An unresolved role in
+  // single-pack mode means the registration path didn't complete — never fall back to
+  // "subscribe the ledger anyway", which is the right default only under passphrase mode.)
+  function fixedFeedBlocked() {
+    return fixedPackMode() && (fixedSyncBlocked() || !sync.myRole);
+  }
+  // Tear the cloud side down and sit on the local copy. Called when single-pack mode can't
+  // prove the rules are published: drops the doc ref so NOTHING can push, kills any feed,
+  // and leaves the setup gate (gateMode() === 'setup') on screen.
+  function haltFixedSync() {
+    stopLedgerFeed();
+    stopParentFeed();
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = null;
+    sync.docRef = null;
+    sync.feed = null;
+    sync.dirty = false;
+    sync.parentView = null;
+    sync.mode = 'local';
+    sync.error = '';
+    renderSyncPill();
+    render();
+  }
+
   function syncStop() {
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } sync.unsub = null; }
     clearTimeout(sync.pushTimer);
@@ -2111,6 +2455,24 @@
     sync.myRole = null;
     sync.ownerUid = null;
     sync.accountsUnavailable = false;
+    // Parent phase: the derived-view feed + invite listener belong to ONE pack (docId), so
+    // they die with the accounts layer. The fingerprint is per-pack too — reset it or a
+    // passphrase switch could skip the first parent-view write for the new pack.
+    stopParentFeed();
+    sync.parentView = null;
+    sync.feed = sync.unsub ? sync.feed : null;
+    if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* already gone */ } sync.invitesUnsub = null; }
+    sync.invites = [];
+    sync.invitesUnavailable = false;
+    // The join config + any join rejection belong to ONE pack too, so they die with the
+    // accounts layer. The stored link itself (localStorage) is deliberately left alone.
+    if (sync.joinUnsub) { try { sync.joinUnsub(); } catch (e) { /* already gone */ } sync.joinUnsub = null; }
+    sync.joinCfg = null;
+    sync.joinUnavailable = false;
+    sync.joinRejected = null;
+    parentViewFingerprint = null;
+    clearTimeout(parentViewTimer);
+    parentViewTimer = null;
   }
   function syncFail(err) {
     sync.mode = 'offline';
@@ -2139,8 +2501,13 @@
     });
   }
   function syncStart() {
-    if (!FIREBASE_CONFIG || !syncPass()) { sync.mode = 'local'; renderSyncPill(); return; }
-    if (!(window.crypto && window.crypto.subtle)) {
+    // Three ways to know which pack this device is on — the baked-in PACK_DOC_ID (which beats
+    // everything), a leader's passphrase (unchanged), or a stored parent join link. None →
+    // device-only, exactly as today.
+    var pass = syncPass();
+    var src = syncDocIdSource();
+    if (src.kind === 'none') { sync.mode = 'local'; renderSyncPill(); return; }
+    if (pass && !(window.crypto && window.crypto.subtle)) {
       sync.mode = 'offline';
       sync.error = 'This browser can’t derive the shared key here (needs HTTPS).';
       renderSyncPill();
@@ -2170,17 +2537,36 @@
       sync.redirectChecked = true;
       return redirectP.then(function () {
         if (sync.session !== mine) return;
-        return sha256Hex(syncPass()).then(function (docId) {
+        // Passphrase → sha256; otherwise the doc id came straight off the join link.
+        var docIdP = src.kind === 'pass' ? sha256Hex(pass) : Promise.resolve(src.docId);
+        return docIdP.then(function (docId) {
           if (sync.session !== mine) return;
           sync.docId = docId;
           // Reuse a persisted Google identity if present; otherwise sign in anonymously
           // exactly as before (full backward compatibility — accounts are purely additive).
+          // A join-link visitor gets NO anonymous account: there is nothing they may read
+          // until they sign in with Google, so the landing screen just asks them to.
           var current = auth.currentUser;
+          // SAFETY: single-pack mode is Google-sign-in-ONLY. An anonymous session has no
+          // member doc, so the strict rules deny it anyway — but under the legacy rules it
+          // would have full read/write on a now-public doc id, which is precisely the hole
+          // this mode has to close. So we neither create one nor reuse a stale one.
+          if (src.kind === 'fixed' && current && current.isAnonymous) current = null;
           var authP = current
             ? Promise.resolve(current)
-            : mods.auth.signInAnonymously(auth).then(function (cred) { return cred.user; });
+            : (src.kind === 'pass'
+                ? mods.auth.signInAnonymously(auth).then(function (cred) { return cred.user; })
+                : Promise.resolve(null));
           return authP.then(function (u) {
             if (sync.session !== mine) return;
+            if (!u) {
+              setSyncUser(null);
+              sync.mode = 'local';
+              sync.error = '';
+              renderSyncPill();
+              render();   // → the join landing screen
+              return;
+            }
             setSyncUser(u);
             sync.db = mods.fs.getFirestore(sync.app);
             sync.docRef = mods.fs.doc(sync.db, 'packs', docId);
@@ -2191,9 +2577,31 @@
               // wedges sync "offline" for the whole session (H-1). startAccounts always
               // fires the callback, including on the legacy-rules permission-denied path,
               // so the ledger still subscribes there (where reads only need auth).
-              startAccounts(mods, u, docId, mine, function () { subscribeLedger(mine); });
+              // Parent phase: the resolved role decides WHICH feed goes up — leaders get the
+              // ledger exactly as before; parents/pending get the sanitized public view.
+              startAccounts(mods, u, docId, mine, function (role) {
+                // SAFETY (single-pack mode): a permission-denied on the accounts path means
+                // the Part C rules are NOT published — with a public pack id that makes the
+                // ledger world-writable, so this device stays device-only and shows the setup
+                // gate. Same for a role that never resolved: never fall back to "subscribe
+                // the ledger anyway" here, which is only safe behind a secret passphrase.
+                if (fixedPackMode() && (sync.accountsUnavailable || !role)) { haltFixedSync(); return; }
+                // A refused self-serve join has NO member doc — subscribing anything would
+                // just be denied. Show the "ask a leader" gate and stop.
+                if (sync.joinRejected) {
+                  sync.mode = 'online'; sync.error = '';
+                  renderSyncPill(); render();
+                  return;
+                }
+                if (!role || sync.accountsUnavailable) { subscribeLedger(mine); return; }
+                applyRoleSubscription(role, mine);
+              });
             } else {
+              // Anonymous session. Unreachable in single-pack mode (rejected above), and
+              // guarded again here because subscribing the ledger anonymously is exactly
+              // what must never happen once the pack id is public.
               clearAccountsRuntime();
+              if (fixedPackMode()) { haltFixedSync(); return; }
               subscribeLedger(mine);
             }
           });
@@ -2207,10 +2615,149 @@
   // accounts layer can defer it until membership exists (H-1).
   function subscribeLedger(mine) {
     if (sync.session !== mine || !sync.docRef || !sync.mods) return;
+    if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven — see fixedSyncBlocked
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } }
+    sync.feed = 'ledger';
     sync.unsub = sync.mods.fs.onSnapshot(sync.docRef,
       function (snap) { if (sync.session === mine) onRemoteSnap(snap); },
       function (err) { if (sync.session === mine) syncFail(err); });
+  }
+  // ---- Parent phase: the second, sanitized feed ---------------------------------------
+  // Parents and not-yet-approved users never receive the ledger document (the published
+  // rules deny it outright). They subscribe to packs/{docId}/public/view — a derived,
+  // leader-generated copy carrying only the schedule, standings, goals and derby results.
+  function stopLedgerFeed() {
+    if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } sync.unsub = null; }
+  }
+  function stopParentFeed() {
+    if (sync.parentUnsub) { try { sync.parentUnsub(); } catch (e) { /* already gone */ } sync.parentUnsub = null; }
+  }
+  function subscribeParentView(mine) {
+    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven
+    stopParentFeed();
+    sync.feed = 'parent';
+    var fs = sync.mods.fs;
+    var ref = fs.doc(sync.db, 'packs', sync.docId, 'public', 'view');
+    sync.parentUnsub = fs.onSnapshot(ref, function (snap) {
+      if (sync.session !== mine) return;
+      // A missing doc is a normal state (no leader has saved anything yet) — the parent app
+      // shows a friendly empty state rather than an error.
+      sync.parentView = snap.exists() ? (snap.data() || null) : null;
+      if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; }
+      render();
+    }, function (err) { if (sync.session === mine) syncFail(err); });
+  }
+  // Which document a role is allowed to read. EVERY fallback lands on 'ledger' so the
+  // legacy paths (no accounts, permission-denied rules, unknown role) behave exactly as
+  // they do today — backward compatibility is the default, never an exception.
+  function feedForRole(role) {
+    if (sync.accountsUnavailable) return 'ledger';
+    // Join link phase — 'pending' now means WAITING: no ledger, no parent view, no pack
+    // content at all until an admin approves them. That is what makes approval actually
+    // gate something (it used to hand pending users the full parent app).
+    if (role === 'pending') return 'none';
+    if (role === 'parent') return 'parent';
+    return 'ledger';
+  }
+  // Point this session at the feed its role is allowed to read, tearing the other one down
+  // first. Called once when membership resolves and again whenever the members snapshot
+  // reports a role change (an admin promoting a parent to editor, say).
+  function applyRoleSubscription(role, mine) {
+    if (sync.session !== mine) return;
+    if (!role) return; // unknown / just-removed member — leave the current feed alone
+    var want = feedForRole(role);
+    if (want === 'none') {
+      // Waiting for approval — subscribe NOTHING and drop this browser's cached ledger,
+      // exactly as the parent branch below does. The waiting screen carries no pack content.
+      if (sync.feed !== 'none') {
+        stopLedgerFeed();
+        stopParentFeed();
+        sync.parentView = null;
+        sync.feed = 'none';
+        try { localStorage.removeItem(KEY); } catch (e) { /* storage blocked */ }
+        state = freshState();
+        if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; }
+      }
+      render();
+      return;
+    }
+    if (sync.feed === want && (want === 'ledger' ? sync.unsub : sync.parentUnsub)) return;
+    if (want === 'ledger') {
+      stopParentFeed();
+      sync.parentView = null;
+      sync.firstSnap = true;
+      subscribeLedger(mine);
+    } else {
+      // Demotion to parent: drop the ledger listener BEFORE the parent one goes up.
+      stopLedgerFeed();
+      // ...and drop this browser's cached copy of the ledger. Revoking someone's access
+      // should also take the pack's finances off their device — the rules already deny
+      // them a fresh copy, and a later promotion re-adopts the cloud one. Any unsynced
+      // local edit of theirs is intentionally discarded.
+      try { localStorage.removeItem(KEY); } catch (e) { /* storage blocked */ }
+      state = freshState();
+      subscribeParentView(mine);
+    }
+    render();
+  }
+  // Outstanding invites are admin-only UI. Deliberately NOT wired to handleAccountsError:
+  // a denied invites read must never set accountsUnavailable (that would switch role
+  // enforcement off). It only hides the invite block.
+  function applyInvitesSubscription(mine) {
+    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    var want = isAdmin() && !sync.accountsUnavailable && !sync.invitesUnavailable;
+    if (want === !!sync.invitesUnsub) return;
+    if (!want) {
+      if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* gone */ } sync.invitesUnsub = null; }
+      sync.invites = [];
+      return;
+    }
+    var fs = sync.mods.fs;
+    sync.invitesUnsub = fs.onSnapshot(fs.collection(sync.db, 'packs', sync.docId, 'invites'), function (qs) {
+      if (sync.session !== mine) return;
+      var arr = [];
+      qs.forEach(function (d) {
+        var v = d.data() || {};
+        arr.push({ email: v.email || d.id, role: v.role || 'parent' });
+      });
+      arr.sort(function (a, b) { return String(a.email).localeCompare(String(b.email)); });
+      sync.invites = arr;
+      render();
+    }, function () {
+      if (sync.session !== mine) return;
+      sync.invitesUnavailable = true;
+      sync.invites = [];
+      if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* gone */ } sync.invitesUnsub = null; }
+      render();
+    });
+  }
+  // The pack's self-serve join config (packs/{docId}/public/join) — leaders only. Admins
+  // need it for the "Parent sign-up link" card; editors need showStandings so the parent
+  // view they publish honours it. Deliberately NOT wired to handleAccountsError, for the
+  // same reason as invites: a denial here must never flip role enforcement off. It only
+  // hides the card (and leaves standings on, today's behaviour).
+  function applyJoinSubscription(mine) {
+    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    var want = accountsInForce() && canEdit() && !sync.joinUnavailable;
+    if (want === !!sync.joinUnsub) return;
+    if (!want) {
+      if (sync.joinUnsub) { try { sync.joinUnsub(); } catch (e) { /* gone */ } sync.joinUnsub = null; }
+      return;
+    }
+    var fs = sync.mods.fs;
+    sync.joinUnsub = fs.onSnapshot(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), function (snap) {
+      if (sync.session !== mine) return;
+      sync.joinCfg = snap.exists() ? (snap.data() || null) : null;
+      scheduleParentViewRefresh(); // showStandings may have just flipped
+      render();
+    }, function () {
+      if (sync.session !== mine) return;
+      sync.joinUnavailable = true;
+      sync.joinCfg = null;
+      if (sync.joinUnsub) { try { sync.joinUnsub(); } catch (e) { /* gone */ } sync.joinUnsub = null; }
+      render();
+    });
   }
   // ---- Accounts layer (additive) ------------------------------------------------------
   // Whether a Firebase user is a real signed-in person vs the anonymous session.
@@ -2228,6 +2775,33 @@
   function canEdit() {
     if (!accountsInForce()) return true;              // anonymous / legacy / accounts-unavailable → full edit
     return sync.myRole === 'admin' || sync.myRole === 'editor';
+  }
+  // Parent phase — this user must NEVER see the ledger. Their whole app (renderParentApp)
+  // is built from sync.parentView alone, so nothing in `state` can leak into their screen
+  // even if their device still has an old local copy from another mode.
+  function parentMode() {
+    return accountsInForce() && sync.myRole === 'parent';
+  }
+  // Join link phase — a not-yet-approved user (leader or parent alike). They see ONLY the
+  // waiting screen: no ledger, no parent view, no pack content of any kind.
+  function pendingMode() {
+    return accountsInForce() && sync.myRole === 'pending';
+  }
+  // Which full-screen gate, if any, replaces the whole app this render. Checked in this
+  // order, and ALL of them require a signed-in-with-Google or link-arriving visitor, so a
+  // passphrase-only / anonymous / legacy device can never land here.
+  //   'setup'   — single-pack mode, but the Part C rules aren't published (admin-facing)
+  //   'closed'  — a link visitor the pack refused (join off, or a rotated code)
+  //   'welcome' — nobody signed in yet (a link visitor; in single-pack mode, everybody)
+  //   'waiting' — signed in, role 'pending', waiting on an admin
+  // 'setup' is checked FIRST because it is the safety state: with a public pack id and no
+  // strict rules, nothing else on this page is trustworthy enough to show.
+  function gateMode() {
+    if (fixedPackMode() && sync.user && sync.accountsUnavailable) return 'setup';
+    if (sync.joinRejected) return 'closed';
+    if (!sync.user && (fixedPackMode() || activeJoin())) return 'welcome';
+    if (pendingMode()) return 'waiting';
+    return null;
   }
   function isAdmin() { return accountsInForce() && sync.myRole === 'admin'; }
   function adminCount() {
@@ -2267,14 +2841,19 @@
     var fs = mods.fs, db = sync.db, uid = user.uid;
     sync.accountsUnavailable = false;
     var afterDone = false;
-    // Always fire `after` exactly once — the ledger must subscribe whether registration
+    // Always fire `after` exactly once — a feed must subscribe whether registration
     // succeeded (strict rules, membership now exists) or was denied (legacy rules, where
-    // ledger reads only need auth). Never leaves sync unsubscribed.
-    function runAfter() { if (!afterDone) { afterDone = true; if (after && sync.session === mine) after(); } }
+    // ledger reads only need auth). Never leaves sync unsubscribed. The resolved role is
+    // handed over so the caller can pick the RIGHT feed (ledger vs parent view); null
+    // means "unknown" and always falls back to the ledger, exactly as before.
+    function runAfter(role) { if (!afterDone) { afterDone = true; if (after && sync.session === mine) after(role || null); } }
     var metaRef = fs.doc(db, 'packmeta', docId);
     fs.getDoc(metaRef).then(function (snap) {
       if (sync.session !== mine) return;
       if (snap.exists()) { sync.ownerUid = (snap.data() || {}).owner || null; return; }
+      // Join link phase — someone who arrived on a shared link must NEVER claim ownership of
+      // an unclaimed pack. The owner claim stays a passphrase-holder's move.
+      if (activeJoin()) return;
       // No owner yet — try to become it. Whoever's create lands first is admin.
       return fs.setDoc(metaRef, { owner: uid }).then(function () {
         sync.ownerUid = uid;
@@ -2287,9 +2866,20 @@
     }).then(function () {
       if (sync.session !== mine) return;
       return ensureMyMemberDoc(mods, user, docId);
-    }).then(function () {
+    }).then(function (role) {
       if (sync.session !== mine) return;
-      runAfter(); // membership now exists — safe to subscribe the ledger
+      // Provisional role, straight from our own member doc (the members snapshot below
+      // confirms it). Set + render BEFORE subscribing so a parent never sees a flash of
+      // the leader UI while the first snapshot is in flight.
+      sync.myRole = role || sync.myRole || null;
+      render();
+      runAfter(sync.myRole); // membership now exists — safe to subscribe the right feed
+      // A refused self-serve join never created a member doc, so members/invites/join reads
+      // would all be denied — and a denial there would flip accountsUnavailable and hand
+      // them the leader UI. Stop here instead; the "closed" gate is already on screen.
+      if (sync.joinRejected) return;
+      applyInvitesSubscription(mine);
+      applyJoinSubscription(mine);
       var col = fs.collection(db, 'packs', docId, 'members');
       sync.membersUnsub = fs.onSnapshot(col, function (qs) {
         if (sync.session !== mine) return;
@@ -2297,41 +2887,126 @@
         qs.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
         sync.members = arr;
         recomputeMyRole();
+        // A role change can arrive at any time (an admin promoting a parent to editor, or
+        // demoting an editor to parent) — move this session onto the matching feed.
+        applyRoleSubscription(sync.myRole, mine);
+        applyInvitesSubscription(mine);
+        applyJoinSubscription(mine);
         render(); // the read-only banner + Members card + hidden affordances all key off role
       }, function (err) { if (sync.session === mine) handleAccountsError(err); });
     }).catch(function (err) {
       if (sync.session === mine) handleAccountsError(err);
-      runAfter(); // legacy-rules permission-denied still needs the ledger subscribed
+      runAfter(null); // legacy-rules permission-denied still needs the ledger subscribed
     });
   }
-  // Register the signed-in user in the members subcollection. Owners write themselves an
-  // 'admin' doc; everyone else lands as 'pending'. NEVER overwrites an existing role
-  // (re-signing in as an approved editor must not silently demote you to pending).
+  // Roles an admin may hand out through an emailed invite. 'admin' is deliberately absent —
+  // ownership/admin is granted in person, from the Members card.
+  var INVITE_ROLES = ['editor', 'viewer', 'parent'];
+  function inviteEmailKey(email) { return String(email == null ? '' : email).trim().toLowerCase(); }
+  // Register the signed-in user in the members subcollection and RESOLVE THE EFFECTIVE ROLE
+  // (returned to the caller, which uses it to pick the ledger vs parent-view feed).
+  // Owners write themselves an 'admin' doc; an invited email lands directly in the invited
+  // role; everyone else lands as 'pending'. NEVER overwrites an existing role (re-signing
+  // in as an approved editor must not silently demote you to pending).
   function ensureMyMemberDoc(mods, user, docId) {
     var fs = mods.fs, db = sync.db, uid = user.uid;
     var ref = fs.doc(db, 'packs', docId, 'members', uid);
     return fs.getDoc(ref).then(function (snap) {
       if (snap.exists()) {
+        var cur = (snap.data() || {}).role || 'pending';
         // The pack owner is always an admin — self-heal if a rogue admin ever demoted
         // them (M-1). The Part C rules let the owner rewrite their own doc freely.
-        if (sync.ownerUid === uid && (snap.data() || {}).role !== 'admin') {
-          return fs.updateDoc(ref, { role: 'admin' });
+        if (sync.ownerUid === uid && cur !== 'admin') {
+          return fs.updateDoc(ref, { role: 'admin' }).then(function () { return 'admin'; });
         }
-        return; // already a member — leave the role exactly as it is
+        return cur; // already a member — leave the role exactly as it is
       }
       var isOwner = sync.ownerUid === uid;
-      return fs.setDoc(ref, {
-        role: isOwner ? 'admin' : 'pending',
-        name: user.displayName || '',
-        email: user.email || '',
-        addedAt: fs.serverTimestamp()
+      var key = inviteEmailKey(user.email);
+      // Invite lookup — the rules let a signed-in user read the invite addressed to their
+      // own email. A miss (or a denial on older rules) just means 'pending', as before.
+      var inviteRef = (!isOwner && key) ? fs.doc(db, 'packs', docId, 'invites', key) : null;
+      var invitedP = inviteRef
+        ? fs.getDoc(inviteRef).then(function (is) {
+            var r = is.exists() ? (is.data() || {}).role : null;
+            return INVITE_ROLES.indexOf(r) === -1 ? null : r;
+          }).catch(function () { return null; })
+        : Promise.resolve(null);
+      return invitedP.then(function (invitedRole) {
+        // Join link phase — no member doc, not the owner, no invite, but this device arrived
+        // on a self-serve link: check the pack's join config and only then create ourselves.
+        // A closed pack or a stale code creates NOTHING and lands on the "closed" gate.
+        var jr = (!isOwner && !invitedRole) ? activeJoin() : null;
+        if (jr) return joinCreateMemberDoc(mods, user, docId, jr, ref);
+        var role = isOwner ? 'admin' : (invitedRole || 'pending');
+        function write(r) {
+          return fs.setDoc(ref, {
+            role: r,
+            name: user.displayName || '',
+            email: user.email || '',
+            addedAt: fs.serverTimestamp()
+          });
+        }
+        return write(role).catch(function (err) {
+          // The rules match the invite by the token email VERBATIM, so a mixed-case address
+          // (we look it up lowercased) could be denied. Never wedge sign-in over that —
+          // fall back to a plain 'pending' registration, which every rule set allows.
+          if (!invitedRole || isOwner) throw err;
+          role = 'pending';
+          return write('pending');
+        }).then(function () {
+          // Invites are single-use — but only consume one that was actually honoured (the
+          // fallback above lands as 'pending', and that invite should stay for the admin).
+          // Best-effort delete: a failure is harmless because the member doc now exists and
+          // wins on every later sign-in.
+          if (inviteRef && invitedRole && role === invitedRole) {
+            try { fs.deleteDoc(inviteRef).catch(function () { /* left for an admin to revoke */ }); }
+            catch (e) { /* ignore */ }
+          }
+          return role;
+        });
       });
     });
+  }
+  // Self-serve join: read packs/{docId}/public/join and, ONLY if it's open and the code this
+  // device arrived with still matches, write our own member doc — ALWAYS as 'pending'.
+  // Owner directive: a link plus a Google account must never by itself grant access; an
+  // admin approves every single person. `joinCode` goes into the doc so the security rules
+  // can verify the claim server-side; the client check alone would be worth nothing (and
+  // the rules independently pin the role to 'pending', so this can't be bypassed).
+  //
+  // Every other outcome (closed, missing, rotated code, denied write, network error) creates
+  // NOTHING, sets sync.joinRejected and resolves to null — the "ask a leader" gate, never a
+  // crash and never a spinner.
+  function joinCreateMemberDoc(mods, user, docId, jr, ref) {
+    var fs = mods.fs, db = sync.db;
+    try {
+      return fs.getDoc(fs.doc(db, 'packs', docId, 'public', 'join')).then(function (snap) {
+        var cfg = snap.exists() ? (snap.data() || {}) : null;
+        if (!cfg || cfg.open !== true) { sync.joinRejected = 'closed'; return null; }
+        var code = typeof cfg.code === 'string' ? cfg.code : '';
+        if (!code || !jr.code || jr.code !== code) { sync.joinRejected = 'badcode'; return null; }
+        var role = 'pending'; // always — see the note above; never derived from the config
+        return fs.setDoc(ref, {
+          role: role,
+          name: user.displayName || '',
+          email: user.email || '',
+          joinCode: code,
+          addedAt: fs.serverTimestamp()
+        }).then(function () { return role; })
+          .catch(function () { sync.joinRejected = 'closed'; return null; });
+      }).catch(function () { sync.joinRejected = 'closed'; return null; });
+    } catch (e) {
+      sync.joinRejected = 'closed';
+      return Promise.resolve(null);
+    }
   }
   // ---- Sign in / out --------------------------------------------------------------------
   function signInWithGoogle() {
     if (!FIREBASE_CONFIG) return;
-    if (!syncPass()) { showToast('Enter a shared passphrase first, then sign in.'); return; }
+    // A join-link visitor signs in WITHOUT a passphrase — that's the whole point of the link.
+    // Single-pack mode: there IS no passphrase, so sign-in is always available.
+    if (!fixedPackMode() && !syncPass() && !activeJoin()) { showToast('Enter a shared passphrase first, then sign in.'); return; }
     loadFirebase().then(function (mods) {
       var auth = mods.auth.getAuth(sync.app);
       var provider = new mods.auth.GoogleAuthProvider();
@@ -2363,6 +3038,8 @@
   function signOutGoogle() {
     if (!sync.mods || !sync.app) return;
     var auth = sync.mods.auth.getAuth(sync.app);
+    // Single-pack mode signs nobody back in anonymously — syncStart lands on the welcome
+    // gate instead, which is the whole point (see the SAFETY note on fixedSyncBlocked).
     // Drop the Google identity + role immediately so the UI can't briefly show a stale
     // signed-in state if the anonymous re-auth is slow or fails (L-4).
     sync.user = null;
@@ -2382,8 +3059,9 @@
       showToast('Couldn’t update members — try again.');
     }
   }
+  var MEMBER_ROLES = ['admin', 'editor', 'viewer', 'parent'];
   function setMemberRole(memberUid, role) {
-    if (role !== 'admin' && role !== 'editor' && role !== 'viewer') return;
+    if (MEMBER_ROLES.indexOf(role) === -1) return;
     if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
     if (isLastAdmin(memberUid) && role !== 'admin') { showToast('Keep at least one admin.'); return; }
     var fs = sync.mods.fs;
@@ -2398,9 +3076,232 @@
     var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
     fs.deleteDoc(ref).catch(function (err) { accountsToast(err); });
   }
+  // ---- Parent phase: invite by email --------------------------------------------------
+  // packs/{docId}/invites/{lowercased-email} = { role, email, invitedBy, invitedAt }. The
+  // invitee consumes it on their first sign-in (ensureMyMemberDoc) and lands straight in
+  // the invited role instead of 'pending'.
+  function createInvite(emailRaw, role) {
+    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (INVITE_ROLES.indexOf(role) === -1) return;
+    var email = inviteEmailKey(emailRaw);
+    if (!email || email.indexOf('@') < 1 || email.indexOf('.') === -1 || /[\/\s]/.test(email)) {
+      showToast('Enter a valid email address.');
+      return;
+    }
+    var existing = null;
+    for (var i = 0; i < sync.members.length; i++) {
+      if (inviteEmailKey(sync.members[i].email) === email) { existing = sync.members[i]; break; }
+    }
+    if (existing) {
+      showToast((existing.name || email) + ' is already a member (' + (existing.role || 'pending') + ').');
+      return;
+    }
+    var fs = sync.mods.fs;
+    fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', email), {
+      role: role,
+      email: email,
+      invitedBy: (sync.user && (sync.user.email || sync.user.uid)) || '',
+      invitedAt: fs.serverTimestamp()
+    }).then(function () {
+      showToast('Invited ' + email + ' as ' + role + '.');
+      render(); // clears the form inputs
+    }).catch(function (err) { accountsToast(err); });
+  }
+  function revokeInvite(emailRaw) {
+    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    var email = inviteEmailKey(emailRaw);
+    if (!email) return;
+    var fs = sync.mods.fs;
+    fs.deleteDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', email))
+      .catch(function (err) { accountsToast(err); });
+  }
+  // ---- Self-serve join config (admin-only) ---------------------------------------------
+  // Writes packs/{docId}/public/join whole every time, so the doc always carries all four
+  // fields even the first time. A code is minted on the first write so flipping the toggle
+  // on immediately shows a usable link.
+  function writeJoinConfig(patch, toast) {
+    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    var cur = sync.joinCfg || {};
+    var curCode = (typeof cur.code === 'string' && JOIN_CODE_RE.test(cur.code)) ? cur.code : '';
+    var next = {
+      open: (patch && typeof patch.open === 'boolean') ? patch.open : (cur.open === true),
+      // Hard-locked to 'request' by owner directive — a link + a Google account must never
+      // grant access on its own. Written explicitly (rather than dropped) so any legacy
+      // doc carrying 'auto' is overwritten the next time an admin touches this card.
+      mode: 'request',
+      code: (patch && patch.code) ? patch.code : (curCode || newJoinCode()),
+      showStandings: (patch && typeof patch.showStandings === 'boolean')
+        ? patch.showStandings : !(cur.showStandings === false)
+    };
+    // Optimistic local copy so the card responds instantly; the snapshot confirms it, and a
+    // denied write rolls it back rather than leaving the card claiming something untrue.
+    var prev = sync.joinCfg;
+    sync.joinCfg = next;
+    render();
+    scheduleParentViewRefresh();
+    var fs = sync.mods.fs;
+    var data = { open: next.open, mode: next.mode, code: next.code, showStandings: next.showStandings, updatedAt: fs.serverTimestamp() };
+    fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), data).then(function () {
+      if (toast) showToast(toast);
+    }).catch(function (err) {
+      sync.joinCfg = prev;
+      render();
+      scheduleParentViewRefresh();
+      accountsToast(err);
+    });
+  }
+  // ---- Parent phase: the derived, sanitized parent view -------------------------------
+  // Firestore rules gate a DOCUMENT, not parts of one, so parents must never receive the
+  // ledger. buildParentView derives a SEPARATE document containing only what a parent may
+  // see. It is an allowlist by construction: every field below is written out explicitly,
+  // and nothing else from `state` is ever copied.
+  //
+  // DELIBERATELY EXCLUDED — do not add these without re-reading the SETUP Part C notes:
+  //   budget (starting balance, planned/actual), activity costs, expenses, dues and
+  //   `collected`, reward-tier dues, inventory (products, cases, prices, hand-outs),
+  //   leaders (names, roles, phones, emails, training, notes), scouts' private notes and
+  //   den labels, RSVP/attendance detail, other fundraisers, past-season archives, and
+  //   `state` in any raw form.
+  //
+  // Pure: it reads only the state it is given. `state` is swapped for the duration so the
+  // existing money math (computePackTotals/computeScoutTotals/…) is reused verbatim rather
+  // than re-implemented — the parent's standings can never drift from the leaders'.
+  //
+  // Join link phase — opts.showStandings (defaulting to the pack's join config, and to TRUE
+  // when there is no config, i.e. today's behaviour) decides whether the whole Standings tab
+  // is published at all. When it's false the `standings`, `goals` and `derby` keys are
+  // ABSENT from the document — not merely hidden in the UI — because all three carry scout
+  // names or pack money. That gives a widely-shared link a calendar-only mode.
+  function buildParentView(src, opts) {
+    var withStandings = (opts && typeof opts.showStandings === 'boolean')
+      ? opts.showStandings : standingsEnabled();
+    var prev = state;
+    if (src) state = src;
+    try {
+      var py = state.budget.programYear;
+      // Program year runs September → August.
+      var winStart = py + '-09-01', winEnd = (py + 1) + '-08-31';
+      function inYear(d) { return typeof d === 'string' && d >= winStart && d <= winEnd; }
+
+      var events = [];
+      state.storefronts.forEach(function (sf) {
+        if (!inYear(sf.date)) return;
+        var times = (sf.blocks || []).map(function (b) { return fmtTimeRange(b.start, b.end); })
+          .filter(function (t) { return !!t; });
+        var ev = { kind: 'storefront', date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
+        if (times.length) ev.times = times;   // shift windows only — never the money on a block
+        events.push(ev);
+      });
+      state.meetings.forEach(function (m) {
+        if (!inYear(m.date)) return;
+        var title = m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (m.den ? ' (' + m.den + ')' : ''));
+        var ev = { kind: 'meeting', date: m.date, title: title, detail: String(m.note || '') };
+        var clock = fmtClock(m.time);
+        if (clock) ev.times = [clock];
+        events.push(ev);
+      });
+      state.budget.activities.forEach(function (a) {
+        if (!inYear(a.date)) return;         // undated planning rows never surface
+        events.push({ kind: 'activity', date: a.date, title: String(a.name || 'Activity'), detail: '' });
+      });
+      events.sort(function (a, b) {
+        return String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title));
+      });
+
+      var out = {
+        rev: typeof state.rev === 'number' ? state.rev : 0,
+        packName: String(state.packName || ''),
+        programYear: py,
+        events: events
+      };
+      // Calendar-only mode: nothing below is computed, let alone published.
+      if (!withStandings) return out;
+
+      var pack = computePackTotals();
+      var totals = computeScoutTotals();
+      var standings = rankBy(visibleScoutRows(totals), function (r) { return r.t.combined; })
+        .map(function (r) {
+          return {
+            name: String(r.name || ''),
+            den: String(r.den || ''),               // the rank only — never s.denLabel or s.note
+            combinedCents: r.t.combined,
+            goalPct: (pack.target && !r.archived) ? Math.round(goalBaseOf(r) / pack.target * 100) : null
+          };
+        });
+
+      var goals = null;
+      if (pack.teGoal > 0 || pack.cashGoal > 0) {
+        goals = {
+          teGoalCents: pack.teGoal,
+          teRaisedCents: pack.teEligible,
+          tePct: pack.teGoal > 0 ? Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100)) : 0,
+          cashGoalCents: pack.cashGoal,
+          cashRaisedCents: pack.cashKept,
+          cashPct: pack.cashGoal > 0 ? Math.min(100, Math.round(pack.cashKept / pack.cashGoal * 100)) : 0
+        };
+      }
+
+      var winners = derbyWinners() || [];
+      var awards = (state.derby.awards || []).map(function (aw) {
+        return { award: String(aw.award || ''), racerName: String(aw.racerName || '') };
+      });
+      var derby = null;
+      if (state.derby.name || state.derby.date || winners.length || awards.length) {
+        derby = {
+          name: String(state.derby.name || ''),
+          date: String(state.derby.date || ''),
+          winners: winners.map(function (w) { return { place: w.place, scoutName: String(w.scoutName || '') }; }),
+          awards: awards
+        };
+      }
+
+      out.standings = standings;
+      out.goals = goals;
+      out.derby = derby;
+      return out;
+    } finally {
+      state = prev;
+    }
+  }
+  // Last payload written this session (runtime only) — skips a rewrite when nothing changed.
+  var parentViewFingerprint = null;
+  var parentViewTimer = null;
+  function scheduleParentViewRefresh() {
+    if (!accountsInForce() || !canEdit()) return;   // leaders only; legacy/anon never writes it
+    clearTimeout(parentViewTimer);
+    parentViewTimer = setTimeout(writeParentView, 1200);
+  }
+  // Regenerate packs/{docId}/public/view. Every failure is swallowed: the parent view is a
+  // convenience derived from the ledger, and must NEVER disturb ledger sync.
+  function writeParentView() {
+    clearTimeout(parentViewTimer);
+    parentViewTimer = null;
+    if (!accountsInForce() || !canEdit()) return;
+    if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
+    if (!sync.mods || !sync.db || !sync.docId) return;
+    var payload, fp;
+    try {
+      payload = buildParentView(state);
+      fp = JSON.stringify(payload);
+    } catch (e) { return; }
+    if (fp === parentViewFingerprint) return;
+    var fs = sync.mods.fs;
+    var data = {};
+    Object.keys(payload).forEach(function (k) { data[k] = payload[k]; });
+    data.generatedAt = fs.serverTimestamp();   // sentinel — kept out of the fingerprint
+    // Claim the fingerprint BEFORE the write so a second call can't send the same payload
+    // again while this one is in flight; a failure clears it so the next push retries.
+    parentViewFingerprint = fp;
+    try {
+      fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'view'), data)
+        .catch(function () { parentViewFingerprint = null; /* denied/offline — retry next push */ });
+    } catch (e2) { parentViewFingerprint = null; /* never disturb ledger sync */ }
+  }
+
   // Debounced push — every commit() lands here; the transaction keeps rev monotonic.
   function scheduleSyncPush() {
     if (!sync.docRef) return;
+    if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     sync.dirty = true;
     clearTimeout(sync.pushTimer);
     sync.pushTimer = setTimeout(syncPush, 800);
@@ -2436,6 +3337,10 @@
   }
   function syncPush() {
     if (!sync.docRef || !sync.mods) return;
+    if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
+    // Parent phase belt-and-braces: a role that can't edit never writes the ledger, even if
+    // a stale timer fires. (commit() already refuses; the published rules are the backstop.)
+    if (accountsInForce() && !canEdit()) return;
     var fs = sync.mods.fs, ref = sync.docRef, mine = sync.session;
     fs.runTransaction(sync.db, function (tx) {
       return tx.get(ref).then(function (snap) {
@@ -2457,6 +3362,7 @@
       state.rev = res.nextRev;
       sync.dirty = false;
       save(); // no re-render needed — nothing visible changed…
+      scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
       if (sync.clobber) {
         sync.clobber = false;
         if (res.mergedN > 0) render(); // …unless the merge appended remote items
@@ -2498,6 +3404,11 @@
     var wasFirst = sync.firstSnap;
     sync.firstSnap = false;
     if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
+    // Parent phase — publish the sanitized copy once per connection too, so parents aren't
+    // waiting on the next leader edit for their first schedule. Debounced + fingerprinted,
+    // so the rest of this function settles on the winning state before anything is written,
+    // and an unchanged payload costs nothing. No-op for viewers/parents/legacy.
+    if (wasFirst) scheduleParentViewRefresh();
     if (!snap.exists()) {
       // No shared copy yet — seed it from this device (M-3: never for a read-only viewer;
       // canEdit() is true for anonymous/legacy, so today's behavior is unchanged).
@@ -2578,6 +3489,9 @@
   function renderSyncPill() {
     var el = document.getElementById('syncPill');
     if (!el) return;
+    // Join link phase — the gate screens have no Pack tab to jump to, so the pill is hidden
+    // (CSS: .sync-pill[hidden] beats the class's display:inline-flex).
+    el.hidden = !!gateMode();
     var p = SYNC_PILL[sync.mode] || SYNC_PILL.local;
     el.className = 'sync-pill no-print ' + p.cls;
     el.innerHTML = '<span class="sync-dot"></span><span class="sync-lbl">' + p.label + '</span>';
@@ -2615,6 +3529,22 @@
     { id: 'derby', label: 'Derby' },
     { id: 'pack', label: 'Pack' }
   ];
+  // Parent phase — the only two tabs a parent/pending user ever sees. The Pack tab, the
+  // Members card, Budget, Inventory, Scouts, Advancement and Derby are not rendered at all
+  // in that mode, so there is nothing to hide.
+  var PARENT_TABS = [
+    { id: 'schedule', label: 'Schedule' },
+    { id: 'standings', label: 'Standings' }
+  ];
+  // Join link phase — the pack can publish a calendar-only view (join config
+  // showStandings:false). Then the parent document simply has no `standings` key, the
+  // Standings tab isn't offered, and parentTab() can never resolve to it.
+  function parentHasStandings() {
+    var pv = sync.parentView;
+    return !!(pv && Array.isArray(pv.standings));
+  }
+  function parentTabDefs() { return parentHasStandings() ? PARENT_TABS : PARENT_TABS.slice(0, 1); }
+  function parentTab() { return (ui.parentTab === 'standings' && parentHasStandings()) ? 'standings' : 'schedule'; }
 
   // Identify the focused control so focus survives a full re-render. Two kinds
   // (Wave 18(6) extended this beyond inputs): data-ch inputs (value + caret also
@@ -2656,11 +3586,27 @@
       try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (e) { /* unsupported */ }
     }
 
-    document.getElementById('hdrPack').textContent = state.packName || '';
+    // Join link phase — a link visitor who hasn't signed in, a refused visitor, or someone
+    // waiting on approval gets a single full-screen gate INSTEAD of any app: no tabs, no
+    // ledger, no parent view, no overlays, and nothing read from `state`.
+    var gate = gateMode();
+    // Parent phase — parents get a completely separate render path fed by sync.parentView.
+    // Nothing below this line reads `state` for them: not the header, not the tabs, not the
+    // view, not the overlays.
+    var parent = !gate && parentMode();
+    if (parent || gate) ui.overlay = null;
+    document.body.classList.toggle('parent-mode', parent);
+
+    // Gates show no pack label at all (they may not even be allowed to know the name yet).
+    document.getElementById('hdrPack').textContent = gate ? ''
+      : (parent ? ((sync.parentView && sync.parentView.packName) || '') : (state.packName || ''));
     var tabsEl = document.getElementById('tabs');
-    tabsEl.innerHTML = TABS.map(function (t) {
-      var on = ui.tab === t.id;
-      return '<button type="button" class="tab' + (on ? ' on' : '') + '" data-act="tab" data-tab="' + t.id + '"' +
+    var tabDefs = gate ? [] : (parent ? parentTabDefs() : TABS);
+    var tabAct = parent ? 'parent-tab' : 'tab';
+    var tabCur = parent ? parentTab() : ui.tab;
+    tabsEl.innerHTML = tabDefs.map(function (t) {
+      var on = tabCur === t.id;
+      return '<button type="button" class="tab' + (on ? ' on' : '') + '" data-act="' + tabAct + '" data-tab="' + t.id + '"' +
         (on ? ' aria-current="page"' : '') + '>' + t.label + '</button>';
     }).join('');
     // Wave 15 — phone-width discoverability: when the strip overflows, show the right-edge
@@ -2677,7 +3623,9 @@
       } catch (e2) { /* older engines without options-object scrollIntoView */ }
     }
     var v = document.getElementById('view');
-    if (ui.tab === 'calendar') v.innerHTML = renderCalendarTab();
+    if (gate) v.innerHTML = renderJoinGate(gate);
+    else if (parent) v.innerHTML = renderParentApp();
+    else if (ui.tab === 'calendar') v.innerHTML = renderCalendarTab();
     else if (ui.tab === 'storefronts') v.innerHTML = ui.storefrontId ? renderStorefrontDetail() : renderStorefrontList();
     else if (ui.tab === 'scouts') v.innerHTML = renderScouts();
     else if (ui.tab === 'advancement') v.innerHTML = renderAdvancement();
@@ -2686,10 +3634,11 @@
     else if (ui.tab === 'pack') v.innerHTML = renderPack();
     else if (ui.tab === 'derby') v.innerHTML = renderDerby();
     else v.innerHTML = renderTotals();
-    // Persistent read-only banner for a signed-in viewer/pending user (roles in force).
-    if (sync.user && !canEdit()) v.innerHTML = readOnlyBanner() + v.innerHTML;
+    // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
+    // users are on the parent app instead, which carries its own notices.
+    if (!parent && !gate && sync.user && !canEdit()) v.innerHTML = readOnlyBanner() + v.innerHTML;
     renderSyncPill();
-    document.getElementById('overlayHost').innerHTML = renderOverlay();
+    document.getElementById('overlayHost').innerHTML = (parent || gate) ? '' : renderOverlay();
 
     // Restore focus (+ caret for inputs) so keyboard/VoiceOver users don't lose
     // their place on re-render — Wave 18(6) extends this to data-act buttons.
@@ -2729,6 +3678,224 @@
     // Preserve scroll on in-place edits; reset only on navigation.
     if (ui.resetScroll) { ui.resetScroll = false; window.scrollTo(0, 0); }
     else window.scrollTo(0, y);
+  }
+
+  /* ----- Join link phase: the three full-screen gates ----- */
+  // Like the parent app below, NOTHING here reads `state` — a link visitor, a refused
+  // visitor and a waiting member all see pack content only after they're an approved member.
+  // The pack name is used only when the sanitized public view is already readable (it isn't
+  // before membership), so these screens say "this Cub Scout pack" the rest of the time.
+  function joinPackName() {
+    var pv = sync.parentView;
+    var n = (pv && pv.packName) ? String(pv.packName).trim() : '';
+    return n || '';
+  }
+  function joinGateShell(title, body) {
+    return '<div class="card join-gate">' +
+      '<span class="join-mark" aria-hidden="true">' + FLEUR + '</span>' +
+      '<h2 class="section display">' + esc(title) + '</h2>' + body + '</div>';
+  }
+  function renderJoinGate(kind) {
+    if (kind === 'setup') return renderJoinSetup();
+    if (kind === 'closed') return renderJoinClosed();
+    if (kind === 'waiting') return renderJoinWaiting();
+    return renderJoinWelcome();
+  }
+  // SAFETY gate (single-pack mode only). The pack id is baked into this public page, so
+  // until the Part C rules are published the ledger would be readable AND writable by any
+  // visitor. The app has already refused to sync — this screen says why, to the one person
+  // who can fix it. Deliberately admin-facing wording: nobody else should ever see it.
+  function renderJoinSetup() {
+    var who = (sync.user && (sync.user.displayName || sync.user.email)) || '';
+    return joinGateShell('Setup isn’t finished',
+      '<p class="small">This pack needs its security rules published before it can sync — ' +
+      'see <strong>SETUP.md Part C</strong>.</p>' +
+      '<p class="small muted">Until then this page stays on <strong>this device only</strong>: nothing is ' +
+      'read from or written to the pack’s cloud copy. That’s deliberate — the pack id is part of ' +
+      'this page now, so without those rules anyone opening it could read and change your pack.</p>' +
+      '<p class="small muted">Publish the rules in the Firebase console (Firestore Database → Rules), ' +
+      'then reload this page.</p>' +
+      '<div class="join-actions">' +
+      (who ? '<span class="small muted">Signed in as ' + esc(who) + '</span>' : '') +
+      '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
+  }
+  function renderJoinWelcome() {
+    var name = joinPackName();
+    var who = name ? esc(name) : 'this Cub Scout pack';
+    // Single-pack mode: EVERYONE lands here signed out, leaders included, so the copy can't
+    // promise a view-only page — what they get depends on the role an admin gave them.
+    if (fixedPackMode()) {
+      return joinGateShell(name || 'Pack sign-in',
+        '<p class="small">Sign in to open <strong>' + who + '</strong>.</p>' +
+        '<div class="join-actions">' +
+        '<button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button>' +
+        '</div>' +
+        '<p class="small muted" style="margin-top:12px">Leaders see the planner; families get a view-only ' +
+        'calendar. A pack admin approves everyone — there’s no passphrase to type.</p>' +
+        (activeJoin()
+          ? '<p class="small muted"><button type="button" class="btn small ghost" data-act="join-forget">Not your pack? Forget this link</button></p>'
+          : ''));
+    }
+    return joinGateShell(name || 'Pack sign-up',
+      '<p class="small">You’ve been invited to follow <strong>' + who + '</strong>. ' +
+      'Sign in and you’ll see the pack calendar and the scout standings.</p>' +
+      '<div class="join-actions">' +
+      '<button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button>' +
+      '</div>' +
+      '<p class="small muted" style="margin-top:12px">Sign-in only confirms who you are — you’ll get a ' +
+      'view-only page. You can’t change anything.</p>' +
+      '<p class="small muted"><button type="button" class="btn small ghost" data-act="join-forget">Not your pack? Forget this link</button></p>');
+  }
+  function renderJoinWaiting() {
+    var who = (sync.user && (sync.user.displayName || sync.user.email)) || 'you';
+    return joinGateShell('Waiting for approval',
+      '<p class="small">Your request is with the pack leaders — you’ll see the calendar here once they approve it.</p>' +
+      '<p class="small muted">Nothing else to do; this page updates on its own.</p>' +
+      '<div class="join-actions">' +
+      '<span class="small muted">Signed in as ' + esc(who) + '</span>' +
+      '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
+  }
+  function renderJoinClosed() {
+    return joinGateShell('This pack isn’t accepting sign-ups',
+      '<p class="small">This pack isn’t accepting sign-ups right now — ask a pack leader for an invite.</p>' +
+      '<p class="small muted">If you had a link that used to work, the pack may have issued a new one. ' +
+      'A leader can send you the current link.</p>' +
+      '<div class="join-actions">' +
+      (sync.user
+        ? '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button>'
+        : '') +
+      '<button type="button" class="btn small ghost" data-act="join-forget">Forget this link</button></div>');
+  }
+
+  /* ----- Parent phase: the view-only parent app ----- */
+  // EVERY function in this block reads sync.parentView (plus pure formatters — esc/fmt/
+  // fmtDate/todayISO) and NOTHING else. `state` must never appear here: that is what makes
+  // the money, dues, leader contacts and inventory unreachable by construction, not by a
+  // conditional. The Node harness asserts this with a source scan.
+  function renderParentApp() {
+    // Join link phase — 'pending' no longer lands here at all (renderJoinWaiting does), so
+    // the old "waiting for approval, here's the calendar meanwhile" banner is gone: approval
+    // now genuinely gates the content instead of decorating it.
+    var pv = sync.parentView;
+    var h = '';
+    if (!pv) {
+      var loading = sync.mode === 'connecting' || sync.mode === 'local';
+      h += '<div class="card"><h2 class="section display">' + (loading ? 'Loading…' : 'Nothing to show yet') + '</h2>' +
+        '<p class="small muted" style="margin:0">' +
+        (loading
+          ? 'Fetching your pack’s schedule.'
+          : 'Your pack hasn’t published a schedule yet — it shows up here as soon as a leader saves a change.') +
+        '</p></div>';
+      return h + parentFooter(pv);
+    }
+    h += parentTab() === 'standings' ? renderParentStandings(pv) : renderParentSchedule(pv);
+    return h + parentFooter(pv);
+  }
+  function parentEventRow(e) {
+    var kind = e && e.kind === 'storefront' ? 'storefront' : (e && e.kind === 'meeting' ? 'meeting' : 'activity');
+    var title = String((e && e.title) || '');
+    var badge;
+    if (kind === 'storefront') badge = '<span class="ev-badge badge-store">Storefront</span>';
+    else if (kind === 'meeting') {
+      // The title already says which kind it is; the badge just carries the colour cue.
+      badge = title.indexOf('Pack') === 0
+        ? '<span class="ev-badge badge-pack">Meeting</span>'
+        : '<span class="ev-badge badge-den">Meeting</span>';
+    } else badge = '<span class="ev-badge badge-act">Activity</span>';
+    var times = (e && Array.isArray(e.times)) ? e.times : [];
+    var h = '<div class="pv-row"><div class="pv-head">' + badge +
+      '<span class="pv-title">' + esc(title) + '</span></div>' +
+      '<div class="pv-when">' + esc(fmtDate(String((e && e.date) || ''))) + '</div>';
+    if (e && e.detail) h += '<div class="pv-detail">' + esc(String(e.detail)) + '</div>';
+    if (times.length) {
+      h += '<div class="pv-times">' + times.map(function (t) {
+        return '<span class="pv-time">' + esc(String(t)) + '</span>';
+      }).join('') + '</div>';
+    }
+    return h + '</div>';
+  }
+  function renderParentSchedule(pv) {
+    var today = todayISO();
+    var evs = Array.isArray(pv.events) ? pv.events : [];
+    var upcoming = evs.filter(function (e) { return String((e && e.date) || '') >= today; });
+    var earlier = evs.filter(function (e) { return String((e && e.date) || '') < today; });
+    var h = '<div class="card"><h2 class="section display">What’s coming up</h2>';
+    if (!upcoming.length) h += '<p class="small muted" style="margin:0">Nothing scheduled yet — check back soon.</p>';
+    else upcoming.forEach(function (e) { h += parentEventRow(e); });
+    h += '</div>';
+    if (earlier.length) {
+      var open = !!ui.parentEarlierOpen;
+      h += '<div class="card"><div class="spread">' +
+        '<h2 class="section display" style="margin-bottom:0">Earlier this year</h2>' +
+        '<button type="button" class="btn small" data-act="parent-earlier" aria-expanded="' + open + '">' +
+        (open ? 'Hide' : 'Show ' + earlier.length) + '</button></div>';
+      if (open) earlier.forEach(function (e) { h += parentEventRow(e); });
+      h += '</div>';
+    }
+    return h;
+  }
+  function parentGoalBar(label, raised, goal, pct) {
+    var p = Math.max(0, Math.min(100, pct || 0));
+    return '<p class="eyebrow">' + esc(label) + '</p>' +
+      '<div class="bar" role="img" aria-label="' + esc(label) + ' ' + p + ' percent"><div class="bar-fill" style="width:' + p + '%"></div></div>' +
+      '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(raised || 0) + '</strong> of ' +
+      '<span class="money">' + fmt(goal || 0) + '</span> (' + p + '%)</p>';
+  }
+  function renderParentStandings(pv) {
+    var h = '';
+    var g = pv.goals;
+    if (g && ((g.teGoalCents || 0) > 0 || (g.cashGoalCents || 0) > 0)) {
+      h += '<div class="card"><h2 class="section display">Pack goals</h2>';
+      if ((g.teGoalCents || 0) > 0) h += parentGoalBar('Trail’s End goal', g.teRaisedCents, g.teGoalCents, g.tePct);
+      if ((g.cashGoalCents || 0) > 0) {
+        if ((g.teGoalCents || 0) > 0) h += '<hr class="divider">';
+        h += parentGoalBar('Cash donations goal', g.cashRaisedCents, g.cashGoalCents, g.cashPct);
+      }
+      h += '</div>';
+    }
+    var rows = Array.isArray(pv.standings) ? pv.standings : [];
+    h += '<div class="card"><h2 class="section display">Scout standings</h2>';
+    if (!rows.length) h += '<p class="small muted" style="margin:0">No sales recorded yet.</p>';
+    else {
+      rows.forEach(function (r, i) {
+        var pct = (r && r.goalPct != null) ? (r.goalPct + '%') : '';
+        h += '<div class="pv-stand">' +
+          '<span class="pv-rank">' + (i + 1) + '</span>' +
+          '<span class="pv-name">' + esc(String((r && r.name) || '')) +
+          ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') + '</span>' +
+          '<span class="pv-total money">' + fmt((r && r.combinedCents) || 0) + '</span>' +
+          '<span class="pv-pct">' + esc(pct) + '</span></div>';
+      });
+    }
+    h += '</div>';
+    var d = pv.derby;
+    var winners = (d && Array.isArray(d.winners)) ? d.winners : [];
+    var awards = (d && Array.isArray(d.awards)) ? d.awards : [];
+    if (winners.length || awards.length) {
+      h += '<div class="card"><h2 class="section display">' + esc(String((d && d.name) || 'Pinewood Derby')) + '</h2>';
+      if (d && d.date) h += '<p class="small muted" style="margin:0 0 8px">' + esc(fmtDate(String(d.date))) + '</p>';
+      var ord = ['1st', '2nd', '3rd'];
+      winners.forEach(function (w) {
+        var place = (w && typeof w.place === 'number' && w.place >= 1 && w.place <= 3) ? ord[w.place - 1] : '';
+        h += '<div class="pv-stand"><span class="pv-rank">' + esc(place) + '</span>' +
+          '<span class="pv-name">' + esc(String((w && w.scoutName) || '')) + '</span></div>';
+      });
+      awards.forEach(function (a) {
+        h += '<div class="pv-stand"><span class="pv-name">' + esc(String((a && a.racerName) || '')) + '</span>' +
+          '<span class="pill navy">' + esc(String((a && a.award) || 'Award')) + '</span></div>';
+      });
+      h += '</div>';
+    }
+    return h;
+  }
+  function parentFooter(pv) {
+    var who = (sync.user && (sync.user.displayName || sync.user.email)) || 'you';
+    var name = (pv && pv.packName) ? String(pv.packName) : 'your pack';
+    return '<p class="small muted pv-foot">View-only — from ' + esc(name) +
+      '. Ask a pack leader for anything you don’t see here.</p>' +
+      '<div class="row no-print" style="margin-top:8px">' +
+      '<span class="small muted">Signed in as ' + esc(who) + '</span>' +
+      '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>';
   }
 
   /* ----- Storefronts list ----- */
@@ -3569,7 +4736,12 @@
     var h = '<div class="card acct-card"><h2 class="section display">Members</h2>';
     if (sync.accountsUnavailable) {
       h += '<p class="small muted" style="margin:0">Accounts aren’t fully set up — publish the security rules from the ' +
-        'SETUP guide to manage members and enforce view-only access. Until then, everyone with the passphrase can edit.</p></div>';
+        'SETUP guide to manage members and enforce view-only access. ' +
+        // In single-pack mode this card is unreachable (the setup gate replaces the whole
+        // app), but never let the copy claim a passphrase is protecting anything.
+        (fixedPackMode()
+          ? 'Until then this device stays offline — see SETUP.md Part C.'
+          : 'Until then, everyone with the passphrase can edit.') + '</p></div>';
       return h;
     }
     var admin = isAdmin();
@@ -3600,11 +4772,12 @@
           h += rolePill(m.role) +
             '<button type="button" class="btn small primary" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="editor">Approve as Editor</button>' +
             '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="viewer">Viewer</button>' +
+            '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="parent">Parent</button>' +
             tinyDangerBtn('member-remove:' + m.uid, 'Remove ' + (m.name || m.email || 'member'));
         } else {
           var lock = isLastAdmin(m.uid);
           h += '<select class="acct-select" data-ch="member-role" data-uid="' + esc(m.uid) + '"' + (lock ? ' disabled' : '') + ' aria-label="Role for ' + esc(m.name || m.email || 'member') + '">' +
-            ['admin', 'editor', 'viewer'].map(function (r) {
+            MEMBER_ROLES.map(function (r) {
               return '<option value="' + r + '"' + (m.role === r ? ' selected' : '') + '>' + r + '</option>';
             }).join('') +
             '</select>' +
@@ -3620,19 +4793,117 @@
     if (!admin) {
       h += '<p class="small muted" style="margin:10px 0 0">Your role: <strong>' + esc(sync.myRole || 'pending') +
         '</strong>. Ask an admin to change it.</p>';
+    } else {
+      h += '<p class="small muted" style="margin:10px 0 0"><strong>admin</strong> and <strong>editor</strong> can edit everything. ' +
+        '<strong>viewer</strong> sees the whole ledger but can’t change it. <strong>parent</strong> only ever sees the ' +
+        'schedule and standings — never the budget, dues, inventory or leader contact details.</p>';
+      h += renderInvitesBlock();
     }
     h += '</div>';
     return h;
   }
+  // Parent phase — admin-only "Invite someone" form + the outstanding invite list.
+  function renderInvitesBlock() {
+    if (sync.invitesUnavailable) {
+      return '<hr class="divider"><p class="small muted" style="margin:0">Invites need the newest security rules ' +
+        '(SETUP guide, Part C) — publish them to invite people by email.</p>';
+    }
+    var h = '<hr class="divider"><p class="eyebrow">Invite someone</p>' +
+      '<form data-form="invite-member" class="row" style="align-items:flex-end">' +
+      '<label class="fld">Email<input type="email" name="email" placeholder="parent@example.com" autocomplete="off" style="width:210px"></label>' +
+      '<label class="fld">Role<select class="acct-select" name="role">' +
+      INVITE_ROLES.map(function (r) {
+        return '<option value="' + r + '"' + (r === 'parent' ? ' selected' : '') + '>' + r + '</option>';
+      }).join('') +
+      '</select></label>' +
+      '<button type="submit" class="btn small primary">Send invite</button>' +
+      '</form>' +
+      '<p class="small muted" style="margin:6px 0 0">They sign in with Google using that address and land straight in ' +
+      'the role you picked — no approval step. Nothing is emailed from here; send them the page link yourself.</p>';
+    if (sync.invites.length) {
+      h += '<p class="eyebrow" style="margin-top:12px">Invited — hasn’t signed in yet</p><div class="acct-list">';
+      sync.invites.forEach(function (iv) {
+        h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(iv.email) + '</span></div>' +
+          '<div class="acct-ctl">' + rolePill(iv.role) +
+          tinyDangerBtn('invite-revoke:' + iv.email, 'Revoke the invite for ' + iv.email) +
+          '</div></div>';
+      });
+      h += '</div>';
+    }
+    return h;
+  }
+  // ---- Join link phase: the admin "Parent sign-up link" card (Pack tab, below Members) ----
+  // Admins only, and only once accounts are actually in force. It writes ONE document,
+  // packs/{docId}/public/join — never the ledger.
+  function renderJoinCard() {
+    if (!FIREBASE_CONFIG || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
+    var h = '<div class="card"><h2 class="section display">Parent sign-up link</h2>';
+    if (sync.joinUnavailable) {
+      return h + '<p class="small muted" style="margin:0">The sign-up link needs the newest security rules ' +
+        '(SETUP guide, Part C) — publish them to hand parents a self-serve link.</p></div>';
+    }
+    var open = joinOpen();
+    h += '<p class="small muted" style="margin:0 0 8px">One link you can send to everyone — leaders and families ' +
+      'alike. They tap <strong>Sign in with Google</strong>, land in your approval queue, and you pick their ' +
+      'access level when you accept them. No passphrase, ever.</p>' +
+      '<label class="join-opt"><input type="checkbox" data-ch="join-open"' + (open ? ' checked' : '') + '>' +
+      '<span>Let people request access with a link</span></label>';
+    if (open) {
+      var url = joinLinkUrl();
+      h += '<p class="eyebrow" style="margin-top:12px">The link</p>' +
+        '<div class="join-link-row">' +
+        '<input class="join-link-in" id="joinLinkInput" readonly value="' + esc(url) + '" aria-label="Parent sign-up link">' +
+        '<button type="button" class="btn small" data-act="join-copy">Copy link</button>' +
+        dangerBtn('join-rotate', 'New code') +
+        '</div>' +
+        '<p class="small muted" style="margin:8px 0 0">The link alone grants <strong>nothing</strong> — it only ' +
+        'puts someone in your approval queue. They wait on a “waiting for approval” screen, showing up as ' +
+        '<strong>pending</strong> in Members above, until you accept them as Editor, Viewer or Parent. ' +
+        'Rotate the code any time to stop new requests from an old link.</p>';
+    } else {
+      h += '<p class="small muted" style="margin:6px 0 0">Off — nobody can request access with the link. ' +
+        'Invite people by email in the Members card instead.</p>';
+    }
+    h += '<hr class="divider">' +
+      '<label class="join-opt"><input type="checkbox" data-ch="join-standings"' + (standingsEnabled() ? ' checked' : '') + '>' +
+      '<span>Include scout standings in the parent view</span></label>' +
+      '<p class="small muted" style="margin:2px 0 0">Untick for a calendar-only page: scout names, totals, goal ' +
+      'bars and derby winners are left out of the published copy entirely — not just hidden.</p>';
+    return h + '</div>';
+  }
   function syncModeLine() {
     if (!FIREBASE_CONFIG) return 'Device-only mode — everything is saved in this browser.';
-    if (sync.mode === 'online') return 'Synced — everyone using this passphrase sees the same live ledger.';
+    var fixed = fixedPackMode();
+    if (sync.mode === 'online') {
+      return fixed
+        ? 'Synced — everyone approved for this pack sees the same live ledger.'
+        : 'Synced — everyone using this passphrase sees the same live ledger.';
+    }
     if (sync.mode === 'connecting') return 'Connecting to the shared ledger…';
     if (sync.mode === 'offline') {
       return 'Offline — changes are saved on this device and will sync when the connection returns.' +
         (sync.error ? ' (' + sync.error + ')' : '');
     }
+    if (fixed) return 'Device-only for now — sign in with Google to open your pack’s shared ledger.';
     return 'Device-only mode — enter a passphrase below to join your pack’s shared ledger.';
+  }
+  // Single-pack mode switch-over helper. With PACK_DOC_ID still null this hands the admin —
+  // and ONLY the admin, who is the one person whose device can compute it — the pack's doc
+  // id to paste into the constant. Once it IS set the id is already in the file, so there is
+  // nothing to copy: just a note that the passphrase is gone.
+  function renderPackIdLine() {
+    if (fixedPackMode()) {
+      return '<p class="small muted" style="margin:10px 0 0">Single-pack mode — no passphrase needed.</p>';
+    }
+    if (!isAdmin() || !sync.docId) return '';
+    return '<hr class="divider">' +
+      '<p class="eyebrow">Pack ID</p>' +
+      '<div class="pack-id-row">' +
+      '<code class="pack-id">' + esc(sync.docId) + '</code>' +
+      '<button type="button" class="btn small" data-act="pack-id-copy">Copy</button>' +
+      '</div>' +
+      '<p class="small muted" style="margin:6px 0 0">Paste this into <code>var PACK_DOC_ID</code> in ' +
+      'index.html to drop the passphrase for good (publish the Part C rules first).</p>';
   }
   // Wave 19(4) — shared renewal-due predicate ('YYYY-MM' month has arrived or passed).
   // Used by the leader pills, the scout roster pills, and the monthly digest.
@@ -3699,11 +4970,15 @@
       '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc((SYNC_PILL[sync.mode] || SYNC_PILL.local).label) + '</span> ' +
       esc(syncModeLine()) + '</p>';
     if (FIREBASE_CONFIG) {
-      h += '<div class="row">' +
-        '<label class="fld">Shared passphrase<input data-ch="sync-pass" value="' + esc(syncPass()) + '" placeholder="e.g. pack569-popcorn" autocomplete="off" style="width:220px"></label>' +
-        '</div>' +
-        '<p class="small muted" style="margin:8px 0 0">Every leader types the same passphrase to share one live ledger. ' +
-        'Changing it switches this device to a <strong>different</strong> shared copy — it does not rename or move the current one.</p>';
+      // Single-pack mode: the pack id is baked into the page, so there is no passphrase field
+      // at all — identity IS the access control. Passphrase mode below is unchanged.
+      if (!fixedPackMode()) {
+        h += '<div class="row">' +
+          '<label class="fld">Shared passphrase<input data-ch="sync-pass" value="' + esc(syncPass()) + '" placeholder="e.g. pack569-popcorn" autocomplete="off" style="width:220px"></label>' +
+          '</div>' +
+          '<p class="small muted" style="margin:8px 0 0">Every leader types the same passphrase to share one live ledger. ' +
+          'Changing it switches this device to a <strong>different</strong> shared copy — it does not rename or move the current one.</p>';
+      }
       // Google identity (optional accounts layer). Without it, the app behaves exactly as
       // before — anyone with the passphrase can edit.
       if (sync.user) {
@@ -3711,19 +4986,29 @@
         h += '<p class="small acct-signed" style="margin:10px 0 0">Signed in as <strong>' + esc(sync.user.displayName || sync.user.email || 'you') + '</strong>' +
           (sync.user.email ? ' <span class="muted">(' + esc(sync.user.email) + ')</span>' : '') + roleBit + '</p>' +
           '<div class="row" style="margin-top:6px"><button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>';
+      } else if (fixedPackMode()) {
+        h += '<div class="row" style="margin-top:10px"><button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button></div>' +
+          '<p class="small muted" style="margin:6px 0 0">Sign in to open the pack. A pack admin decides whether you ' +
+          '<strong>edit</strong>, are <strong>view-only</strong>, or see the family calendar.</p>';
       } else {
         h += '<div class="row" style="margin-top:10px"><button type="button" class="btn" data-act="sign-in-google">Sign in with Google</button></div>' +
           '<p class="small muted" style="margin:6px 0 0">Optional — sign in to manage who can <strong>edit</strong> vs <strong>view-only</strong>. ' +
           'The first person to sign in becomes the pack admin; everyone else waits for approval. Without signing in, anyone with the passphrase can edit (as today).</p>';
       }
+      h += renderPackIdLine();
     } else {
       h += '<p class="small muted" style="margin:8px 0 0">Sharing isn’t set up yet — a leader pastes the pack’s Firebase config into this file (see the SETUP guide) to turn it on. ' +
         'Until then the ledger lives on this device only; use Share &amp; backup below to move data.</p>';
     }
-    h += '<p class="small muted" style="margin:8px 0 0"><strong>Privacy:</strong> use first names only. Anyone who knows the passphrase can view and edit the shared ledger.</p></div>';
+    h += '<p class="small muted" style="margin:8px 0 0"><strong>Privacy:</strong> use first names only. ' +
+      (fixedPackMode()
+        ? 'Everyone an admin approves as editor or viewer can see the whole shared ledger.'
+        : 'Anyone who knows the passphrase can view and edit the shared ledger.') + '</p></div>';
 
     // Members card (accounts layer — only renders when signed in with Google).
     h += renderMembersCard();
+    // Join link phase — self-serve parent sign-up link (admins only).
+    h += renderJoinCard();
 
     // Wave 17 — Share & backup, moved beside the sync card (was on the old Totals tab).
     // The hidden importFile input moves with it; its change handler is document-level.
@@ -4840,7 +6125,8 @@
       var cnt = function (arr) { return Array.isArray(arr) ? arr.length : 0; };
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Two copies of this ledger"><div class="overlay-inner"><div class="card">' +
         '<h2 class="section display">Two copies of this ledger</h2>' +
-        '<p>This device and the shared cloud copy for this passphrase both have real data, and they don’t match. ' +
+        '<p>This device and the shared cloud copy for ' + (fixedPackMode() ? 'this pack' : 'this passphrase') +
+        ' both have real data, and they don’t match. ' +
         'Pick which one everyone should use — the other copy is overwritten.</p>' +
         '<p class="small muted">Cloud copy: <strong>' + cnt(rc.scouts) + ' scouts</strong> · ' + cnt(rc.storefronts) + ' storefronts · ' + cnt(rc.entries) + ' entries.<br>' +
         'This device: <strong>' + state.scouts.length + ' scouts</strong> · ' + state.storefronts.length + ' storefronts · ' + state.entries.length + ' entries.</p>' +
@@ -6406,6 +7692,10 @@
   // it again in afterprint. No toast.
   var printAutoOpened = false;
   window.addEventListener('beforeprint', function () {
+    // Parent phase — the share-summary overlay is built from `state`; a parent must never
+    // get it. Their schedule prints instead (see the parent-mode print rule in the CSS).
+    // Join gates have nothing to print either.
+    if (parentMode() || gateMode()) return;
     if (!ui.overlay) { printAutoOpened = true; ui.overlay = { kind: 'summary' }; render(); }
   });
   window.addEventListener('afterprint', function () {
@@ -6440,7 +7730,18 @@
     handleForm(f);
   });
 
+  // Parent phase — the parent app only ever emits these four actions. Anything else that
+  // somehow reaches the handler in that mode is ignored, so no code path can mutate the
+  // ledger or read `state` on a parent's device.
+  var PARENT_ACTS = ['parent-tab', 'parent-earlier', 'sign-out-google', 'toast-action'];
+  // Join link phase — the three gate screens emit only these. Anything else that somehow
+  // reaches the handler while a gate is up is ignored, so no code path can read or mutate
+  // the ledger on a link visitor's / not-yet-approved user's device.
+  var GATE_ACTS = ['sign-in-google', 'sign-out-google', 'join-forget', 'toast-action'];
   function handleAction(act, el) {
+    var gm = gateMode();
+    if (gm) { if (GATE_ACTS.indexOf(act) === -1) return; }
+    else if (parentMode() && PARENT_ACTS.indexOf(act) === -1) return;
     // Wave 18(21) — the Undo button inside the current toast.
     if (act === 'toast-action') {
       var tFn = toastAction;
@@ -6453,6 +7754,13 @@
     }
     if (act === 'tab') { ui.tab = el.dataset.tab; ui.armed = null; ui.resetScroll = true; render(); return; }
     if (act === 'goto-pack') { ui.tab = 'pack'; ui.armed = null; ui.resetScroll = true; render(); return; }
+    // ---- Parent phase (the only navigation the parent app has) ----
+    if (act === 'parent-tab') {
+      ui.parentTab = el.dataset.tab === 'standings' ? 'standings' : 'schedule';
+      ui.resetScroll = true;
+      render(); return;
+    }
+    if (act === 'parent-earlier') { ui.parentEarlierOpen = !ui.parentEarlierOpen; render(); return; }
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }
@@ -6460,6 +7768,42 @@
     if (act.indexOf('member-remove:') === 0) {
       var rmUid = act.slice('member-remove:'.length);
       arm(act, function () { removeMember(rmUid); });
+      return;
+    }
+    if (act.indexOf('invite-revoke:') === 0) {
+      var rvEmail = act.slice('invite-revoke:'.length);
+      arm(act, function () { revokeInvite(rvEmail); });
+      return;
+    }
+    // ---- Join link phase ----
+    if (act === 'join-copy') {
+      var jUrl = joinLinkUrl();
+      if (!jUrl) return;
+      copyText(jUrl, function (ok) { showToast(ok ? 'Link copied' : 'Couldn’t copy — select the link and copy it.'); });
+      return;
+    }
+    // Single-pack switch-over: copy this pack's doc id for `var PACK_DOC_ID` (admins only —
+    // renderPackIdLine is the only place that renders this button).
+    if (act === 'pack-id-copy') {
+      if (!isAdmin() || !sync.docId) return;
+      copyText(sync.docId, function (okCopy) {
+        showToast(okCopy ? 'Pack ID copied' : 'Couldn’t copy — select the id and copy it.');
+      });
+      return;
+    }
+    if (act === 'join-rotate') {
+      arm('join-rotate', function () {
+        writeJoinConfig({ code: newJoinCode() }, 'New link created — the old link no longer works.');
+      });
+      return;
+    }
+    // Escape hatch on the gate screens: drop the stored link and go back to a plain device.
+    if (act === 'join-forget') {
+      clearJoin();
+      sync.joinRejected = null;
+      syncStop();
+      syncStart();
+      render();
       return;
     }
     if (act === 'add-leader') {
@@ -7031,6 +8375,9 @@
   }
 
   function handleChange(el) {
+    // Parent phase / join gates — neither renders an editable control, so nothing here
+    // should ever fire for them.
+    if (parentMode() || gateMode()) return;
     var ch = el.dataset.ch;
     // Wave 11 — new-storefront name draft is transient; sync it without persisting/re-rendering.
     if (ch === 'sf-new-name') { ui.sfDraft.name = el.value; return; }
@@ -7096,6 +8443,9 @@
     if (ch === 'sync-pass') { setSyncPass(el.value); render(); return; }
     // Accounts: admin changes a member's role (writes directly to the members doc, NOT via commit()).
     if (ch === 'member-role') { setMemberRole(el.dataset.uid, el.value); return; }
+    // Join link phase — the self-serve config doc (admin-only; never touches the ledger).
+    if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
+    if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
     if (ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note') {
       var scEd = getScout(el.dataset.id);
@@ -7252,8 +8602,14 @@
   }
 
   function handleForm(f) {
+    if (parentMode() || gateMode()) return; // Parent phase / join gates — neither renders a form
     var kind = f.dataset.form;
     var fd = new FormData(f);
+    // Parent phase — admin invites someone by email (accounts layer; never touches the ledger).
+    if (kind === 'invite-member') {
+      createInvite(String(fd.get('email') || ''), String(fd.get('role') || ''));
+      return;
+    }
     if (kind === 'add-scout') {
       var name = String(fd.get('name') || '').trim();
       if (!name) return;
@@ -7433,6 +8789,9 @@
   }
 
   document.getElementById('fleurSlot').innerHTML = FLEUR;
+  // Join link phase — read ?pack=&join= (or the hash equivalent) BEFORE the first paint, so
+  // a link visitor's very first frame is the welcome gate, and scrub them out of the URL.
+  consumeJoinParams();
   render();
   // Wave 15 — surface a corrupt-load only after toastHost is rendered into a live page.
   if (loadBackupKept) showToast('Couldn’t read saved data — a backup copy was kept.');
