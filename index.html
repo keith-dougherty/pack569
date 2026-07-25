@@ -311,6 +311,25 @@
   .mo-day:first-of-type { margin-top: 2px; }
   .mo-row.sel { background: var(--accent-soft); border-radius: 8px; padding-left: 8px; padding-right: 8px; }
   .mo-row .lr-name { display: flex; align-items: center; gap: 7px; }
+  .mo-row.open { border-bottom-color: transparent; }
+  .mo-row.open .lr-name { color: var(--accent-text); }
+  .mo-chev { color: var(--ink-soft); flex: 0 0 auto; font-size: 0.85rem; }
+  /* Expanded agenda row: read-only detail, indented under its row. */
+  .mo-detail {
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; margin: 0 0 10px; font-size: 0.86rem;
+  }
+  .mo-line { display: flex; gap: 8px; padding: 3px 0; align-items: baseline; flex-wrap: wrap; }
+  .mo-line + .mo-line { border-top: 1px dashed var(--line); }
+  .mo-key {
+    flex: 0 0 92px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 700;
+    letter-spacing: 0.03em; text-transform: uppercase;
+  }
+  .mo-line > span:last-child { flex: 1 1 140px; min-width: 0; }
+  .mo-shift .mo-key {
+    flex: 0 0 132px; text-transform: none; font-size: 0.78rem; font-weight: 650;
+    color: var(--ink); font-variant-numeric: tabular-nums;
+  }
   .dot-store { background: var(--accent); }
   .dot-store-open { background: transparent; border: 1.6px solid var(--accent); }
   .dot-pack { background: var(--evt-pack); }
@@ -1042,10 +1061,19 @@
     // Wave 17 — per-scout activities (camp fees) and family-paid fees. Booleans only;
     // amounts still live in estCents/actualCents. familyPays is only meaningful alongside
     // perScout (computeBudget gates on both).
+    // Wave 20 — activities carry event detail: a canonical 'HH:MM' start/end (same shape
+    // as meetings), a location, free-text notes, and the source calendar's UID so a
+    // re-import updates the same row instead of duplicating it. All absent on older
+    // ledgers → '' , which renders exactly as before.
     d.budget.activities.forEach(function (a) {
       if (!a || typeof a !== 'object') return;
       a.perScout = a.perScout === true;
       a.familyPays = a.familyPays === true;
+      a.time = parseLegacyTime(a.time);
+      a.endTime = parseLegacyTime(a.endTime);
+      a.location = typeof a.location === 'string' ? a.location : '';
+      a.note = typeof a.note === 'string' ? a.note : '';
+      a.sourceUid = typeof a.sourceUid === 'string' ? a.sourceUid : '';
     });
     d.budget.expenses.forEach(function (e) {
       if (!e || typeof e !== 'object') return;
@@ -1328,6 +1356,7 @@
     sfDraft: { name: '', dates: [] }, // Wave 11 — transient new-storefront draft (name + queued dates); NOT persisted
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
     repeatOffer: null,  // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
+    agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
     parentTab: 'schedule',    // 'schedule' | 'standings'
     parentEarlierOpen: false  // "Earlier this year" disclosure on the parent Schedule tab
@@ -1417,6 +1446,9 @@
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  // Wave 20 — first line only. Imported locations arrive as "Venue\n123 Main St, City…",
+  // which is far too long for a one-line row; the full text still shows in the detail.
+  function firstLine(s) { return String(s == null ? '' : s).split('\n')[0].trim(); }
   // Wave 7: times are stored canonically as 24-hour "HH:MM" (what <input type="time"> emits),
   // or '' when unset. fmtClock renders a friendly 12-hour label for display.
   function fmtClock(t) {
@@ -2144,7 +2176,7 @@
     var added = 0;
     SEED_ACTIVITIES.forEach(function (t) {
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot
-      state.budget.activities.push({ id: uid(), slot: t.slot, name: t.name, date: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push({ id: uid(), slot: t.slot, name: t.name, date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
       added += 1;
     });
     if (added) {
@@ -4090,9 +4122,83 @@
     return !s.scouts.length && !s.storefronts.length && !s.meetings.length && !s.leaders.length;
   }
 
+  // Wave 20 — the inline panel an expanded month-agenda row shows. READ-ONLY detail plus
+  // the buttons that lead to the editable record (the day detail below the calendar, or
+  // the storefront's own screen) — no inputs here, so nothing collides with the editors
+  // that already exist for these same events elsewhere on the page.
+  function agendaDetail(e, iso) {
+    // One "key: value" line; the value may carry markup, the label never does.
+    // cls 'mo-shift' widens the key column for time ranges (which don't fit the
+    // uppercase label column and read better in their original case).
+    function line(label, value, cls) {
+      return '<div class="mo-line' + (cls ? ' ' + cls : '') + '"><span class="mo-key">' + esc(label) + '</span><span>' + value + '</span></div>';
+    }
+    var h = '<div class="mo-detail">';
+    if (e.type === 'storefront') {
+      var sf = e.sf;
+      var cov = storefrontCoverage(sf);
+      var tot = storefrontTotals(sf);
+      h += line('When', esc(fmtDate(sf.date)));
+      h += line('Shifts', cov.total
+        ? (cov.covered + ' of ' + cov.total + ' covered' + (cov.full ? ' — fully staffed' : ''))
+        : 'No shifts added yet');
+      if (tot.combined) h += line('Recorded', '<span class="money">' + fmt(tot.combined) + '</span> (' + fmt(tot.sales) + ' sales · ' + fmt(tot.don) + ' donations)');
+      if (storefrontNeedsAdults(sf)) {
+        h += line('Adults', '<span class="pill bad">Needs two-deep</span> at least one shift has scouts and fewer than 2 adults');
+      }
+      (sf.blocks || []).forEach(function (b, i) {
+        var when = fmtTimeRange(b.start, b.end) || ('Block ' + (i + 1));
+        var kids = (b.assignments || []).map(function (as) {
+          var sc = getScout(as.scoutId);
+          return sc ? sc.name : '(removed scout)';
+        });
+        var adults = blockAdultLeaders(b).map(function (l) { return l.name || 'Leader'; });
+        var who = kids.length ? esc(kids.join(', ')) : '<span class="muted">nobody assigned</span>';
+        if (adults.length) who += ' <span class="muted">· adults: ' + esc(adults.join(', ')) + '</span>';
+        else if (kids.length) who += ' <span class="pill bad">no adults</span>';
+        h += line(when, who, 'mo-shift');
+      });
+      h += '<div class="row no-print" style="margin-top:8px">' +
+        '<button type="button" class="btn small primary" data-act="open-storefront" data-id="' + sf.id + '">Open storefront</button>' +
+        '<button type="button" class="btn small" data-act="cal-jump-day" data-date="' + iso + '">Show this day</button></div>';
+    } else if (e.type === 'meeting') {
+      var m = e.m;
+      var mKey = 'mtg:' + m.id;
+      h += line('When', esc(fmtDate(m.date)) + (fmtClock(m.time) ? ' · ' + esc(fmtClock(m.time)) : ' <span class="muted">· no time set</span>'));
+      h += line('Who', m.kind === 'pack' ? 'Whole pack' : (m.den ? esc(m.den) + ' den' : 'All dens'));
+      if (m.adventure) h += line('Adventure', esc(m.adventure));
+      h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
+      h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(mKey))));
+      var marked = state.attendance[m.id] || {};
+      var attN = Object.keys(marked).filter(function (k) { return marked[k]; }).length;
+      if (attN) h += line('Attendance', attN + ' checked in');
+      h += '<div class="row no-print" style="margin-top:8px">' +
+        '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this meeting</button></div>';
+    } else {
+      var a = e.a;
+      var aWhen = fmtTimeRange(a.time, a.endTime);
+      h += line('When', esc(fmtDate(a.date)) + (aWhen ? ' · ' + esc(aWhen) : '') +
+        ' <span class="muted">· ' + esc(slotLabel(a.slot)) + ' in the program year</span>');
+      if (a.location) h += line('Where', esc(a.location).replace(/\n/g, '<br>'));
+      if (a.note) h += line('Details', esc(a.note).replace(/\n/g, '<br>'));
+      if (a.estCents) {
+        h += line('Estimated', '<span class="money">' + fmt(a.estCents) + '</span>' +
+          (a.perScout ? ' per scout' + (a.familyPays ? ' — families pay' : '') : ' total'));
+      } else {
+        h += line('Estimated', '<span class="muted">no cost entered</span>');
+      }
+      if (a.actualCents) h += line('Actual', '<span class="money">' + fmt(a.actualCents) + '</span>' + (a.perScout ? ' per scout' : ''));
+      h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary('act:' + a.id))));
+      h += '<div class="row no-print" style="margin-top:8px">' +
+        '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this activity</button>' +
+        '<button type="button" class="btn small" data-act="tab" data-tab="budget">Budget tab</button></div>';
+    }
+    return h + '</div>';
+  }
+
   // Wave 20 — month agenda: every dated thing in the shown month, chronological, listed
-  // under the calendar grid so the month reads without tapping day by day. Pure read;
-  // each row jumps to (selects) its calendar day. Mirrors what monthlyDigest() prints.
+  // under the calendar grid so the month reads without tapping day by day. Rows expand
+  // in place (agendaDetail) and mirror what monthlyDigest() prints.
   function monthAgendaCard(mk, today) {
     var byDay = dayEventsForMonth(mk);
     var days = Object.keys(byDay).map(Number).sort(function (a, b) { return a - b; });
@@ -4131,18 +4237,25 @@
           evKey = 'mtg:' + e.m.id;
         } else {
           label = e.a.name || 'Activity';
+          // Wave 20 — imported/entered event detail leads the meta line; cost trails it.
+          var actWhen = fmtTimeRange(e.a.time, e.a.endTime);
+          if (actWhen) meta.push(actWhen);
+          if (e.a.location) meta.push(firstLine(e.a.location));
           if (e.a.estCents) meta.push(fmt(e.a.estCents) + (e.a.perScout ? ' / scout' : ''));
           evKey = 'act:' + e.a.id;
         }
         var pill = rsvpPill(evKey);
-        h += '<div class="list-row mo-row' + (iso === ui.calSelectedDate ? ' sel' : '') + '"' +
-          ' data-act="cal-jump-day" data-date="' + iso + '" role="button" tabindex="0"' +
+        var open = !!ui.agendaOpen[evKey];
+        h += '<div class="list-row mo-row' + (iso === ui.calSelectedDate ? ' sel' : '') + (open ? ' open' : '') + '"' +
+          ' data-act="agenda-toggle" data-key="' + evKey + '" role="button" tabindex="0"' +
+          ' aria-expanded="' + open + '"' +
           ' aria-label="' + esc(label + ', ' + fmtDate(iso)) + '">' +
           '<div style="min-width:0"><div class="lr-name">' +
           '<span class="cal-dot2 ' + dotClass(e) + '"></span><span>' + esc(label) + '</span>' +
           (pill ? ' ' + pill : '') + '</div>' +
           (meta.length ? '<div class="small muted">' + esc(meta.join(' · ')) + '</div>' : '') +
-          '</div><span class="muted" aria-hidden="true">›</span></div>';
+          '</div><span class="mo-chev" aria-hidden="true">' + (open ? '▾' : '›') + '</span></div>';
+        if (open) h += agendaDetail(e, iso);
       });
     });
 
@@ -4199,6 +4312,8 @@
           nuKey = 'mtg:' + e.m.id;
         } else {
           nuLabel = e.a.name || 'Activity';
+          var nuActTime = fmtClock(e.a.time);
+          if (nuActTime) nuLabel += ' · ' + nuActTime;
           nuKey = 'act:' + e.a.id;
         }
         var nuPill = rsvpPill(nuKey);
@@ -4262,7 +4377,9 @@
       '<p class="small muted" style="margin:8px 0 0">Export a .ics and import it into BAND on a computer ' +
       '(band.us → Event → ⋯ → Import Events), or subscribe in Google/Apple/Outlook. Import brings a .ics ' +
       'from BAND back in as dated activities you can adjust — from a downloaded file, or by pasting a ' +
-      'calendar link (or its text). BAND has no live sync, so this is a one-time pull, not a subscription — ' +
+      'calendar link (or its text). Each event keeps its <strong>time, location, and details</strong>, ' +
+      'and re-importing an updated calendar refreshes those events in place instead of duplicating them. ' +
+      'BAND has no live sync, so this is a one-time pull, not a subscription — ' +
       'and only dated events (storefronts, meetings, dated activities) export.</p></div>';
 
     // Selected-day detail (Wave 20: sits directly under the month list so tapping an
@@ -4285,6 +4402,14 @@
               '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + e.a.id + '" value="' + dollars(e.a.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
               tinyDangerBtn('del-activity:' + e.a.id, 'Remove activity') +
               '</div>' +
+              // Wave 20 — event detail: start/end time, location, notes. Imported from a
+              // BAND (or Google/Apple) calendar, and editable by hand either way.
+              '<div class="arow">' +
+              '<label class="fld small">Starts<input type="time" class="time-in" data-ch="act-time" data-id="' + e.a.id + '" value="' + esc(e.a.time || '') + '" aria-label="Start time"></label>' +
+              '<label class="fld small">Ends<input type="time" class="time-in" data-ch="act-endtime" data-id="' + e.a.id + '" value="' + esc(e.a.endTime || '') + '" aria-label="End time"></label>' +
+              '</div>' +
+              '<input data-ch="act-location" data-id="' + e.a.id + '" value="' + esc(e.a.location || '') + '" placeholder="Location (optional)" style="width:100%;margin-top:6px">' +
+              '<textarea data-ch="act-note" data-id="' + e.a.id + '" rows="2" placeholder="Details / notes (optional)" style="width:100%;margin-top:6px">' + esc(e.a.note || '') + '</textarea>' +
               renderRsvpBlock('act:' + e.a.id) + '</div>';
           } else h += renderMeetingRow(e.m);
         });
@@ -6079,7 +6204,12 @@
           var extra = (mtgTime ? ' at ' + mtgTime : '') + (e.m.note ? ' — ' + e.m.note : '');
           evLines.push('- ' + when + ': ' + label + extra + goingNote('mtg:' + e.m.id));
         } else if (e.type === 'activity') {
-          evLines.push('- ' + when + ': ' + (e.a.name || 'Activity') + goingNote('act:' + e.a.id));
+          // Wave 20 — a parent email is exactly where the time and place matter most.
+          var actWhen = fmtTimeRange(e.a.time, e.a.endTime);
+          evLines.push('- ' + when + ': ' + (e.a.name || 'Activity') +
+            (actWhen ? ' at ' + actWhen : '') +
+            (e.a.location ? ' — ' + firstLine(e.a.location) : '') +
+            goingNote('act:' + e.a.id));
         }
       });
     });
@@ -6855,20 +6985,35 @@
       if (m.note) props.push('DESCRIPTION:' + icsEscape(m.note));
       ev(props);
     });
-    // Dated activities — all-day, end-exclusive. Undated activities are skipped.
+    // Dated activities. Wave 20 — timed when a start time is known (end time, or +1h),
+    // all-day end-exclusive otherwise. Undated activities are skipped.
     state.budget.activities.forEach(function (a) {
       if (!a.date) return;
-      var props = ['UID:act-' + a.id + '@ideal-year-of-scouting', 'DTSTAMP:' + stamp,
-        'DTSTART;VALUE=DATE:' + icsDate(a.date),
-        'DTEND;VALUE=DATE:' + icsNextDay(a.date),
-        'SUMMARY:' + icsEscape(a.name || 'Activity')];
-      if (a.estCents) props.push('DESCRIPTION:' + icsEscape('Estimated ' + fmt(a.estCents)));
+      // Round-trip the source UID so re-importing our own export lands on the same rows in
+      // BAND (and re-importing BAND's export lands on the same rows here).
+      var props = ['UID:' + (a.sourceUid || ('act-' + a.id + '@ideal-year-of-scouting')), 'DTSTAMP:' + stamp];
+      if (a.time) {
+        // Explicit end time when we have one, otherwise +1 hour (same rule as meetings).
+        props.push('DTSTART:' + icsDate(a.date) + 'T' + icsTime(a.time) + '00');
+        props.push('DTEND:' + icsDate(a.date) + 'T' +
+          (a.endTime ? icsTime(a.endTime) : icsEndPlusHour(a.time)) + '00');
+      } else {
+        props.push('DTSTART;VALUE=DATE:' + icsDate(a.date));
+        props.push('DTEND;VALUE=DATE:' + icsNextDay(a.date));
+      }
+      props.push('SUMMARY:' + icsEscape(a.name || 'Activity'));
+      if (a.location) props.push('LOCATION:' + icsEscape(a.location));
+      var desc = [];
+      if (a.note) desc.push(a.note);
+      if (a.estCents) desc.push('Estimated ' + fmt(a.estCents) + (a.perScout ? ' per scout' : ''));
+      if (desc.length) props.push('DESCRIPTION:' + icsEscape(desc.join('\n\n')));
       ev(props);
     });
     lines.push('END:VCALENDAR');
     return lines.map(icsFold).join('\r\n') + '\r\n';
   }
-  // Parse an .ics into [{ name, date:'YYYY-MM-DD', time:'HH:MM'|'' }]. Skips undated events.
+  // Parse an .ics into [{ name, date:'YYYY-MM-DD', time:'HH:MM'|'', endTime, endDate,
+  // location, note, uid }]. Skips undated events.
   function parseICS(text) {
     var raw = String(text == null ? '' : text).replace(/\r\n|\r/g, '\n');
     // Unfold: a line starting with a space or tab continues the previous line.
@@ -6902,7 +7047,24 @@
       if (ln === 'END:VEVENT') {
         if (cur) {
           var dt = parseDT(cur.dt);
-          if (dt) out.push({ name: cur.summary || '', date: dt.date, time: dt.time });
+          if (dt) {
+            // Wave 20 — carry the whole event through, not just name + date. BAND's export
+            // (PRODID …BAND Calendar…) fills SUMMARY, DESCRIPTION, LOCATION, DTSTART/DTEND
+            // with a TZID, and a stable UID; other hosts fill whatever they fill.
+            var end = cur.dtend ? parseDT(cur.dtend) : null;
+            out.push({
+              name: cur.summary || '',
+              date: dt.date,
+              time: dt.time,
+              // An end time is only meaningful when it lands on the same day — a
+              // multi-day event's DTEND would read as a nonsense "ends at" on the row.
+              endTime: (end && end.date === dt.date) ? end.time : '',
+              endDate: end ? end.date : '',
+              location: icsCleanText(cur.location),
+              note: icsCleanText(cur.description),
+              uid: String(cur.uid || '').trim()
+            });
+          }
         }
         inEvent = false; cur = null; return;
       }
@@ -6913,9 +7075,24 @@
       var val = ln.slice(ci + 1);
       if (prop === 'SUMMARY') cur.summary = unesc(val);
       else if (prop === 'DTSTART') cur.dt = val;
+      else if (prop === 'DTEND') cur.dtend = val;
       else if (prop === 'DESCRIPTION') cur.description = unesc(val);
+      else if (prop === 'LOCATION') cur.location = unesc(val);
+      else if (prop === 'UID') cur.uid = val;
     });
     return out;
+  }
+  // Tidy an imported LOCATION/DESCRIPTION: collapse the runs of blank lines BAND's
+  // rich-text descriptions carry, drop its stock "You can see the RSVP status…" and
+  // "(Someone added)" trailers, and trim. Newlines inside are preserved (single).
+  function icsCleanText(v) {
+    return String(v == null ? '' : v)
+      .replace(/\r/g, '')
+      .replace(/\n?You can see the RSVP status of this event in BAND\.?/gi, '')
+      .replace(/\n?\([^()\n]*\badded\)\s*$/i, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{2,}/g, '\n')
+      .trim();
   }
   // Parse .ics text and add its events as dated activities, skipping duplicates. Shared by
   // the file picker and the paste box. `noneMsg` is shown when the text held no events.
@@ -6923,23 +7100,56 @@
     var events = [];
     try { events = parseICS(String(text)); } catch (e) { events = []; }
     if (!events.length) { showToast(noneMsg || 'No calendar events found.'); return 0; }
-    var added = 0, skipped = 0;
+    var added = 0, updated = 0;
+    // Wave 20 — match an incoming event to a row we already have, in order of confidence:
+    //  1. the source UID (BAND's is stable across re-exports — the reliable key),
+    //  2. same date + same name, so pre-Wave-20 imports and hand-typed rows adopt detail
+    //     instead of duplicating. Legacy imports stored the time inside the name
+    //     ("Picnic (6:30 PM)"), so the comparison strips that suffix.
+    function bareName(s) {
+      return String(s || '').replace(/\s*\((?:1[0-2]|0?[1-9]):[0-5]\d\s*[AaPp]\.?[Mm]\.?\)\s*$/, '').trim().toLowerCase();
+    }
+    function findExisting(evt) {
+      var byUid = evt.uid ? state.budget.activities.filter(function (a) { return a.sourceUid && a.sourceUid === evt.uid; })[0] : null;
+      if (byUid) return byUid;
+      var target = bareName(evt.name);
+      return state.budget.activities.filter(function (a) {
+        return a.date === evt.date && bareName(a.name) === target;
+      })[0] || null;
+    }
     events.forEach(function (evt) {
-      var name = evt.name + (evt.time ? ' (' + fmtClock(evt.time) + ')' : '');
-      var lower = name.toLowerCase();
-      var dupe = state.budget.activities.some(function (a) {
-        return a.date === evt.date && String(a.name || '').toLowerCase() === lower;
-      });
-      if (dupe) { skipped++; return; }
+      var name = evt.name || 'Event';
+      var found = findExisting(evt);
+      if (found) {
+        // Refresh from the calendar (it's the source of record for these fields) but never
+        // touch the money or per-scout flags a leader set here.
+        found.name = name;
+        found.date = evt.date;
+        found.slot = dateToSlot(evt.date);
+        found.time = evt.time || '';
+        found.endTime = evt.endTime || '';
+        if (evt.location) found.location = evt.location;
+        if (evt.note) found.note = evt.note;
+        if (evt.uid) found.sourceUid = evt.uid;
+        updated++;
+        return;
+      }
       state.budget.activities.push({
-        id: uid(), slot: dateToSlot(evt.date), name: name, date: evt.date, estCents: 0, actualCents: 0, perScout: false, familyPays: false
+        id: uid(), slot: dateToSlot(evt.date), name: name, date: evt.date,
+        time: evt.time || '', endTime: evt.endTime || '',
+        location: evt.location || '', note: evt.note || '', sourceUid: evt.uid || '',
+        estCents: 0, actualCents: 0, perScout: false, familyPays: false
       });
       added++;
     });
-    var tail = skipped ? ', skipped ' + skipped + ' already there' : '';
-    if (added) { commit(); showToast('Imported ' + added + ' event' + (added === 1 ? '' : 's') + tail); }
-    else showToast('Imported 0 events' + tail);
-    return added;
+    var bits = [];
+    if (added) bits.push('imported ' + added);
+    if (updated) bits.push('updated ' + updated);
+    if (added || updated) {
+      commit();
+      showToast('Calendar: ' + bits.join(' · ') + ' event' + ((added + updated) === 1 ? '' : 's'));
+    } else showToast('Imported 0 events');
+    return added + updated;
   }
   function handleIcsImportFile(input) {
     var file = input.files && input.files[0];
@@ -7730,7 +7940,11 @@
     b.startingBalance = bud.balance;
     // Re-seed the plan: same names + months, dates cleared, this year's actuals become next year's estimates.
     b.activities = b.activities.map(function (x) {
+      // Wave 20 — the plan carries over, this year's schedule does not: date, times, and
+      // the source UID are cleared (a new year's calendar hasn't been published yet).
+      // Location and notes are kept — the campground and the packing list rarely change.
       return { id: uid(), slot: x.slot || 0, name: x.name || '', date: '',
+        time: '', endTime: '', location: x.location || '', note: x.note || '', sourceUid: '',
         perScout: !!x.perScout, familyPays: !!x.familyPays, // Wave 17 — camp-fee shape carries over
         estCents: (x.actualCents > 0 ? x.actualCents : (x.estCents || 0)), actualCents: 0 };
     });
@@ -8311,8 +8525,17 @@
       ui.calSelectedDate = ui.calSelectedDate === el.dataset.date ? null : el.dataset.date;
       render(); return;
     }
+    // Wave 20 — month-agenda rows expand in place; one row open at a time so a long
+    // month never becomes a wall of open panels.
+    if (act === 'agenda-toggle') {
+      var agKey = el.dataset.key;
+      var wasOpen = !!ui.agendaOpen[agKey];
+      ui.agendaOpen = {};
+      if (!wasOpen) ui.agendaOpen[agKey] = true;
+      render(); return;
+    }
     // Wave 19(16) — "Next up" meeting/activity rows jump to that calendar day.
-    // Wave 20 — month-agenda rows use the same jump (always select, never toggle off).
+    // Wave 20 — the agenda's detail buttons use the same jump (always select, never toggle off).
     if (act === 'nextup-day' || act === 'cal-jump-day') {
       ui.calMonth = monthKey(el.dataset.date);
       ui.calSelectedDate = el.dataset.date;
@@ -8369,7 +8592,7 @@
       return;
     }
     if (act === 'add-activity') {
-      state.budget.activities.push({ id: uid(), slot: +el.dataset.slot, name: '', date: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push({ id: uid(), slot: +el.dataset.slot, name: '', date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
       commit(); return;
     }
     if (act === 'add-storefront-day') {
@@ -8950,7 +9173,9 @@
     }
     // Wave 17 — the ONE signed money field: a rollover shortfall must be re-enterable.
     if (ch === 'bud-start') { state.budget.startingBalance = toCentsSigned(el.value); commit(); return; }
-    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-actual' || ch === 'act-date' || ch === 'act-perscout' || ch === 'act-familypays') {
+    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-actual' || ch === 'act-date' ||
+        ch === 'act-perscout' || ch === 'act-familypays' ||
+        ch === 'act-time' || ch === 'act-endtime' || ch === 'act-location' || ch === 'act-note') {
       var act = state.budget.activities.find(function (a) { return a.id === el.dataset.id; });
       if (!act) return;
       if (ch === 'act-name') act.name = el.value;
@@ -8958,6 +9183,10 @@
       else if (ch === 'act-actual') act.actualCents = toCents(el.value);
       else if (ch === 'act-perscout') act.perScout = el.checked;   // Wave 17
       else if (ch === 'act-familypays') act.familyPays = el.checked; // Wave 17
+      else if (ch === 'act-time') act.time = el.value;              // Wave 20
+      else if (ch === 'act-endtime') act.endTime = el.value;        // Wave 20
+      else if (ch === 'act-location') act.location = el.value;      // Wave 20
+      else if (ch === 'act-note') act.note = el.value;              // Wave 20
       else act.date = el.value;
       commit(); return;
     }
