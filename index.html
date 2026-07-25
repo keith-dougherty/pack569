@@ -303,6 +303,14 @@
   .cal-marks { display: flex; gap: 2px; margin-top: 3px; align-items: center; }
   .cal-dot2 { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
   .cal-more { font-size: 0.6rem; color: var(--ink-soft); font-weight: 700; line-height: 1; }
+  /* Month agenda: the chronological list of the shown month's events, under the grid. */
+  .mo-day {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--ink-soft); margin: 12px 0 0;
+  }
+  .mo-day:first-of-type { margin-top: 2px; }
+  .mo-row.sel { background: var(--accent-soft); border-radius: 8px; padding-left: 8px; padding-right: 8px; }
+  .mo-row .lr-name { display: flex; align-items: center; gap: 7px; }
   .dot-store { background: var(--accent); }
   .dot-store-open { background: transparent; border: 1.6px solid var(--accent); }
   .dot-pack { background: var(--evt-pack); }
@@ -1166,7 +1174,7 @@
       return true;
     });
     // Wave 14: Inventory — Trail's End popcorn order (ordered / on-hand / handed out).
-    // { commissionPct:string, orderTotalCents:int>=0, products:[{id,name,perCase,cases,unitPriceCents}],
+    // { commissionPct:string, orderTotalCents:int>=0, products:[{id,name,perCase,cases,loose,unitPriceCents}],
     //   distributions:[{id,productId,target:{kind,id?,den?},containers,date,note}] }.
     // Absent on older ledgers → a generic blank (Wave 15; the old pre-seeded order is
     // gone). A ledger that HAS an inventory object goes through the else branch untouched.
@@ -1183,6 +1191,10 @@
         p.name = typeof p.name === 'string' ? p.name : '';
         p.perCase = (typeof p.perCase === 'number' && isFinite(p.perCase) && p.perCase > 0) ? Math.floor(p.perCase) : 0;
         p.cases = (typeof p.cases === 'number' && isFinite(p.cases) && p.cases > 0) ? Math.floor(p.cases) : 0;
+        // Wave 20 — loose containers: whole cases can't express a part-case quantity, and
+        // the Inventory Transaction Report's transfers rarely land on a case boundary.
+        // Absent on older ledgers → 0, so nothing changes for a hand-entered order.
+        p.loose = (typeof p.loose === 'number' && isFinite(p.loose) && p.loose > 0) ? Math.floor(p.loose) : 0;
         p.unitPriceCents = (typeof p.unitPriceCents === 'number' && isFinite(p.unitPriceCents) && p.unitPriceCents > 0) ? Math.round(p.unitPriceCents) : 0;
         return true;
       });
@@ -4078,6 +4090,75 @@
     return !s.scouts.length && !s.storefronts.length && !s.meetings.length && !s.leaders.length;
   }
 
+  // Wave 20 — month agenda: every dated thing in the shown month, chronological, listed
+  // under the calendar grid so the month reads without tapping day by day. Pure read;
+  // each row jumps to (selects) its calendar day. Mirrors what monthlyDigest() prints.
+  function monthAgendaCard(mk, today) {
+    var byDay = dayEventsForMonth(mk);
+    var days = Object.keys(byDay).map(Number).sort(function (a, b) { return a - b; });
+    var evCount = days.reduce(function (n, d) { return n + byDay[d].length; }, 0);
+    // Undated activities whose program slot lands in this month — same filter the digest uses.
+    var tbd = state.budget.activities.filter(function (a) { return !a.date && slotMonthKey(a.slot) === mk; });
+
+    var h = '<div class="card"><div class="spread">' +
+      '<h2 class="section display" style="margin-bottom:0">' + esc(monthLabel(mk)) + '</h2>' +
+      '<span class="small muted">' + (evCount ? evCount + ' event' + (evCount === 1 ? '' : 's') : 'Nothing scheduled') + '</span>' +
+      '</div>';
+
+    if (!evCount && !tbd.length) {
+      return h + '<p class="small muted" style="margin:8px 0 0">Nothing on the calendar this month yet. ' +
+        'Tap any day above to add a den or pack meeting, a storefront, or an activity.</p></div>';
+    }
+
+    days.forEach(function (day) {
+      var iso = mk + '-' + pad2(day);
+      h += '<p class="mo-day">' + esc(fmtDate(iso)) + (iso === today ? ' · Today' : '') + '</p>';
+      byDay[day].forEach(function (e) {
+        var label = '', meta = [], evKey = '';
+        if (e.type === 'storefront') {
+          label = 'Storefront' + (e.sf.name ? ' · ' + e.sf.name : '');
+          var cov = storefrontCoverage(e.sf);
+          meta.push(e.sf.blocks.length + ' shift' + (e.sf.blocks.length === 1 ? '' : 's'));
+          if (cov.total) meta.push(cov.covered + ' of ' + cov.total + ' covered');
+          if (storefrontNeedsAdults(e.sf)) meta.push('needs adults');
+          evKey = 'sf:' + e.sf.id;
+        } else if (e.type === 'meeting') {
+          label = e.m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (e.m.den ? ' · ' + e.m.den : ''));
+          var mtgTime = fmtClock(e.m.time);
+          if (mtgTime) meta.push(mtgTime);
+          if (e.m.adventure) meta.push(e.m.adventure);
+          if (e.m.note) meta.push(e.m.note);
+          evKey = 'mtg:' + e.m.id;
+        } else {
+          label = e.a.name || 'Activity';
+          if (e.a.estCents) meta.push(fmt(e.a.estCents) + (e.a.perScout ? ' / scout' : ''));
+          evKey = 'act:' + e.a.id;
+        }
+        var pill = rsvpPill(evKey);
+        h += '<div class="list-row mo-row' + (iso === ui.calSelectedDate ? ' sel' : '') + '"' +
+          ' data-act="cal-jump-day" data-date="' + iso + '" role="button" tabindex="0"' +
+          ' aria-label="' + esc(label + ', ' + fmtDate(iso)) + '">' +
+          '<div style="min-width:0"><div class="lr-name">' +
+          '<span class="cal-dot2 ' + dotClass(e) + '"></span><span>' + esc(label) + '</span>' +
+          (pill ? ' ' + pill : '') + '</div>' +
+          (meta.length ? '<div class="small muted">' + esc(meta.join(' · ')) + '</div>' : '') +
+          '</div><span class="muted" aria-hidden="true">›</span></div>';
+      });
+    });
+
+    if (tbd.length) {
+      h += '<p class="mo-day">Date TBD</p>';
+      tbd.forEach(function (a) {
+        h += '<div class="list-row" style="cursor:default">' +
+          '<div style="min-width:0"><div class="lr-name" style="display:flex;align-items:center;gap:7px">' +
+          '<span class="cal-dot2 dot-act"></span><span>' + esc(a.name || 'Activity') + '</span></div>' +
+          '<div class="small muted">Planned this month — set a date below to place it on the calendar</div>' +
+          '</div></div>';
+      });
+    }
+    return h + '</div>';
+  }
+
   function renderCalendarTab() {
     var today = todayISO();
     if (!ui.calMonth) ui.calMonth = monthKey(today);
@@ -4167,8 +4248,11 @@
       '<button type="button" class="btn small" data-act="open-digest">Copy monthly digest</button></div>';
     h += '</div>';
 
+    // Wave 20 — the shown month's events, listed under the grid.
+    h += monthAgendaCard(ui.calMonth, today);
+
     // Wave 10: file-based calendar interchange with BAND (and Google/Apple/Outlook).
-    h += '<div class="card no-print"><h2 class="section display">Sync with BAND</h2>' +
+    var bandCard = '<div class="card no-print"><h2 class="section display">Sync with BAND</h2>' +
       '<div class="row" style="flex-wrap:wrap">' +
       '<button type="button" class="btn primary" data-act="export-ics">Download calendar (.ics)</button>' +
       '<button type="button" class="btn" data-act="import-ics">Import .ics…</button>' +
@@ -4181,7 +4265,8 @@
       'calendar link (or its text). BAND has no live sync, so this is a one-time pull, not a subscription — ' +
       'and only dated events (storefronts, meetings, dated activities) export.</p></div>';
 
-    // Selected-day detail
+    // Selected-day detail (Wave 20: sits directly under the month list so tapping an
+    // agenda row lands the day's editable detail right below it; BAND sync follows).
     h += '<div class="card">';
     if (ui.calSelectedDate) {
       var selDay = byDay[+ui.calSelectedDate.split('-')[2]];
@@ -4219,6 +4304,7 @@
         '<p class="small muted" style="margin:6px 0 0">New program year? Seed the traditional slate of pack activities — no dates yet; set them on the Budget tab when they’re known.</p>';
     }
     h += '</div>';
+    h += bandCard;
 
     // Any activities without a date yet — shown regardless of the viewed month.
     var undated = state.budget.activities.filter(function (a) { return !a.date; })
@@ -5116,6 +5202,7 @@
     if (canEdit()) {
     h += '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Pulls your <strong>storefront schedule</strong> straight onto the Storefronts tab, ' +
+      'fills in <strong>popcorn quantities</strong> on the Inventory tab from the Inventory Transaction report, ' +
       'and archives a <strong>past season’s sales</strong> under Past seasons below. Export a report from the ' +
       'Trail’s End Leader Portal → <strong>Reports</strong> as <strong>.xlsx or .csv</strong> — the app figures out which report it is. ' +
       'Nothing you’ve entered is overwritten; you preview and confirm before anything is saved.</p>' +
@@ -5484,7 +5571,9 @@
   // feed computeBudget()'s funds-in (that comes from actual recorded sales commission),
   // so the two can't double-count.
   function invProduct(id) { return state.inventory.products.find(function (p) { return p.id === id; }); }
-  function containersOrdered(p) { return (p.perCase || 0) * (p.cases || 0); }
+  // Wave 20 — whole cases plus any loose containers (part-case quantities, which is what
+  // a Trail's End transfer usually leaves behind).
+  function containersOrdered(p) { return (p.perCase || 0) * (p.cases || 0) + (p.loose || 0); }
   function distributedContainers(productId) {
     var n = 0;
     state.inventory.distributions.forEach(function (d) { if (d.productId === productId) n += d.containers; });
@@ -5558,14 +5647,18 @@
 
     // --- Products ---
     h += '<div class="card"><h2 class="section display">Products</h2>' +
-      '<p class="small muted" style="margin:0 0 8px">Containers/case × cases = containers ordered. Unit price is optional — fill it in to see each product’s value.</p>';
+      '<p class="small muted" style="margin:0 0 8px">Containers/case × cases + loose = containers ordered. ' +
+      '<strong>Loose</strong> is for part-case quantities (a transfer that broke a case) — leave it at 0 for a plain case order. ' +
+      'Unit price is optional — fill it in to see each product’s value.</p>';
     if (!inv.products.length) {
       // Wave 15 — empty state offers the standard lineup as a starting template (names +
       // containers/case only; cases and prices stay 0, order total untouched).
       h += '<div class="empty">No products yet.<br>' +
         '<button type="button" class="btn small primary" data-act="seed-te-lineup" style="margin-top:10px">Add the standard Trail’s End lineup</button>' +
         '<p class="small muted" style="margin:8px 0 0">Seeds the five usual varieties with containers per case — you fill in cases and prices. ' +
-        'Or use <strong>+ Add product</strong> below for a custom lineup.</p></div>';
+        'Or use <strong>+ Add product</strong> below for a custom lineup.</p>' +
+        '<p class="small muted" style="margin:8px 0 0">Already ordered? Import your Trail’s End <strong>Inventory Transaction report</strong> ' +
+        'from the Pack tab and the products and quantities fill themselves in.</p></div>';
     } else {
       inv.products.forEach(function (p) {
         var ordered = containersOrdered(p);
@@ -5575,6 +5668,7 @@
           '<input class="ename" data-ch="inv-name" data-id="' + p.id + '" value="' + esc(p.name) + '" placeholder="Product name" aria-label="Product name">' +
           '<label class="inv-mini">Per case<input class="weight-in" type="number" min="0" step="1" inputmode="numeric" data-ch="inv-percase" data-id="' + p.id + '" value="' + (p.perCase || 0) + '" aria-label="Containers per case"></label>' +
           '<label class="inv-mini">Cases<input class="weight-in" type="number" min="0" step="1" inputmode="numeric" data-ch="inv-cases" data-id="' + p.id + '" value="' + (p.cases || 0) + '" aria-label="Cases ordered"></label>' +
+          '<label class="inv-mini">Loose<input class="weight-in" type="number" min="0" step="1" inputmode="numeric" data-ch="inv-loose" data-id="' + p.id + '" value="' + (p.loose || 0) + '" aria-label="Loose containers (part case)"></label>' +
           '<label class="inv-mini">Unit $<input class="money-in" inputmode="decimal" data-ch="inv-price" data-id="' + p.id + '" value="' + dollars(p.unitPriceCents) + '" placeholder="—" aria-label="Unit price"></label>' +
           '<span class="inv-derived">' + ordered + ' ordered · <strong' + handCls + '>' + hand + ' on hand</strong>' +
           (p.unitPriceCents > 0 ? ' · ' + fmt(productValueCents(p)) : '') + '</span>' +
@@ -6235,8 +6329,9 @@
       return head +
         '<div class="row no-print" style="margin-bottom:12px"><button type="button" class="btn" data-act="close-overlay">&larr; Back</button></div>' +
         '<div class="card"><h2 class="section display">Not a Trail’s End report</h2>' +
-        '<p>This doesn’t look like a Trail’s End Shift or Sales report. Export the ' +
-        '<strong>Reports → Storefront schedule</strong> or <strong>Sales Transaction report</strong> as .xlsx or .csv and try again.</p>' +
+        '<p>This doesn’t look like a Trail’s End Shift, Sales, or Inventory report. Export the ' +
+        '<strong>Reports → Storefront schedule</strong>, <strong>Sales Transaction report</strong>, or ' +
+        '<strong>Inventory Transaction report</strong> as .xlsx or .csv and try again.</p>' +
         '<div class="row"><button type="button" class="btn" data-act="close-overlay">Close</button>' +
         '<button type="button" class="btn primary" data-act="te-import">Pick another file</button></div></div></div></div>';
     }
@@ -6267,6 +6362,73 @@
         'Existing storefronts, blocks, assignments, and sales are never touched.</p>' +
         '</div></div></div>';
       return h;
+    }
+    // Wave 20 — Inventory Transaction Report: per-product container tallies → the
+    // Inventory tab's product quantities. Hand-out logs are never touched.
+    if (o.report === 'inventory') {
+      var willWrite = o.items.filter(function (it) { return !it.isNew || o.createMissing; }).length;
+      var invConfirm = willWrite
+        ? '<button type="button" class="btn primary" data-act="te-confirm-inventory">Update ' + willWrite + ' product' + (willWrite === 1 ? '' : 's') + '</button>'
+        : '<button type="button" class="btn" disabled>Nothing to update</button>';
+      var v = head +
+        '<div class="row no-print" style="margin-bottom:12px">' +
+        '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+        invConfirm + '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>' +
+        '<div class="summary-sheet">' +
+        '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
+        '<h1 style="margin:0">Popcorn inventory</h1></div>' +
+        '<p class="muted small" style="margin:0 0 14px">Found <strong>' + o.items.length + ' product' + (o.items.length === 1 ? '' : 's') + '</strong> across ' +
+        o.txCount + ' transaction' + (o.txCount === 1 ? '' : 's') +
+        (o.latestDate ? ' · latest ' + esc(String(o.latestDate).slice(0, 10)) : '') + '</p>';
+      if (!o.items.length) {
+        return v + '<div class="empty" style="margin:0">This Inventory report has no transactions yet — ' +
+          'nothing has been ordered or transferred. Import it again once your order is placed.</div>' +
+          '</div></div></div>';
+      }
+      v += '<div class="row" style="margin-bottom:14px">' +
+        '<div class="stat"><span class="v">' + o.totalIn + '</span><span class="l">Containers received</span></div>' +
+        '<div class="stat"><span class="v">' + o.totalOut + '</span><span class="l">Transferred out</span></div>' +
+        '<div class="stat"><span class="v" style="color:var(--accent-text)">' + o.netTotal + '</span><span class="l">Net on the books</span></div></div>';
+      if (o.types.length) {
+        v += '<p class="small muted" style="margin:-4px 0 12px">Transaction types: ' +
+          esc(o.types.map(function (t) { return t.type + ' × ' + t.count; }).join(' · ')) + '</p>';
+      }
+      v += '<div class="tbl-wrap"><table><thead><tr>' +
+        '<th scope="col">Product</th><th scope="col" class="num">Received</th><th scope="col" class="num">Out</th>' +
+        '<th scope="col" class="num">Net</th><th scope="col">Becomes</th><th scope="col">Status</th>' +
+        '</tr></thead><tbody>';
+      o.items.forEach(function (it) {
+        var becomes = it.perCase
+          ? (it.cases + ' case' + (it.cases === 1 ? '' : 's') + (it.loose ? ' + ' + it.loose + ' loose' : '') + ' <span class="muted">(' + it.net + ')</span>')
+          : (it.net + ' loose <span class="muted">(no case size)</span>');
+        var status = it.isNew
+          ? (o.createMissing ? '<span class="pill">New</span>' : '<span class="pill navy">Skipped</span>')
+          : (it.net === it.wasOrdered ? '<span class="pill navy">Unchanged</span>' : '<span class="pill">' + it.wasOrdered + ' &rarr; ' + it.net + '</span>');
+        v += '<tr><td>' + esc(it.name) + '</td>' +
+          '<td class="num">' + it.received + '</td>' +
+          '<td class="num">' + (it.sentOut ? '−' + it.sentOut : '—') + '</td>' +
+          '<td class="num" style="font-weight:650">' + it.net + '</td>' +
+          '<td>' + becomes + '</td><td>' + status + '</td></tr>';
+      });
+      v += '</tbody></table></div>';
+      if (o.newCount) {
+        v += '<div class="row no-print" style="margin:12px 0 0">' +
+          '<button type="button" class="btn small' + (o.createMissing ? ' primary' : '') + '" data-act="te-inv-create" aria-pressed="' + (o.createMissing ? 'true' : 'false') + '">' +
+          (o.createMissing
+            ? 'Will add ' + o.newCount + ' product' + (o.newCount === 1 ? '' : 's') + ' not on your list — tap to skip'
+            : 'Also add the ' + o.newCount + ' product' + (o.newCount === 1 ? '' : 's') + ' not on your list') +
+          '</button></div>';
+      }
+      if (o.shortCount) {
+        v += '<div class="warn" style="margin:12px 0 0">' + o.shortCount + ' product' + (o.shortCount === 1 ? ' has' : 's have') +
+          ' more logged as handed out than this report says the pack ever held, so ' +
+          (o.shortCount === 1 ? 'it' : 'they') + ' will show a negative on-hand. Your hand-out log is left alone — check it on the Inventory tab.</div>';
+      }
+      v += '<p class="small muted" style="margin:14px 0 0">Quantities are <strong>containers</strong>, not cases, so each net figure is split into whole cases plus any loose remainder. ' +
+        'Transfers out are subtracted, which is why a net can sit below what you ordered. ' +
+        'Only quantities are written — product names, unit prices, the order total, and every hand-out log stay exactly as they are.</p>' +
+        '</div></div></div>';
+      return v;
     }
     // sales
     var arc = o.archive;
@@ -7002,6 +7164,10 @@
       if (shiftMap) return { type: 'shifts', headerRow: r, col: shiftMap };
       var salesMap = idxOfHeaders(cells, ['Order Number', 'Scout', 'Sale Type']);
       if (salesMap) return { type: 'sales', headerRow: r, col: salesMap };
+      // Wave 20 — Inventory Transaction Report: Date | Product | Quantity | Transaction
+      // Type | Transfer Party. 'Transfer Party' is optional so a trimmed export still maps.
+      var invMap = idxOfHeaders(cells, ['Product', 'Quantity', 'Transaction Type']);
+      if (invMap) return { type: 'inventory', headerRow: r, col: invMap };
     }
     return null;
   }
@@ -7093,6 +7259,50 @@
     var scoutList = scoutOrder.map(function (k) { return scouts[k]; }).sort(function (a, b) { return b.totalCents - a.totalCents; });
     var locList = locOrder.map(function (k) { return locations[k]; }).sort(function (a, b) { return b.cents - a.cents; });
     return { kind: 'trails-end', year: year, grandCents: grandCents, channel: channel, scouts: scoutList, locations: locList };
+  }
+
+  // Wave 20 — Inventory Transaction Report → per-product container tallies.
+  // The report is the unit's FULL transaction history, so the net per product is what the
+  // pack actually received: UNITORDER rows add, TRANSFER rows out (negative quantities)
+  // subtract. Quantities are containers, not cases. Pure — no state, no DOM.
+  function mapInventoryReport(rows, hdr) {
+    var col = hdr.col;
+    var cDate = col['Date'], cProd = col['Product'], cQty = col['Quantity'],
+        cType = col['Transaction Type'], cParty = col['Transfer Party'];
+    function cell(cells, ci) { return (ci != null && cells[ci] != null) ? String(cells[ci]).trim() : ''; }
+    var byName = {}, order = [], types = {}, typeOrder = [];
+    var totalIn = 0, totalOut = 0, txCount = 0, latestDate = '';
+    for (var r = hdr.headerRow + 1; r < rows.length; r++) {
+      var cells = rows[r] || [];
+      var name = cell(cells, cProd);
+      if (!name) continue;
+      var qtyRaw = cell(cells, cQty);
+      // The trailing "Totals" row carries a label but no (cached) quantity — skip it,
+      // along with any other row we can't read a number from.
+      var qty = parseFloat(qtyRaw.replace(/[,\s]/g, ''));
+      if (!qtyRaw || !isFinite(qty) || qty === 0) continue;
+      qty = Math.round(qty);
+      var type = cell(cells, cType).toUpperCase();
+      var date = cell(cells, cDate);
+      if (date > latestDate) latestDate = date;
+      if (type) { if (types[type] == null) { types[type] = 0; typeOrder.push(type); } types[type] += 1; }
+      var key = name.toLowerCase();
+      if (!byName[key]) {
+        byName[key] = { name: name, received: 0, sentOut: 0, net: 0, tx: 0, party: cell(cells, cParty) };
+        order.push(key);
+      }
+      var p = byName[key];
+      if (qty > 0) { p.received += qty; totalIn += qty; } else { p.sentOut += -qty; totalOut += -qty; }
+      p.net += qty;
+      p.tx += 1;
+      txCount += 1;
+    }
+    return {
+      products: order.map(function (k) { return byName[k]; }),
+      totalIn: totalIn, totalOut: totalOut, netTotal: totalIn - totalOut,
+      txCount: txCount, latestDate: latestDate,
+      types: typeOrder.map(function (t) { return { type: t, count: types[t] }; })
+    };
   }
 
   /* ----- Wave 13: import UI glue (impure — reads state, builds overlays, commits) ----- */
@@ -7252,6 +7462,88 @@
     showToast((replaced ? 'Replaced ' : 'Saved ') + record.year + ' season in Past seasons' +
       (addedScouts ? ' · added ' + addedScouts + ' scout' + (addedScouts === 1 ? '' : 's') + ' to the roster' : ''));
   }
+  /* ----- Wave 20: Inventory Transaction Report glue ----- */
+  // Containers/case for a standard lineup name, or 0 when we don't know it.
+  function teLineupPerCase(name) {
+    var key = String(name || '').trim().toLowerCase();
+    for (var i = 0; i < TE_LINEUP.length; i++) {
+      if (TE_LINEUP[i][0].toLowerCase() === key) return TE_LINEUP[i][1];
+    }
+    return 0;
+  }
+  // Containers → whole cases + loose remainder. Unknown case size → all loose, so the
+  // container count is still exact.
+  function teSplitContainers(containers, perCase) {
+    var n = Math.max(0, Math.floor(containers || 0));
+    if (!perCase || perCase <= 0) return { cases: 0, loose: n };
+    return { cases: Math.floor(n / perCase), loose: n % perCase };
+  }
+  function teBuildInventoryPreview(mapped) {
+    var byName = {};
+    state.inventory.products.forEach(function (p) {
+      var k = String(p.name || '').trim().toLowerCase();
+      if (k && byName[k] == null) byName[k] = p;
+    });
+    var items = mapped.products.map(function (row) {
+      var existing = byName[row.name.toLowerCase()] || null;
+      var perCase = (existing && existing.perCase > 0) ? existing.perCase : teLineupPerCase(row.name);
+      var split = teSplitContainers(row.net, perCase);
+      return {
+        name: row.name, received: row.received, sentOut: row.sentOut, net: row.net, tx: row.tx,
+        productId: existing ? existing.id : null,
+        perCase: perCase, cases: split.cases, loose: split.loose,
+        wasOrdered: existing ? containersOrdered(existing) : 0,
+        handedOut: existing ? distributedContainers(existing.id) : 0,
+        isNew: !existing
+      };
+    });
+    return {
+      kind: 'te-preview', report: 'inventory', items: items,
+      newCount: items.filter(function (it) { return it.isNew; }).length,
+      // Default ON: a product in the report that isn't on the list is popcorn the pack
+      // really has, so adding it is almost always right.
+      createMissing: true,
+      // Hand-outs already logged that exceed what the report says the pack ever held —
+      // surfaced as a heads-up, never auto-corrected (hand-outs are money-relevant logs).
+      shortCount: items.filter(function (it) { return !it.isNew && it.net < it.handedOut; }).length,
+      totalIn: mapped.totalIn, totalOut: mapped.totalOut, netTotal: mapped.netTotal,
+      txCount: mapped.txCount, latestDate: mapped.latestDate, types: mapped.types
+    };
+  }
+  // Commit: quantities only. Names, per-case sizes already set, unit prices, the order
+  // total, and every hand-out log are left exactly as they are. The report is the unit's
+  // full history, so re-importing a newer one simply re-states the quantities.
+  function teCommitInventory() {
+    var o = ui.overlay;
+    if (!o || o.report !== 'inventory') return;
+    var updated = 0, added = 0;
+    o.items.forEach(function (it) {
+      var prod = it.productId ? invProduct(it.productId) : null;
+      if (!prod) {
+        if (!o.createMissing) return;
+        var split = teSplitContainers(it.net, it.perCase);
+        state.inventory.products.push({
+          id: uid(), name: it.name, perCase: it.perCase,
+          cases: split.cases, loose: split.loose, unitPriceCents: 0
+        });
+        added += 1;
+        return;
+      }
+      // Fill a blank containers/case from the standard lineup so the split is meaningful.
+      if (!prod.perCase && it.perCase) prod.perCase = it.perCase;
+      var s2 = teSplitContainers(it.net, prod.perCase);
+      prod.cases = s2.cases;
+      prod.loose = s2.loose;
+      updated += 1;
+    });
+    ui.overlay = null;
+    commit();
+    var bits = [];
+    if (updated) bits.push('updated ' + updated + ' product' + (updated === 1 ? '' : 's'));
+    if (added) bits.push('added ' + added);
+    showToast(bits.length ? ('Inventory ' + bits.join(' · ')) : 'Nothing to update');
+  }
+
   function handleTeFile(input) {
     var file = input.files && input.files[0];
     input.value = '';
@@ -7265,6 +7557,7 @@
           var det = detectReport(parsed.rows);
           if (!det) { ui.overlay = { kind: 'te-preview', report: 'unknown' }; render(); return; }
           if (det.type === 'shifts') ui.overlay = teBuildShiftPreview(mapShiftReport(parsed.rows, det));
+          else if (det.type === 'inventory') ui.overlay = teBuildInventoryPreview(mapInventoryReport(parsed.rows, det));
           else ui.overlay = teBuildSalesPreview(mapSalesReport(parsed.rows, det));
           render();
         }).catch(function (err) {
@@ -8019,7 +8312,8 @@
       render(); return;
     }
     // Wave 19(16) — "Next up" meeting/activity rows jump to that calendar day.
-    if (act === 'nextup-day') {
+    // Wave 20 — month-agenda rows use the same jump (always select, never toggle off).
+    if (act === 'nextup-day' || act === 'cal-jump-day') {
       ui.calMonth = monthKey(el.dataset.date);
       ui.calSelectedDate = el.dataset.date;
       render(); return;
@@ -8150,7 +8444,7 @@
       commit(); return;
     }
     if (act === 'add-inv-product') {
-      state.inventory.products.push({ id: uid(), name: '', perCase: 0, cases: 0, unitPriceCents: 0 });
+      state.inventory.products.push({ id: uid(), name: '', perCase: 0, cases: 0, loose: 0, unitPriceCents: 0 });
       commit(); return;
     }
     if (act === 'seed-te-lineup') {
@@ -8158,7 +8452,7 @@
       // Only offered from the empty state; bail if products appeared meanwhile (e.g. sync).
       if (state.inventory.products.length) { render(); return; }
       TE_LINEUP.forEach(function (t) {
-        state.inventory.products.push({ id: uid(), name: t[0], perCase: t[1], cases: 0, unitPriceCents: 0 });
+        state.inventory.products.push({ id: uid(), name: t[0], perCase: t[1], cases: 0, loose: 0, unitPriceCents: 0 });
       });
       commit();
       showToast('Added the standard Trail’s End lineup — set cases and prices');
@@ -8267,6 +8561,15 @@
     if (act === 'te-confirm-live') { teCommitSalesLive(); return; }
     if (act === 'te-live-create') {
       if (ui.overlay && ui.overlay.kind === 'te-preview' && ui.overlay.report === 'sales') {
+        ui.overlay.createMissing = !ui.overlay.createMissing;
+        render();
+      }
+      return;
+    }
+    // Wave 20 — Inventory Transaction Report import
+    if (act === 'te-confirm-inventory') { teCommitInventory(); return; }
+    if (act === 'te-inv-create') {
+      if (ui.overlay && ui.overlay.kind === 'te-preview' && ui.overlay.report === 'inventory') {
         ui.overlay.createMissing = !ui.overlay.createMissing;
         render();
       }
@@ -8693,7 +8996,7 @@
     // Wave 14: Inventory
     if (ch === 'inv-order-total') { state.inventory.orderTotalCents = toCents(el.value); commit(); return; }
     if (ch === 'inv-comm') { state.inventory.commissionPct = el.value; commit(); return; }
-    if (ch === 'inv-name' || ch === 'inv-percase' || ch === 'inv-cases' || ch === 'inv-price') {
+    if (ch === 'inv-name' || ch === 'inv-percase' || ch === 'inv-cases' || ch === 'inv-loose' || ch === 'inv-price') {
       var invP = invProduct(el.dataset.id);
       if (!invP) return;
       if (ch === 'inv-name') invP.name = el.value;
@@ -8701,7 +9004,9 @@
       else {
         var iv = parseInt(el.value, 10);
         iv = (isFinite(iv) && iv > 0) ? iv : 0;
-        if (ch === 'inv-percase') invP.perCase = iv; else invP.cases = iv;
+        if (ch === 'inv-percase') invP.perCase = iv;
+        else if (ch === 'inv-loose') invP.loose = iv;
+        else invP.cases = iv;
       }
       commit(); return;
     }
