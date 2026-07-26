@@ -1003,7 +1003,7 @@
       packDocIdWarned = true;
       try {
         console.warn('PACK_DOC_ID is not a 64-character lowercase hex pack id — ignoring it ' +
-          'and falling back to passphrase mode. Copy the value from the Pack tab → Pack ID.');
+          'and falling back to passphrase mode. Copy the value from Pack → Pack ID.');
       } catch (e) { /* no console */ }
     }
     return null;
@@ -1545,6 +1545,7 @@
     // is the only reason a personalized Home is worth building.
     tab: 'home',
     sections: {},    // Wave 21 — { workspaceId: sectionId }, the last section visited in each
+    seasonSetupOpen: false, // Wave 21 — the shared Season setup card's disclosure on Popcorn
     storefrontId: null,
     expandedScouts: {},
     armed: null,
@@ -1578,7 +1579,7 @@
     } catch (e) { /* storage full/blocked */
       if (!saveWarned) {
         saveWarned = true;
-        showToast('Couldn’t save — changes may be lost. Export a backup from the Pack tab.');
+        showToast('Couldn’t save — changes may be lost. Export a backup from Pack.');
       }
     }
   }
@@ -1977,7 +1978,7 @@
       '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' + esc(rsvpSummaryLine(sum)) + '</button>';
     if (open) {
       h += '<div class="rsvp-list">';
-      if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on the Scouts tab first.</p>';
+      if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on Scouts · Roster first.</p>';
       roster.forEach(function (s) {
         var r = map[s.id];
         var st = r ? r.s : '';
@@ -2018,7 +2019,7 @@
       h += '<div class="rsvp-list">';
       if (!roster.length) {
         h += '<p class="small muted" style="margin:6px 0 0">' +
-          (denFiltered ? 'No active scouts in the ' + esc(m.den) + ' den.' : 'Add scouts on the Scouts tab first.') + '</p>';
+          (denFiltered ? 'No active scouts in the ' + esc(m.den) + ' den.' : 'Add scouts on Scouts · Roster first.') + '</p>';
       }
       roster.forEach(function (s) {
         h += '<label class="att-row"><input type="checkbox" data-ch="att-mark" data-id="' + m.id + '" data-scout="' + s.id + '"' +
@@ -2047,10 +2048,17 @@
     });
     return { any: per.length > 0, collected: col, outstanding: out };
   }
+  // Wave 21 — every per-scout charge in the ledger, expenses AND activities. Both kinds
+  // render a collect grid in the budget, but this only ever counted expenses, so a scout
+  // who hadn't paid for a per-scout ACTIVITY showed as owing nothing. One list, used by
+  // scoutOwesCents, the roster pill and the Dues & fees section.
+  function perScoutCharges() {
+    return state.budget.expenses.filter(function (e) { return e.perScout; })
+      .concat(state.budget.activities.filter(function (a) { return a.perScout; }));
+  }
   function scoutOwesCents(scoutId) {
     var owe = 0;
-    state.budget.expenses.forEach(function (e) {
-      if (!e.perScout) return;
+    perScoutCharges().forEach(function (e) {
       var cm = state.collected[e.id] || {};
       if (!cm[scoutId]) owe += e.estCents || 0;
     });
@@ -2074,7 +2082,7 @@
       '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' + esc(label) + '</button>';
     if (open) {
       h += '<div class="rsvp-list">';
-      if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on the Scouts tab first.</p>';
+      if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on Scouts · Roster first.</p>';
       roster.forEach(function (s) {
         h += '<label class="att-row"><input type="checkbox" data-ch="collect-mark" data-id="' + colKey + '" data-scout="' + s.id + '"' +
           (cm[s.id] ? ' checked' : '') + ' aria-label="' + esc((e.name || 'Fee') + ' collected from ' + s.name) + '"><span>' + esc(s.name) +
@@ -2280,7 +2288,7 @@
         '</datalist></div>';
     });
     if (!anyDen) {
-      h += '<div class="empty">No active scouts with a den yet. Give each scout a den on the Scouts tab to track their Adventures here.</div>';
+      h += '<div class="empty">No active scouts with a den yet. Give each scout a den on Scouts · Roster to track their Adventures here.</div>';
     }
     return h;
   }
@@ -2387,7 +2395,7 @@
     });
     if (added) {
       commit();
-      showToast('Added ' + added + ' activities — set dates on the Budget tab when they’re known');
+      showToast('Added ' + added + ' activities — set dates on Money · Budget when they’re known');
     } else {
       render();
       showToast('Everything’s already planned');
@@ -3828,7 +3836,7 @@
     var p = SYNC_PILL[sync.mode] || SYNC_PILL.local;
     el.className = 'sync-pill no-print ' + p.cls;
     el.innerHTML = '<span class="sync-dot"></span><span class="sync-lbl">' + p.label + '</span>';
-    el.setAttribute('aria-label', 'Sync status: ' + p.label + '. Opens the Pack tab.');
+    el.setAttribute('aria-label', 'Sync status: ' + p.label + '. Opens Pack.');
   }
 
   /* ---------------- Mutations ---------------- */
@@ -3878,10 +3886,16 @@
       { id: 'inventory', label: 'Inventory' }
     ] },
     { id: 'money', label: 'Money', sections: [
-      { id: 'budget', label: 'Budget' }
+      { id: 'budget', label: 'Budget' },
+      { id: 'dues', label: 'Dues & fees' }
     ] },
+    // Wave 21 — the old Pack tab was a twelve-card junk drawer covering three unrelated
+    // jobs. Split by the Committee Chair moment each one belongs to: let someone in /
+    // keep the roster legal / end the year.
     { id: 'pack', label: 'Pack', sections: [
-      { id: 'packmain', label: 'Pack' }
+      { id: 'sharing', label: 'Sharing' },
+      { id: 'people', label: 'People' },
+      { id: 'season', label: 'Season' }
     ] }
   ];
   // Old flat tab id -> where it lives now. Nine entries, one per pre-Wave-21 tab, so every
@@ -3896,7 +3910,7 @@
     budget:      { tab: 'money',   section: 'budget' },
     inventory:   { tab: 'popcorn', section: 'inventory' },
     derby:       { tab: 'program', section: 'derby' },
-    pack:        { tab: 'pack',    section: 'packmain' }
+    pack:        { tab: 'pack',    section: 'sharing' }
   };
   var WS_BY_ID = {}, SECTION_HOME = {};
   WORKSPACES.forEach(function (w) {
@@ -4080,8 +4094,11 @@
     else if (sec === 'roster') v.innerHTML = renderScouts();
     else if (sec === 'advancement') v.innerHTML = renderAdvancement();
     else if (sec === 'budget') v.innerHTML = renderBudget();
+    else if (sec === 'dues') v.innerHTML = renderDues();
     else if (sec === 'inventory') v.innerHTML = renderInventory();
-    else if (sec === 'packmain') v.innerHTML = renderPack();
+    else if (sec === 'sharing') v.innerHTML = renderPackSharing();
+    else if (sec === 'people') v.innerHTML = renderPackPeople();
+    else if (sec === 'season') v.innerHTML = renderPackSeason();
     else if (sec === 'derby') v.innerHTML = renderDerby();
     else v.innerHTML = renderTotals();
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
@@ -4349,6 +4366,30 @@
   }
 
   /* ----- Storefronts list ----- */
+  // Wave 21 — the Trail's End importer, given a permanent home on Popcorn · Storefronts.
+  // It used to live on the Pack tab as one unlabelled "Choose a file…" button that silently
+  // dispatched to three unrelated destinations, with a second entry point in the Storefronts
+  // EMPTY state that vanished forever once you added a storefront by hand.
+  //
+  // One button is still correct — detectReport() sniffs which of the three reports you
+  // exported, and three buttons that all opened the same picker would be a lie. What was
+  // actually missing is that the three destinations were invisible, so they're listed.
+  function teImportCard() {
+    if (!canEdit()) return '';
+    return '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">Export a report from the Trail’s End Leader Portal → <strong>Reports</strong> ' +
+      'as <strong>.xlsx</strong> or <strong>.csv</strong>. The app works out which of the three it is:</p>' +
+      '<div class="assign-row"><span class="assign-name"><strong>Storefront Shifts</strong> ' +
+      '<span class="small muted">— your shift schedule</span></span><span class="small muted">→ here</span></div>' +
+      '<div class="assign-row"><span class="assign-name"><strong>Inventory Transactions</strong> ' +
+      '<span class="small muted">— cases and containers</span></span><span class="small muted">→ Inventory</span></div>' +
+      '<div class="assign-row"><span class="assign-name"><strong>Sales Transactions</strong> ' +
+      '<span class="small muted">— per-scout sales</span></span><span class="small muted">→ this season, or Past seasons</span></div>' +
+      '<div class="row no-print" style="margin-top:10px">' +
+      '<button type="button" class="btn primary" data-act="te-import">Choose a Trail’s End file…</button>' +
+      '<input type="file" id="teFile" accept=".xlsx,.csv" hidden></div>' +
+      '<p class="small muted" style="margin:8px 0 0">Nothing you’ve entered is overwritten — you preview and confirm before anything is saved.</p></div>';
+  }
   function renderStorefrontList() {
     var locations = {};
     state.storefronts.forEach(function (sf) { locations[sf.name.trim()] = 1; });
@@ -4381,10 +4422,11 @@
     } // end canEdit — New storefront form
 
     if (!state.storefronts.length) {
+      // Wave 21 — the importer used to appear ONLY here, and disappeared for good once you
+      // added a storefront by hand. It's a permanent card now, so the empty state just says
+      // what's empty.
       h += '<div class="empty">No storefronts yet. Add each shift you’ve been assigned — you can pre-populate the whole season now and add scouts to each later.</div>' +
-        (canEdit() ? '<div class="row no-print" style="justify-content:center;margin:-4px 0 14px">' +
-        '<button type="button" class="btn small ghost" data-act="te-import">Import your Trail’s End shift schedule</button>' +
-        '<input type="file" id="teFile" accept=".xlsx,.csv" hidden></div>' : '');
+        teImportCard();
       return h;
     }
 
@@ -4397,6 +4439,9 @@
     if (!upcoming.length) h += '<p class="small muted">No upcoming storefronts — every one on the schedule is in the past.</p>';
     else upcoming.forEach(function (sf) { h += storefrontRow(sf); });
     h += '</div>';
+
+    // Wave 21 — permanent importer, below the schedule it feeds.
+    h += teImportCard();
 
     // Completed (collapsed)
     if (completed.length) {
@@ -4548,7 +4593,7 @@
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary('act:' + a.id))));
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this activity</button>' +
-        '<button type="button" class="btn small" data-act="tab" data-tab="budget">Budget tab</button></div>';
+        '<button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>';
     }
     return h + '</div>';
   }
@@ -4648,14 +4693,14 @@
       h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Start here</h2>' +
         '<button type="button" class="btn small ghost" data-act="start-here-dismiss">Dismiss</button></div>' +
         '<p class="small muted" style="margin:6px 0 4px">Five steps to set up your pack’s year:</p>' +
-        '<div class="assign-row"><span class="assign-name">1 · Pack name &amp; sync</span><button type="button" class="btn small" data-act="goto-pack">Pack tab</button></div>' +
+        '<div class="assign-row"><span class="assign-name">1 · Pack name &amp; sync</span><button type="button" class="btn small" data-act="goto-pack">Pack</button></div>' +
         // Wave 21 — these use data-act="goto" rather than "tab". "tab" + data-tab="scouts"
         // would produce the SAME focus signature as the Scouts button in the workspace
         // strip, and findBySignature takes the first match in document order — so focus
         // would silently jump to the topbar after every re-render.
         '<div class="assign-row"><span class="assign-name">2 · Add your scouts</span><button type="button" class="btn small" data-act="goto" data-tab="scouts" data-section="roster">Scouts</button></div>' +
         '<div class="assign-row"><span class="assign-name">3 · Seed the standard year</span><button type="button" class="btn small" data-act="start-here-seed">Seed now</button></div>' +
-        '<div class="assign-row"><span class="assign-name">4 · Import your Trail’s End schedule</span><button type="button" class="btn small" data-act="goto-pack">Pack tab</button></div>' +
+        '<div class="assign-row"><span class="assign-name">4 · Import your Trail’s End schedule</span><button type="button" class="btn small" data-act="goto" data-tab="popcorn" data-section="storefronts">Popcorn</button></div>' +
         '<div class="assign-row"><span class="assign-name">5 · Set commission &amp; goals</span><button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>' +
         '</div>';
     }
@@ -4788,9 +4833,9 @@
         '</div>';
     } else {
       h += '<h2 class="section display" style="margin-bottom:6px">Plan the month</h2>' +
-        '<p class="small muted">Tap any day to see what’s scheduled and to add a den or pack meeting. Storefronts come from the Storefronts tab; activities with a date come from the Budget tab.</p>' +
+        '<p class="small muted">Tap any day to see what’s scheduled and to add a den or pack meeting. Storefronts come from Popcorn · Storefronts; dated activities come from Money · Budget.</p>' +
         '<div class="row" style="margin-top:10px">' + seedBtn() + '</div>' +
-        '<p class="small muted" style="margin:6px 0 0">New program year? Seed the traditional slate of pack activities — no dates yet; set them on the Budget tab when they’re known.</p>';
+        '<p class="small muted" style="margin:6px 0 0">New program year? Seed the traditional slate of pack activities — no dates yet; set them on Money · Budget when they’re known.</p>';
     }
     h += '</div>';
     h += bandCard;
@@ -4950,7 +4995,7 @@
         addable.map(function (s) { return '<option value="' + s.id + '">' + esc(s.name) + '</option>'; }).join('') +
         '</select></div>';
     } else if (!roster.length) {
-      h += '<p class="small muted" style="margin-top:8px">Add scouts on the Scouts tab first.</p>';
+      h += '<p class="small muted" style="margin-top:8px">Add scouts on Scouts · Roster first.</p>';
     }
     h += '</div>';
 
@@ -4959,7 +5004,7 @@
     var addableAdults = state.leaders.filter(function (l) { return (b.adults || []).indexOf(l.id) === -1; });
     h += '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Adults on this block</p>';
     if (!state.leaders.length) {
-      h += '<p class="small muted" style="margin:4px 0 0">Add leaders on the Pack tab to staff blocks.</p>';
+      h += '<p class="small muted" style="margin:4px 0 0">Add leaders on Pack to staff blocks.</p>';
     } else {
       if (adultsOn.length) {
         h += '<div class="row" style="gap:6px;margin:6px 0 0">' + adultsOn.map(function (l) {
@@ -5207,20 +5252,39 @@
   }
 
   /* ----- Budget tab ----- */
-  function renderBudget() {
-    var b = state.budget;
-    var bud = computeBudget();
-
-    // Wave 17 — Season setup: the money settings, moved here from the old Totals tab so
-    // the plan and its knobs live together. Standings keeps the read-only displays and
-    // goal bars. Same data-ch names/ids as before, so focus restore keeps working.
+  // Wave 21 — Season setup, extracted so it can render in BOTH places that need it: the
+  // Kernel sets the goals from Popcorn, the Treasurer needs the commission rate on Money,
+  // and there is exactly one copy of the state behind it. A section can't live in two
+  // workspaces, but a card can — which is the whole reason this is a card and not a section.
+  //
+  // Wave 21 also moved the PACK NAME out of here to Pack · Sharing. It was never a money
+  // setting; it's the pack's identity, and it's what strangers see on a shared link.
+  // (Wave 17 first gathered these knobs here from the old Totals tab.)
+  // collapsed=true renders it behind a disclosure, which is how Popcorn shows it — present
+  // and editable, but not competing with the standings you came to look at.
+  function seasonSetupCard(opts) {
     var packT = computePackTotals();
-    var h = '<div class="card"><h2 class="section display">Season setup</h2>' +
+    var collapsible = !!(opts && opts.collapsible);
+    var open = collapsible ? !!ui.seasonSetupOpen : true;
+    var h = '<div class="card">';
+    if (collapsible) {
+      h += '<div class="spread"><h2 class="section display" style="margin-bottom:0">Season setup</h2>' +
+        '<button type="button" class="exp-toggle" data-act="toggle-season-setup" aria-expanded="' + open + '">' +
+        (open ? 'Hide' : 'Commission &amp; goals') + '</button></div>';
+      if (!open) {
+        h += '<p class="small muted" style="margin:6px 0 0">Commission <strong>' +
+          esc(state.commissionPct || '—') + '%</strong> · Trail’s End goal <span class="money">' + fmt(packT.teGoal) +
+          '</span> · Cash goal <span class="money">' + fmt(packT.cashGoal) + '</span></p></div>';
+        return h;
+      }
+    } else {
+      h += '<h2 class="section display">Season setup</h2>';
+    }
+    return h +
       '<div class="row">' +
       '<label class="fld">Commission rate (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="commission" value="' + esc(state.commissionPct) + '" placeholder="e.g. 33"></label>' +
       '<label class="fld">Trail’s End goal ($)<input class="money-in" inputmode="decimal" data-ch="goal" value="' + dollars(packT.teGoal) + '" placeholder="e.g. 5000"></label>' +
       '<label class="fld">Cash donations goal ($)<input class="money-in" inputmode="decimal" data-ch="cash-goal" value="' + dollars(packT.cashGoal) + '" placeholder="e.g. 500"></label>' +
-      '<label class="fld">Pack name (for reports)<input data-ch="pack-name" value="' + esc(state.packName) + '" placeholder="Pack 569" style="width:160px"></label>' +
       '</div>' +
       '<div class="row" style="margin-top:6px">' +
       '<label class="perscout"><input type="checkbox" data-ch="cash-via-te"' + (packT.viaTE ? ' checked' : '') + '> Run cash donations through Trail’s End (Heroes &amp; Helpers)</label>' +
@@ -5231,7 +5295,14 @@
         : 'The pack <strong>keeps 100%</strong> — no commission, excluded from the Trail’s End goal, and counted toward the cash donations goal instead.') +
       ' Either way they show on the cash-donations board and fund the pack budget. ' +
       '(Trail’s End calls these Heroes &amp; Helpers donations — recorded per scout in their app.)</p>' +
+      '<p class="small muted" style="margin:6px 0 0">These four settings are shared — the same card sits on Popcorn and on Money, ' +
+      'because the Kernel sets the goals and the Treasurer needs the rate.</p>' +
       '</div>';
+  }
+  function renderBudget() {
+    var b = state.budget;
+    var bud = computeBudget();
+    var h = seasonSetupCard();
 
     // Overview
     var balColor = bud.balance >= 0 ? 'var(--good)' : 'var(--bad)';
@@ -5254,7 +5325,7 @@
       (bud.rewardDues > 0
         ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">🎟 Rewards</span> Dues covered by pack: <strong>' + bud.rewardCovered +
           '</strong> × <span class="money">' + fmt(bud.rewardDuesEach) + '</span> = <strong class="money">' + fmt(bud.rewardDues) +
-          '</strong> <span class="muted">(included in actual spent; set tiers on the Standings tab)</span></p>'
+          '</strong> <span class="muted">(included in actual spent; set tiers on Popcorn · Standings)</span></p>'
         : '') +
       '<hr class="divider">' +
       '<div class="row">' +
@@ -5737,9 +5808,75 @@
     h += '</div>';
     return h;
   }
-  function renderPack() {
+  /* ----- Money · Dues & fees ----- */
+  // Wave 21 — a real home for the collect grids. They existed before, but the only way to
+  // reach one was to tick "per scout" on a budget row and then expand it — the most buried
+  // high-frequency Treasurer task in the app. Same renderCollectBlock, same state; this
+  // just gathers every per-scout charge in one place and says who still owes.
+  function renderDues() {
+    var charges = perScoutCharges();
+    var roster = activeScouts();
+    if (!charges.length) {
+      return '<div class="card"><h2 class="section display">Dues &amp; fees</h2>' +
+        '<div class="empty" style="margin:0">Nothing is charged per scout yet. Tick <strong>per scout</strong> on any ' +
+        'activity or expense in the budget and it shows up here to collect.</div>' +
+        '<div class="row no-print" style="margin-top:10px">' +
+        '<button type="button" class="btn" data-act="goto" data-tab="money" data-section="budget">Open the budget</button></div></div>';
+    }
+    // Who still owes, across every charge at once.
+    var owing = roster.map(function (s) { return { s: s, owe: scoutOwesCents(s.id) }; })
+      .filter(function (r) { return r.owe > 0; })
+      .sort(function (a, b) { return b.owe - a.owe || a.s.name.localeCompare(b.s.name); });
+    var owedTotal = owing.reduce(function (n, r) { return n + r.owe; }, 0);
+
+    var h = '<div class="card"><h2 class="section display">Dues &amp; fees</h2>' +
+      '<div class="row">' +
+      '<div class="stat"><span class="v">' + charges.length + '</span><span class="l">Per-scout charges</span></div>' +
+      '<div class="stat"><span class="v">' + (roster.length - owing.length) + ' of ' + roster.length + '</span><span class="l">Fully paid up</span></div>' +
+      '<div class="stat"><span class="v money"' + (owedTotal ? ' style="color:var(--accent-text)"' : '') + '>' + fmt(owedTotal) + '</span><span class="l">Still owed</span></div>' +
+      '</div>';
+    if (owing.length) {
+      h += '<hr class="divider"><p class="eyebrow">Who still owes</p>';
+      owing.forEach(function (r) {
+        h += '<div class="assign-row"><span class="assign-name">' + esc(r.s.name) +
+          (r.s.den ? ' <span class="pill navy">' + esc(r.s.den) + '</span>' : '') + '</span>' +
+          '<span class="money" style="color:var(--accent-text)">' + fmt(r.owe) + '</span></div>';
+      });
+    } else if (roster.length) {
+      h += '<p class="small muted" style="margin:8px 0 0">Everyone’s square. Nothing outstanding.</p>';
+    }
+    h += '</div>';
+
+    // One card per charge, each with the collect grid that was previously buried.
+    h += '<div class="card"><h2 class="section display">Collect</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">Tick a scout as they pay. Fees marked ' +
+      '<strong>families pay</strong> join the budget’s funds-in as they’re collected.</p>';
+    charges.forEach(function (c) {
+      var isActivity = state.budget.activities.indexOf(c) !== -1;
+      h += '<div class="block-card" style="margin-top:8px">' +
+        '<div class="spread"><span class="assign-name">' + esc(c.name || (isActivity ? 'Untitled activity' : 'Untitled expense')) +
+        ' <span class="small muted">' + (isActivity ? 'activity' : 'expense') +
+        (c.familyPays ? ' · families pay' : '') + '</span></span>' +
+        '<span class="money">' + fmt(c.estCents || 0) + ' <span class="small muted">each</span></span></div>' +
+        renderCollectBlock(c, c.id) + '</div>';
+    });
+    h += '</div>';
+    return h;
+  }
+
+  /* ----- Pack · Sharing — who can get in, and how the pack is published ----- */
+  function renderPackSharing() {
+    // Wave 21 — the pack's NAME, moved out of Budget's Season setup. It was never a money
+    // setting: it's the pack's identity, it's what a parent sees on a shared link, and it
+    // belongs beside the sync and join settings that publish it.
+    var h = '<div class="card"><h2 class="section display">This pack</h2>' +
+      '<div class="row">' +
+      '<label class="fld">Pack name<input data-ch="pack-name" value="' + esc(state.packName) + '" placeholder="Pack 569" style="width:200px"></label>' +
+      '</div>' +
+      '<p class="small muted" style="margin:8px 0 0">Shown in the header, on printed sheets and exports, and on the family view a parent sees.</p></div>';
+
     // Sync card
-    var h = '<div class="card"><h2 class="section display">Shared sync</h2>' +
+    h += '<div class="card"><h2 class="section display">Shared sync</h2>' +
       '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc((SYNC_PILL[sync.mode] || SYNC_PILL.local).label) + '</span> ' +
       esc(syncModeLine()) + '</p>';
     if (FIREBASE_CONFIG) {
@@ -5793,18 +5930,15 @@
       '<input type="file" id="importFile" accept=".json,application/json" hidden>' +
       '</div><p class="small muted" style="margin:8px 0 0">Data lives on this device. Back up to JSON now and then, and use Import to move to another device.</p></div>';
 
-    // Wave 17 — "Where the money lives": a static map for whoever takes over the checkbook.
-    h += '<div class="card"><h2 class="section display">Where the money lives</h2>' +
-      '<p class="small muted" style="margin:0 0 4px">A quick map for a new treasurer taking over.</p>' +
-      '<ul class="closeout-list">' +
-      '<li><strong>Standings</strong> — live per-scout sale standings for this season.</li>' +
-      '<li><strong>Budget</strong> — the year plan, plus Season setup (commission rate, goals, cash routing) and the funds-in math.</li>' +
-      '<li><strong>Inventory</strong> — the popcorn <em>order</em> and its projected earnings; never added to funds-in.</li>' +
-      '<li><strong>Dues &amp; fees</strong> — collect grids on the Budget tab; fees marked “families pay” join funds-in as they’re collected.</li>' +
-      '<li><strong>Other fundraisers</strong> — a side-ledger on the Standings tab; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
-      '<li><strong>Past seasons</strong> — read-only archives; never counted.</li>' +
-      '</ul></div>';
+    // Wave 19(27) — static "add to home screen" card (no state, no detection).
+    h += '<div class="card"><h2 class="section display">Put this on your phone’s home screen</h2>' +
+      '<p class="small muted" style="margin:0 0 4px"><strong>iPhone / iPad (Safari):</strong> Share button → Add to Home Screen.</p>' +
+      '<p class="small muted" style="margin:0"><strong>Android (Chrome):</strong> menu ⋮ → Add to Home screen.</p></div>';
+    return h;
+  }
 
+  /* ----- Pack · People — the roster that keeps the pack legal ----- */
+  function renderPackPeople() {
     // Leaders card
     var leaders = state.leaders.slice().sort(function (a, b) {
       if (!a.name && b.name) return 1;
@@ -5813,7 +5947,7 @@
     });
     var needs = 0;
     leaders.forEach(function (l) { if (leaderStatus(l).length) needs += 1; });
-    h += '<div class="card"><h2 class="section display">Leaders <span class="pill navy">' + leaders.length + '</span></h2>';
+    var h = '<div class="card"><h2 class="section display">Leaders <span class="pill navy">' + leaders.length + '</span></h2>';
     if (needs) {
       h += '<p class="small" style="margin:0 0 6px">' + leaders.length + ' leader' + (leaders.length === 1 ? '' : 's') +
         ' · <strong style="color:var(--accent-text)">' + needs + ' need' + (needs === 1 ? 's' : '') + ' attention</strong></p>';
@@ -5825,17 +5959,37 @@
     if (canEdit()) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
     h += '</div>';
 
-    // Wave 13 — Trail's End import card (edit-only — it mutates the schedule/archives)
+    // Wave 19(40) — AHMR pointer (plain text, deliberately not a link).
+    h += '<p class="small muted" style="margin:4px 2px 0">Health forms (AHMR) and activity consent forms live at scouting.org/health-and-safety/ahmr — council and Scoutbook remain the source of truth for medical/consent records.</p>';
+    return h;
+  }
+
+  /* ----- Pack · Season — where the year begins and ends ----- */
+  function renderPackSeason() {
+    // Wave 17 — "Where the money lives": a static map for whoever takes over the checkbook.
+    // NOTE: this is the PRINTABLE counterpart to the on-screen handoff cards — `main` is
+    // display:none when printing, so the handoffs never reach paper and this list is all a
+    // new treasurer gets. Add a seam to one and add it here too, or this quietly goes stale.
+    var h = '<div class="card"><h2 class="section display">Where the money lives</h2>' +
+      '<p class="small muted" style="margin:0 0 4px">A quick map for a new treasurer taking over.</p>' +
+      '<ul class="closeout-list">' +
+      '<li><strong>Popcorn · Standings</strong> — live per-scout sale standings for this season.</li>' +
+      '<li><strong>Money · Budget</strong> — the year plan, plus Season setup (commission rate, goals, cash routing) and the funds-in math.</li>' +
+      '<li><strong>Popcorn · Inventory</strong> — the popcorn <em>order</em> and its projected earnings; never added to funds-in.</li>' +
+      '<li><strong>Dues &amp; fees</strong> — collect grids on Money · Budget; fees marked “families pay” join funds-in as they’re collected.</li>' +
+      '<li><strong>Other fundraisers</strong> — a side-ledger on Popcorn · Standings; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
+      '<li><strong>Past seasons</strong> — read-only archives; never counted.</li>' +
+      '</ul></div>';
+
+    // Wave 21 — the Trail's End import card moved to Popcorn · Storefronts, where the
+    // Kernel who runs it actually works. This is the pointer left behind, next to Past
+    // seasons because that is where a past-season sales report lands.
     if (canEdit()) {
-    h += '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
-      '<p class="small muted" style="margin:0 0 10px">Pulls your <strong>storefront schedule</strong> straight onto the Storefronts tab, ' +
-      'fills in <strong>popcorn quantities</strong> on the Inventory tab from the Inventory Transaction report, ' +
-      'and archives a <strong>past season’s sales</strong> under Past seasons below. Export a report from the ' +
-      'Trail’s End Leader Portal → <strong>Reports</strong> as <strong>.xlsx or .csv</strong> — the app figures out which report it is. ' +
-      'Nothing you’ve entered is overwritten; you preview and confirm before anything is saved.</p>' +
-      '<button type="button" class="btn primary" data-act="te-import">Choose a Trail’s End file…</button>' +
-      '<input type="file" id="teFile" accept=".xlsx,.csv" hidden></div>';
-    } // end canEdit — Trail's End import
+      h += '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
+        '<p class="small muted" style="margin:0 0 10px">Lives on <strong>Popcorn · Storefronts</strong> now. ' +
+        'A past season’s sales report still archives into Past seasons below.</p>' +
+        '<button type="button" class="btn" data-act="goto" data-tab="popcorn" data-section="storefronts">Go to the importer</button></div>';
+    }
 
     // Wave 13 — Past seasons (read-only archives, newest year first — always shown)
     h += renderPastSeasons();
@@ -5870,14 +6024,6 @@
       'and the roster moved up a den. You’ll see a preview first; nothing changes until you confirm there.</p>' +
       '<button type="button" class="btn primary" data-act="open-closeout">Close out the ' + cy + ' program year…</button></div>';
     } // end canEdit — advance dens + close-out
-
-    // Wave 19(27) — static "add to home screen" card (no state, no detection).
-    h += '<div class="card"><h2 class="section display">Put this on your phone’s home screen</h2>' +
-      '<p class="small muted" style="margin:0 0 4px"><strong>iPhone / iPad (Safari):</strong> Share button → Add to Home Screen.</p>' +
-      '<p class="small muted" style="margin:0"><strong>Android (Chrome):</strong> menu ⋮ → Add to Home screen.</p></div>';
-
-    // Wave 19(40) — AHMR pointer (plain text, deliberately not a link).
-    h += '<p class="small muted" style="margin:4px 2px 0">Health forms (AHMR) and activity consent forms live at scouting.org/health-and-safety/ahmr — council and Scoutbook remain the source of truth for medical/consent records.</p>';
     return h;
   }
 
@@ -5925,9 +6071,7 @@
       '<div class="stat"><span class="v money">' + fmt(pack.combined) + '</span><span class="l">Combined</span></div>' +
       '<div class="stat"><span class="v money" style="color:var(--accent-text)">' + (pack.commission == null ? '—' : fmt(pack.commission)) + '</span>' +
       '<span class="l">Pack commission</span></div>' +
-      '</div>' +
-      // Wave 17 — the money settings moved to Season setup; this tab is read-only standings.
-      '<p class="small muted" style="margin:8px 0 0">Commission rate, goals, cash routing, and the pack name live in <strong>Season setup</strong> at the top of the Budget tab.</p>';
+      '</div>';
 
     // Trail's End goal progress
     if (pack.teGoal > 0) {
@@ -5947,6 +6091,12 @@
         (pack.viaTE ? ' · cash is routed through Trail’s End right now, so nothing counts here' : '') + '</p>';
     }
     h += '</div>';
+
+    // Wave 21 — Season setup renders here too, collapsed, directly under the goal bars it
+    // controls. Wave 17 moved these knobs to Budget and left a breadcrumb here pointing at
+    // them; a Kernel setting the season's goal shouldn't have to walk into the Treasurer's
+    // workspace to do it. Same card function, same state — there is only one copy.
+    h += seasonSetupCard({ collapsible: true });
 
     // Per-storefront subtotals
     if (state.storefronts.length) {
@@ -6079,7 +6229,7 @@
         '<button class="btn primary small" type="submit" style="align-self:flex-end">Add sale</button>' +
         '</form>';
     } else {
-      h += '<p class="small muted" style="margin:10px 0 6px">Add active scouts on the Scouts tab to record sales.</p>';
+      h += '<p class="small muted" style="margin:10px 0 6px">Add active scouts on Scouts · Roster to record sales.</p>';
     }
 
     // Editable goal (live money field, same pattern as the popcorn goals).
@@ -6263,7 +6413,7 @@
         var seasonPct = parseFloat(state.commissionPct);
         var invPct = parseFloat(inv.commissionPct);
         return (isFinite(seasonPct) && isFinite(invPct) && invPct !== seasonPct)
-          ? '<p class="small muted" style="margin:6px 0 0">Differs from your season rate (' + invPct + '% vs ' + seasonPct + '%) — Season setup on the Budget tab.</p>'
+          ? '<p class="small muted" style="margin:6px 0 0">Differs from your season rate (' + invPct + '% vs ' + seasonPct + '%) — Season setup, above.</p>'
           : '';
       })() +
       '<p class="small muted" style="margin:8px 0 0">Projected earnings shown here only — your Budget “funds in” still comes from actual recorded sales, so nothing is double-counted.</p>';
@@ -6285,7 +6435,7 @@
         '<p class="small muted" style="margin:8px 0 0">Seeds the five usual varieties with containers per case — you fill in cases and prices. ' +
         'Or use <strong>+ Add product</strong> below for a custom lineup.</p>' +
         '<p class="small muted" style="margin:8px 0 0">Already ordered? Import your Trail’s End <strong>Inventory Transaction report</strong> ' +
-        'from the Pack tab and the products and quantities fill themselves in.</p></div>';
+        'from Popcorn · Storefronts and the products and quantities fill themselves in.</p></div>';
     } else {
       inv.products.forEach(function (p) {
         var ordered = containersOrdered(p);
@@ -7054,7 +7204,7 @@
       if (o.shortCount) {
         v += '<div class="warn" style="margin:12px 0 0">' + o.shortCount + ' product' + (o.shortCount === 1 ? ' has' : 's have') +
           ' more logged as handed out than this report says the pack ever held, so ' +
-          (o.shortCount === 1 ? 'it' : 'they') + ' will show a negative on-hand. Your hand-out log is left alone — check it on the Inventory tab.</div>';
+          (o.shortCount === 1 ? 'it' : 'they') + ' will show a negative on-hand. Your hand-out log is left alone — check it on Popcorn · Inventory.</div>';
       }
       v += '<p class="small muted" style="margin:14px 0 0">Quantities are <strong>containers</strong>, not cases, so each net figure is split into whole cases plus any loose remainder. ' +
         'Transfers out are subtracted, which is why a net can sit below what you ordered. ' +
@@ -7302,7 +7452,7 @@
       '<p class="muted small" style="margin:0 0 14px">' + esc(state.packName || 'Pack') + ' · ' +
       g.upcoming.length + ' upcoming · ' + g.past.length + ' completed</p>';
     if (!g.upcoming.length && !g.past.length) {
-      h += '<p class="small muted">No storefronts scheduled yet — add them on the Storefronts tab.</p>';
+      h += '<p class="small muted">No storefronts scheduled yet — add them on Popcorn · Storefronts.</p>';
     } else {
       h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Storefront schedule at a glance</caption>' +
         '<thead><tr><th scope="col">Date</th><th scope="col">Storefront</th><th scope="col" class="num">Shifts</th><th scope="col">Status</th></tr></thead><tbody>';
@@ -8715,7 +8865,7 @@
       '<li>Starts <strong>' + (year + 1) + '</strong>: activities are re-seeded into the same months with dates cleared and last year’s actual costs as the new estimates; the starting balance becomes this year’s ending balance (' + fmt(b.balanceCents) + '); ' +
       // Wave 19(3) — dynamic: skip the den-advance step when the Pack tab already ran it this year.
       (state.densAdvancedYear === year
-        ? 'den advancement is <strong>skipped</strong> — dens were already advanced for ' + year + ' from the Pack tab'
+        ? 'den advancement is <strong>skipped</strong> — dens were already advanced for ' + year + ' from Pack'
         : 'scouts move up one den (Arrow of Light scouts are archived as crossed over)') +
       '; and season data — storefronts, sales entries, meetings, RSVPs, attendance, dues collections, advancement marks, derby, fundraiser sales, and inventory hand-outs — is cleared.</li>' +
       // Wave 19(38b)
@@ -8933,6 +9083,7 @@
     if (act === 'tab') { gotoNav(el.dataset.tab, null, true); return; }
     if (act === 'section' || act === 'goto') { gotoNav(el.dataset.tab, el.dataset.section, false); return; }
     if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
+    if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
     // ---- Parent phase (the only navigation the parent app has) ----
     if (act === 'parent-tab') {
       ui.parentTab = el.dataset.tab === 'standings' ? 'standings' : 'schedule';

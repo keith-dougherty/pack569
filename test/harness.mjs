@@ -320,6 +320,76 @@ test('gold is never used as a marker on navy', () => {
     'the "yours" marker on the navy strip must use --navy-ink, not --accent');
 });
 
+/* ================================================================
+   Wave 21 — relocations
+   ================================================================ */
+
+test('Season setup is one card rendered in two workspaces', () => {
+  // A section can't live in two workspaces; a card can. That's why it's a card.
+  ok(/function seasonSetupCard\(opts\)/.test(SCRIPT), 'seasonSetupCard() not found');
+  const calls = [...SCRIPT.matchAll(/seasonSetupCard\(/g)].length;
+  ok(calls >= 3, `expected the definition plus two call sites, found ${calls} occurrences`);
+  ok(/h \+= seasonSetupCard\(\{ collapsible: true \}\)/.test(SCRIPT), 'Popcorn does not render Season setup');
+  ok(/var h = seasonSetupCard\(\)/.test(SCRIPT), 'Money does not render Season setup');
+});
+
+test('the pack name left Season setup for Pack', () => {
+  const card = /function seasonSetupCard\(opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(card, 'seasonSetupCard body not found');
+  ok(!/data-ch="pack-name"/.test(card[0]), 'the pack name is still inside Season setup');
+  const sharing = /function renderPackSharing\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(sharing && /data-ch="pack-name"/.test(sharing[0]), 'the pack name is not on Pack · Sharing');
+});
+
+test('per-scout charges count activities as well as expenses', () => {
+  // Both render a collect grid, but only expenses were ever counted — so a scout who
+  // hadn't paid for a per-scout ACTIVITY showed as owing nothing.
+  const fn = /function perScoutCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'perScoutCharges() not found');
+  ok(/state\.budget\.expenses/.test(fn[0]), 'expenses are not counted');
+  ok(/state\.budget\.activities/.test(fn[0]), 'activities are not counted');
+  const owes = /function scoutOwesCents\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/perScoutCharges\(\)/.test(owes[0]), 'scoutOwesCents does not use perScoutCharges()');
+});
+
+test('the Trail’s End file input exists exactly once', () => {
+  // It used to be emitted from two places; whichever rendered second lost the id, so the
+  // picker silently opened the wrong element.
+  const n = [...HTML.matchAll(/id="teFile"/g)].length;
+  eq(n, 1, 'teFile input count');
+});
+
+test('the importer is permanent, not empty-state-only', () => {
+  const fn = /function teImportCard\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'teImportCard() not found');
+  // Its three real destinations must be visible, since one button serves all three.
+  for (const w of ['Storefront Shifts', 'Inventory Transactions', 'Sales Transactions']) {
+    ok(fn[0].includes(w), `the importer does not name the "${w}" report`);
+  }
+  const list = /function renderStorefrontList\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok((list[0].match(/teImportCard\(\)/g) || []).length >= 2,
+    'the importer is not rendered in both the empty and populated states');
+});
+
+test('no user-facing copy points at a tab that no longer exists', () => {
+  // Comments are exempt; strings are not.
+  const stale = [];
+  for (const m of SCRIPT.matchAll(/'[^'\n]*\bthe (Budget|Storefronts|Standings|Totals|Inventory|Advancement|Derby) tab\b[^'\n]*'/g)) {
+    stale.push(m[0].slice(0, 70));
+  }
+  ok(!stale.length, `stale tab references in copy: ${stale.join(' | ')}`);
+});
+
+test('the printable money map lists the same seams the UI does', () => {
+  // main is display:none when printing, so handoff cards never reach paper and this list
+  // is all a new treasurer gets. If they drift, the handoff document lies.
+  const fn = /function renderPackSeason\(\) \{[\s\S]*?<\/ul><\/div>'/.exec(SCRIPT);
+  ok(fn, 'the "Where the money lives" list was not found in renderPackSeason');
+  for (const seam of ['Dues &amp; fees', 'Other fundraisers', 'Past seasons']) {
+    ok(fn[0].includes(seam), `the printable money map no longer mentions ${seam}`);
+  }
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
