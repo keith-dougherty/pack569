@@ -41,6 +41,32 @@ Also removed: five functions and constants written during the phases and never c
 Tests went 137 → 143. The gap they had in common: they asserted that each phase's *new* code
 was right, and never that the *old* code around it had been taught about the new records.
 
+### Multi-year scenario, 2026-07-26
+
+`test/scenario-browser.js` drives the real app through **three program years** and
+cross-checks every figure against arithmetic computed inside the scenario itself — never
+against the app's own functions, so the two cannot agree by sharing a bug. **62 checks, 0
+failures.**
+
+It is the counterpart to `test/harness.mjs`: that file tests functions in isolation, this one
+tests what happens to a pack's books over *time*, across two close-outs. That is exactly where
+the five audit defects lived, and none of them were reachable by a unit test.
+
+The year-1 arc it verifies, end to end: a $3,450 plan against $2,320 of income gives a $1,130
+fundraising need and a **derived** $3,531.25 pack goal ($353.13 a scout); $1,450 of council
+camp stays out of both A and B; 26 heads at the campout raise $940 in charges and 26 at Blue &
+Gold raise $355, against $800 of roster-based dues; a $300 tier waives three scouts' dues
+($240) and not one head they brought; one charge is forgiven, one family is covered by a
+donation, and one family ends the year genuinely owing $190; the books reconcile to the
+statement at $0.00 difference and close with the archive holding the campout's real $1,020
+rather than an estimate.
+
+Then it proves the year boundary holds: carryover is the reconciled bank balance to the cent,
+categories and per-head rates and `paidDirectTo` all survive, flat lines re-seed from what they
+actually cost, every activity comes back scheduled, nothing settled leaks into the new year,
+and after a second close-out both archives still hold their own numbers with the bank chaining
+$420 → $372.50 → $272.50 unbroken.
+
 ---
 
 ## 1. The problem, concretely
