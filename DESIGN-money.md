@@ -218,11 +218,38 @@ head, because that is how the cost is actually incurred.
 
 ```js
 charge = { id, scoutId, lineId, who: 'scout'|'adult'|'sibling',
-           amountCents, date, waivedBy }        // waivedBy = reward tier id
+           amountCents, date,
+           waivedBy,                            // reward tier id — earned
+           forgiven }                           // { date, by, reason } — granted
 ```
 
 A family that brought the scout, both parents and a younger sibling gets four charges against that
 scout's account: one `scout`, two `adult`, one `sibling`.
+
+#### Waived and forgiven are different things, and both stay on the books
+
+A charge that is not collected can have got there two ways, and collapsing them would hide both:
+
+| | Meaning | Who decides |
+|---|---|---|
+| `waivedBy` | The scout **earned** it by reaching a fundraising tier | the rule, automatically |
+| `forgiven` | The committee **granted** it — hardship, a no-show they chose not to pursue | a person, deliberately |
+
+**Neither deletes the charge.** It was raised, it stands, and it carries a reason. That matters for
+three separate purposes:
+
+- *Total waived* tells you what fundraising actually bought the families — the number that keeps
+  the Scout Account boundary visible.
+- *Total forgiven* tells you what the pack chose to absorb. A committee should see that figure
+  deliberately, not discover it as a gap.
+- An auditor sees why the money is not there. A missing record cannot be audited; a marked one can.
+
+This is also the practice the sample financial bylaws assume — the Treasurer is told to
+*"sympathetically counsel with a family which may be financially unable to pay fees"* and that
+*"no boy should be left out of activities due to inability to pay."* Forgiveness is expected. It
+just has to leave a trace.
+
+Outstanding for a family = `Σ charges where !waivedBy && !forgiven` − `Σ payments`.
 
 **This pack's rule, expressed exactly:**
 
@@ -310,6 +337,27 @@ overspend and most of the waivers. **None of that is expressible today**, where 
 are the same field multiplied by the roster.
 
 Every number above is a stored record, not a derivation. That is what makes it a book.
+
+### 3.5 Who enters what, and where
+
+The event is where the two halves meet, and they are entered by different people in different
+workspaces — which is exactly the split the jobs model already encodes.
+
+| After an event | Who | Where | Record written |
+|---|---|---|---|
+| Head counts — scouts, adults, siblings | Cubmaster / Activities chair / Den leader | **Program · Calendar**, on the event | `attendance[eventId][scoutId]` |
+| What it actually cost | Treasurer | **Money · Ledger**, posted to the line | ledger entry `out` |
+| Charges raised | *automatic* | from head counts × rates | `charges[]` |
+| Waiving a scout's share | *automatic* | from the reward tier | `charge.waivedBy` |
+| Forgiving a charge | Treasurer / Committee Chair | **Money · Dues & fees** | `charge.forgiven` |
+| Recording a family payment | Treasurer | **Money · Ledger** | ledger entry `in` + `scoutId` |
+
+Nobody has to be in two places. The person who ran the event says who came; the person with the
+chequebook says what it cost. The charges fall out of the two meeting.
+
+That also means **an event is not "closed" until both halves are in**, which is a genuinely useful
+thing for Home to nag about — a past event with attendance but no spend, or spend but no
+attendance, is an incomplete book and exactly the sort of item the Treasurer's queue should carry.
 
 ---
 
@@ -406,15 +454,20 @@ and are worth doing even if the rest waits.
 6. **Attendance is an open head count.** A scout may bring two parents and siblings, so attendance
    is `{ scout, adults, siblings }` per family per event, not a tick. Siblings get their own rate.
 
+7. **Attendance is entered on the event, after the fact** — by whoever ran it, in Program. The
+   Treasurer separately posts what it cost, in Money. Charges fall out of the two meeting, so an
+   event with only one half entered is an incomplete book and should be visible as such.
+8. **A charge stands even if the family did not attend, and can be forgiven.** Forgiveness is
+   recorded on the charge with a reason, never deleted — `waivedBy` (earned) and `forgiven`
+   (granted) are reported separately.
+
 **Still open:**
 
-7. **Scout Account ceiling.** Should the app warn when total tier-waived value gets large relative
+9. **Scout Account ceiling.** Should the app warn when total tier-waived value gets large relative
    to net fundraising proceeds? No individual balances exist here, so the direct-benefit risk is
    low — but the number is worth seeing.
-8. **Categories.** Adopt 510-278's list verbatim, or a shorter pack-specific one?
-9. **Who enters attendance, and where?** Treasurer on the Money side after the fact, or the
-   Cubmaster/Activities chair on the event itself in Program? The record is the same either way;
-   this is about whose screen it lands on.
-10. **Charging non-attendees.** If a family signs up, the pack buys their meal, and they don't
-    show — is the charge still raised? A `date`/`waivedBy` field can express "charged then
-    forgiven", but the policy is the pack's.
+10. **Categories.** Adopt 510-278's list verbatim, or a shorter pack-specific one?
+11. **Who may forgive?** Treasurer alone, or Committee Chair too? The app has jobs now, so this
+    can be a real distinction rather than "any editor".
+12. **Opening balance and history.** Does the ledger start at the current bank balance on a chosen
+    date, or do we backfill this season's transactions to make the first reconciliation meaningful?
