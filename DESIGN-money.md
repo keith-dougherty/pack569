@@ -1,9 +1,9 @@
 # Design — separating the plan, the money, and the calendar
 
-**Status:** Written 2026-07-26. **Phases 0, 1, 2, 2b and 3a are built** (2026-07-26) — the
-ledger, bank reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`,
-attendance as a head count, and per-head pricing with `fundedBy`/`paidDirectTo`. Phase 3b
-(charges and family accounts) and Phase 4 remain proposal.
+**Status:** Written 2026-07-26. **Phases 0 through 3b are built** (2026-07-26) — the ledger,
+bank reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`, attendance
+as a head count, per-head pricing with `fundedBy`/`paidDirectTo`, and charges with all four
+settlement paths. Only **Phase 4** (510-278 categories and the derived funding summary) remains.
 **Problem:** budgeting and spending are the same record, so neither can be done properly.
 
 > **Naming note.** `state.ledger` is the transaction register described in §3.3. The word
@@ -768,12 +768,33 @@ shares are real money families owe (the pack fronts it and is made whole) and st
 charges replace the collect grid. Until then the figure understates family income, so the popcorn
 goal comes out slightly high rather than slightly short.
 
-**Phase 3b — charges and family accounts.** *(Next.)* Generate charges from recorded attendance
-× rates, waiving `who: 'scout'` where a tier applies. Add the four settlement paths — paid,
-donated, waived, forgiven. Backfill history from `collected[]`. Rework Dues & fees onto charges.
-Also picks up the Home nag deferred from 2b: a past event with attendance but no spend, or spend
-but no attendance, is an incomplete book — now expressible, because `fundedBy` says which lines
-care.
+**Phase 3b — charges and family accounts. ✅ BUILT.** `state.charges[]` holds one charge per
+head. All four settlement paths exist and are reported apart. Dues & fees is rebuilt on charges,
+and `state.collected` is gone — every tick was backfilled into a ledger payment carrying a
+`scoutId`, so no family's history was lost.
+
+- **How charges are raised depends on the line.** A line attached to an EVENT charges whoever
+  turned up; a line with no event — dues, registration — charges the roster, because every
+  registered scout owes those whether or not they come to anything. Raising dues from attendance
+  would have billed nobody.
+- **Charges are stored, not derived, and reconciled on `commit()`.** Correcting an attendance typo
+  before anyone pays fixes the charge; after they have paid, or once it is waived or forgiven, it
+  stands. A book does not lose rows because somebody fixed a head count.
+- **A tier waives `who: 'scout'` charges only.** Verified end to end: three scouts past the tier
+  had their $15 seat waived ($45, with the tier recorded), and all nine heads they *brought* still
+  stood. A scout's fundraising buys the scout's seat, not the family's.
+- **A forgiven charge stays on the books** with its reason, who agreed it, and the date.
+- **A family payment is income, not a refund.** Backfilled payments carry a `lineId`, and the
+  line-actual calculation had to learn that money in with a `scoutId` settles a charge rather than
+  reducing what the pack spent — otherwise a dues line reads as negative spending and "actual
+  spent" goes below zero. A vendor refund carries no `scoutId` and still reduces the cost.
+
+This also closes the 3a interim: expected family income is now `standing` charges, so the adult and
+sibling shares count. And it picks up the Home nag deferred from 2b — a past event that cost money
+with no head counts recorded — which needed `fundedBy` to know which lines care about attendance.
+
+The worked example in §3.4 reproduces exactly: 8 scouts, 13 adults and 5 siblings raise 26 charges
+totalling **$355.00**.
 
 **Phase 4 — categories and the funding summary.** Adopt the 510-278 category list, defaulting
 existing lines to `other`. Add the `A − B = C` fundraising-need summary and the derived per-scout

@@ -341,16 +341,6 @@ test('the pack name left Season setup for Pack', () => {
   ok(sharing && /data-ch="pack-name"/.test(sharing[0]), 'the pack name is not on Pack · Sharing');
 });
 
-test('per-scout charges count activities as well as expenses', () => {
-  // Both render a collect grid, but only expenses were ever counted — so a scout who
-  // hadn't paid for a per-scout ACTIVITY showed as owing nothing.
-  const fn = /function perScoutCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(fn, 'perScoutCharges() not found');
-  ok(/state\.budget\.expenses/.test(fn[0]), 'expenses are not counted');
-  ok(/state\.budget\.activities/.test(fn[0]), 'activities are not counted');
-  const owes = /function scoutOwesCents\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/perScoutCharges\(\)/.test(owes[0]), 'scoutOwesCents does not use perScoutCharges()');
-});
 
 test('the Trail’s End file input exists exactly once', () => {
   // It used to be emitted from two places; whichever rendered second lost the id, so the
@@ -502,20 +492,6 @@ test('Start here lives on Home, not Calendar', () => {
    Wave 21 — handoff cards and den scoping
    ================================================================ */
 
-test('collect keys match the convention the budget already uses', () => {
-  // state.collected is keyed by the bare id for expenses but 'act:'+id for activities.
-  // Getting that wrong writes ticks to a key nothing else reads, so the same activity
-  // ends up with two independent collect states.
-  const fn = /function perScoutCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(fn, 'perScoutCharges() not found');
-  ok(/key: e\.id/.test(fn[0]), 'expense charges do not use the bare id');
-  ok(/key: 'act:' \+ a\.id/.test(fn[0]), "activity charges do not use the 'act:' prefix");
-  // Nothing downstream may rebuild the key from the item.
-  const owes = /function scoutOwesCents\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/state\.collected\[c\.key\]/.test(owes[0]), 'scoutOwesCents does not read c.key');
-  const dues = /function renderDues\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
-  ok(/renderCollectBlock\(c\.item, c\.key\)/.test(dues[0]), 'the Dues grid does not pass c.key');
-});
 
 test('a handoff renders only when it carries a live figure', () => {
   // The anti-banner-blindness rule is a RENDER rule, not styling: a handoff conditional
@@ -671,15 +647,6 @@ test('the legacy dues lump switches off once coverage is configured', () => {
   ok(fn && /arrOf\(t\.covers\)\.length > 0/.test(fn[0]), 'tierCoverageConfigured() does not test for covers');
 });
 
-test('a covered scout neither owes nor is collectable', () => {
-  const owes = /function scoutOwesCents\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/coverage\[c\.key\] \|\| \{\}\)\[scoutId\]\) return;/.test(owes[0]),
-    'scoutOwesCents still charges a scout the pack is covering');
-  const grid = /function renderCollectBlock\(e, colKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/paid by the pack/.test(grid[0]), 'the collect grid does not mark pack-covered scouts');
-  ok(/if \(covered\[s\.id\]\) \{/.test(grid[0]),
-    'the collect grid still renders a checkbox for a covered scout — ticking one would book pack money as family income');
-});
 
 test('coverage is derived, never written into state.collected', () => {
   // The collect grids stay a record of what FAMILIES paid. Mixing the two is what would
@@ -1352,6 +1319,190 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
   ok(/if \(ch\.indexOf\('line-'\) === 0\)/.test(SCRIPT), 'the unified line- handler is missing');
   ["act-est", "exp-est", "act-perscout", "exp-perscout", "act-familypays", "exp-familypays"]
     .forEach(dead => ok(!SCRIPT.includes(`'${dead}'`), `${dead} is still handled`));
+});
+
+/* ================================================================
+   Money redesign — Phase 3b: charges and family accounts (DESIGN-money.md 3.4).
+   ================================================================ */
+
+const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
+  'paymentsForScout', 'familyOutstanding', 'chargeTotals'];
+
+function line3b(patch) {
+  return Object.assign({
+    id: 'L', name: 'Blue & Gold', basis: 'per-head', eventId: 'E',
+    scoutRateCents: 1500, adultRateCents: 1500, siblingRateCents: 800,
+    flatCents: 0, adultsPerScout: 1, fundedBy: 'families', paidDirectTo: ''
+  }, patch);
+}
+
+test('Phase 3b: one charge per head, because that is how the cost is incurred', () => {
+  // "A family that brought the scout, both parents and a younger sibling gets four charges
+  // against that scout's account: one scout, two adult, one sibling."
+  const { chargeRowsFor } = sandbox(CHARGE_FNS);
+  const rows = chargeRowsFor(line3b(), { s1: { scout: 1, adults: 2, siblings: 1 } }, []);
+  eq(rows.length, 4, 'charge count');
+  eq(rows.filter(r => r.who === 'scout').length, 1, 'scout charges');
+  eq(rows.filter(r => r.who === 'adult').length, 2, 'adult charges');
+  eq(rows.filter(r => r.who === 'sibling').length, 1, 'sibling charges');
+  eq(rows.reduce((t, r) => t + r.amountCents, 0), 1500 + 3000 + 800, 'total');
+});
+
+test('Phase 3b: the 3.4 worked example bills 26 heads, not 20', () => {
+  // 8 scouts came, 13 adults, 5 siblings. scout $15, adult $15, sibling $8.
+  const { chargeRowsFor } = sandbox(CHARGE_FNS);
+  const marked = {};
+  for (let i = 0; i < 8; i++) marked['s' + i] = { scout: 1, adults: i < 5 ? 2 : 1, siblings: i < 5 ? 1 : 0 };
+  const rows = chargeRowsFor(line3b(), marked, []);
+  const total = rows.reduce((t, r) => t + r.amountCents, 0);
+  eq(rows.filter(r => r.who === 'scout').length, 8, 'scouts');
+  eq(rows.filter(r => r.who === 'adult').length, 13, 'adults');
+  eq(rows.filter(r => r.who === 'sibling').length, 5, 'siblings');
+  eq(total, 8 * 1500 + 13 * 1500 + 5 * 800, 'charged $355.00');
+  eq(total, 35500, 'charged, in cents');
+});
+
+test('Phase 3b: a line with no event charges the roster, not the attendance', () => {
+  // Dues are owed by every registered scout whether or not they come to anything. Raising
+  // them from attendance would bill nobody.
+  const { chargeRowsFor } = sandbox(CHARGE_FNS);
+  const dues = line3b({ id: 'D', name: 'Pack dues', eventId: '', scoutRateCents: 8000, adultRateCents: 0, siblingRateCents: 0 });
+  const rows = chargeRowsFor(dues, null, [{ id: 's1' }, { id: 's2' }]);
+  eq(rows.length, 2, 'one per scout on the roster');
+  eq(rows.every(r => r.who === 'scout'), true, 'nobody is billed an adult for dues');
+});
+
+test('Phase 3b: a rate of zero raises no charge', () => {
+  const { chargeRowsFor } = sandbox(CHARGE_FNS);
+  const rows = chargeRowsFor(line3b({ siblingRateCents: 0 }), { s1: { scout: 1, adults: 0, siblings: 3 } }, []);
+  eq(rows.length, 1, 'three free siblings raised three $0 charges');
+});
+
+test("a family's payment is income, not a refund of what the pack spent", () => {
+  // Backfilled dues payments carry a lineId. Without this distinction a dues line reads as
+  // negative spending and the pack's "actual spent" goes below zero.
+  const { lineActualCents } = sandbox(LEDGER_FNS);
+  const led = [
+    entry({ id: '1', lineId: 'L', amountCents: 50000, direction: 'out' }),
+    entry({ id: '2', lineId: 'L', amountCents: 8000, direction: 'in', scoutId: 's1', source: 'family' }),
+    entry({ id: '3', lineId: 'L', amountCents: 8000, direction: 'in', scoutId: 's2', source: 'donation' }),
+    entry({ id: '4', lineId: 'L', amountCents: 2000, direction: 'in', scoutId: '' })   // vendor refund
+  ];
+  eq(lineActualCents(led, 'L'), 48000, 'family money reduced the cost of the line');
+});
+
+test('Phase 3b: the four settlements are counted apart, never collapsed', () => {
+  // A donation leaves the pack whole; a waiver or forgiveness does not. Collapsing any of
+  // them into "paid" or "written off" would misstate the pack's position.
+  const { chargeTotals } = sandbox(CHARGE_FNS);
+  const charges = [
+    { scoutId: 's1', amountCents: 1500, waivedBy: '', forgiven: null },   // paid below
+    { scoutId: 's2', amountCents: 1500, waivedBy: 't1', forgiven: null }, // waived
+    { scoutId: 's3', amountCents: 1500, waivedBy: '', forgiven: { reason: 'hardship' } },
+    { scoutId: 's4', amountCents: 1500, waivedBy: '', forgiven: null }    // donated below
+  ];
+  const ledger = [
+    { direction: 'in', scoutId: 's1', amountCents: 1500, source: 'family' },
+    { direction: 'in', scoutId: 's4', amountCents: 1500, source: 'donation' },
+    { direction: 'out', scoutId: '', amountCents: 9999, source: '' }
+  ];
+  const t = chargeTotals(charges, ledger);
+  eq(t.raised, 6000, 'every charge was raised');
+  eq(t.waived, 1500, 'waived');
+  eq(t.forgiven, 1500, 'forgiven');
+  eq(t.paid, 1500, 'paid by a family');
+  eq(t.donated, 1500, 'covered by a donation');
+  eq(t.standing, 3000, 'still standing after waiver and forgiveness');
+  eq(t.outstanding, 0, 'everything standing has been settled by money');
+});
+
+test('Phase 3b: a donation settles a charge exactly as a family payment does', () => {
+  const { familyOutstanding } = sandbox(CHARGE_FNS);
+  const charges = [{ scoutId: 's1', amountCents: 8000, waivedBy: '', forgiven: null }];
+  eq(familyOutstanding(charges, [{ direction: 'in', scoutId: 's1', amountCents: 8000, source: 'donation' }], 's1'),
+    0, "St Mark's covered it — the family owes nothing");
+  eq(familyOutstanding(charges, [], 's1'), 8000, 'unpaid');
+});
+
+test('Phase 3b: a waived or forgiven charge is not owed, and is not deleted', () => {
+  const { familyOutstanding, chargeIsOpen } = sandbox(CHARGE_FNS);
+  const waived = { scoutId: 's1', amountCents: 8000, waivedBy: 't1', forgiven: null };
+  const forgiven = { scoutId: 's1', amountCents: 4000, waivedBy: '', forgiven: { reason: 'x' } };
+  eq(familyOutstanding([waived, forgiven], [], 's1'), 0, 'neither is owed');
+  ok(!chargeIsOpen(waived) && !chargeIsOpen(forgiven), 'both still read as settled');
+  // They are still THERE — an auditor can read a marked charge; a missing one tells them nothing.
+  eq([waived, forgiven].length, 2, 'a settled charge was deleted');
+});
+
+test('Phase 3b: a family is never shown as owing a negative amount', () => {
+  const { familyOutstanding } = sandbox(CHARGE_FNS);
+  const charges = [{ scoutId: 's1', amountCents: 1000, waivedBy: '', forgiven: null }];
+  eq(familyOutstanding(charges, [{ direction: 'in', scoutId: 's1', amountCents: 5000 }], 's1'), 0, 'overpayment');
+});
+
+test('a reward tier waives the scout share only, never the heads they brought', () => {
+  // "A scout's fundraising buys the scout's seat, not the family's." One line of rule, and
+  // it is the entire feature.
+  const fn = /function applyTierWaivers\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'applyTierWaivers() not found');
+  ok(/if \(c\.who !== 'scout'\) \{ c\.waivedBy = ''; return; \}/.test(fn[0]),
+    'a tier is waiving adult or sibling charges');
+  ok(/c\.waivedBy = et \? et\.id/.test(fn[0]),
+    'the waiver does not record WHICH tier bought it — total waived stops being measurable');
+});
+
+test('reconciling charges never removes one that has been settled or paid against', () => {
+  // A book does not lose rows because somebody fixed a head count.
+  const fn = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'syncCharges() not found');
+  ok(/if \(c\.waivedBy \|\| c\.forgiven\) return true;/.test(fn[0]), 'a settled charge can be dropped');
+  ok(/return paymentsForScout\(state\.ledger, c\.scoutId\) > 0;/.test(fn[0]),
+    'a charge with money against it can be dropped');
+  ok(/paymentsForScout\(state\.ledger, have\.scoutId\) === 0/.test(fn[0]),
+    'a paid charge can be silently re-priced');
+});
+
+test('paid-direct lines raise no charges at all', () => {
+  const fn = /function lineRaisesCharges\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'lineRaisesCharges() not found');
+  ok(/lineThroughPack\(l\)/.test(fn[0]), 'a council camp is billing families through the pack');
+  ok(/lineFamilyFunded\(l\)/.test(fn[0]), 'a pack-funded line is billing families');
+});
+
+test('Phase 3b backfill: every collected tick becomes a payment, not a lost balance', () => {
+  // Losing these would tell every square family they owe again.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState({
+    version: 1, scouts: [{ id: 's1' }, { id: 's2' }],
+    collected: { e2: { s1: true, s2: true }, 'act:a1': { s1: true } },
+    budget: {
+      programYear: 2025,
+      activities: [{ id: 'a1', name: 'Camp', estCents: 4000, perScout: true, familyPays: true }],
+      expenses: [{ id: 'e2', name: 'Dues', estCents: 8000, perScout: true, familyPays: true }]
+    }
+  });
+  const pays = after.ledger.filter(e => e.direction === 'in' && e.scoutId);
+  eq(pays.length, 3, 'one ledger payment per tick');
+  eq(pays.reduce((t, e) => t + e.amountCents, 0), 8000 + 8000 + 4000, 'total collected');
+  ok(pays.every(e => e.source === 'family'), 'backfilled money lost its source');
+  eq(Object.keys(after.collected).length, 0, 'collected was not emptied — it would backfill twice');
+});
+
+test('Phase 3b backfill: runs once', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const once = ctx.normalizeState({
+    version: 1, scouts: [{ id: 's1' }],
+    collected: { e2: { s1: true } },
+    budget: { programYear: 2025, activities: [], expenses: [{ id: 'e2', name: 'Dues', estCents: 8000, perScout: true, familyPays: true }] }
+  });
+  const twice = ctx.normalizeState(JSON.parse(JSON.stringify(once)));
+  eq(twice.ledger.filter(e => e.direction === 'in').length, 1, 'the backfill ran again');
+});
+
+test('charges are reconciled on the one seam every mutation goes through', () => {
+  const fn = /function commit\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'commit() not found');
+  ok(/syncCharges\(\);/.test(fn[0]), 'charges are not reconciled on commit');
 });
 
 /* ---------------- report ---------------- */

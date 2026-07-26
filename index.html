@@ -1286,6 +1286,29 @@
     if (patch) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
     return l;
   }
+  // ---------------------------------------------------------------------------
+  // MONEY REDESIGN, Phase 3b — charges and family accounts (DESIGN-money.md §3.4).
+  //
+  // A family-funded line raises one charge PER HEAD, because that is how the cost is
+  // actually incurred. A family that brought the scout, both parents and a younger sibling
+  // gets four charges against that scout's account: one scout, two adult, one sibling.
+  //
+  // A charge stops being outstanding four different ways, and they are NOT interchangeable:
+  //
+  //   family pays   money arrives from the family    ledger in, source 'family'
+  //   donation      money arrives from a third party ledger in, source 'donation' + donor
+  //   waived        no money; fundraising bought it  charge.waivedBy = tierId
+  //   forgiven      no money; the pack absorbed it   charge.forgiven = {date, by, reason}
+  //
+  // The middle two look identical on a family's statement — "you owe nothing" — and are
+  // completely different to the pack. A DONATION LEAVES THE PACK WHOLE; A WAIVER OR
+  // FORGIVENESS DOES NOT. Collapsing any of them into "paid" or "written off" would
+  // misstate the pack's position, so all four are reported separately.
+  //
+  // None of them delete the charge. It was raised, it stands, and it carries a reason: an
+  // auditor can read a marked charge, whereas a missing one tells them nothing.
+  // ---------------------------------------------------------------------------
+  var CHARGE_WHO = ['scout', 'adult', 'sibling'];
   var LINE_BASES = ['flat', 'per-head'];
   var LINE_FUNDERS = ['pack', 'families'];
   // A pack event is priced per head, and the heads are not all the same kind or price.
@@ -1398,6 +1421,7 @@
       cashThroughTrailsEnd: false,
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
       events: [],                      // Phase 2 — the calendar record; meetings[] is legacy
+      charges: [],                     // Phase 3b — what each family owes, per head
       ledger: [], book: freshBook(),   // Phase 0 — what actually moved, and where it starts
       rsvps: {}, attendance: {},
       collected: {}, advancement: {},
@@ -1815,6 +1839,65 @@
       });
       if (!Object.keys(mv).length) delete d.attendance[k];
     });
+    // Phase 3b — charges. Coerced in place; a charge is never silently dropped, because a
+    // missing one tells an auditor nothing.
+    if (!Array.isArray(d.charges)) d.charges = [];
+    d.charges = d.charges.filter(function (c) { return c && typeof c === 'object' && !Array.isArray(c); });
+    d.charges.forEach(function (c) {
+      if (typeof c.id !== 'string' || !c.id) c.id = uid();
+      c.scoutId = typeof c.scoutId === 'string' ? c.scoutId : '';
+      c.lineId = typeof c.lineId === 'string' ? c.lineId : '';
+      c.who = CHARGE_WHO.indexOf(c.who) === -1 ? 'scout' : c.who;
+      c.seq = (typeof c.seq === 'number' && isFinite(c.seq) && c.seq > 0) ? Math.floor(c.seq) : 0;
+      c.amountCents = centsOf(c.amountCents);
+      c.date = typeof c.date === 'string' ? c.date : '';
+      c.waivedBy = typeof c.waivedBy === 'string' ? c.waivedBy : '';
+      if (c.forgiven && typeof c.forgiven === 'object' && !Array.isArray(c.forgiven)) {
+        c.forgiven = {
+          date: typeof c.forgiven.date === 'string' ? c.forgiven.date : '',
+          by: typeof c.forgiven.by === 'string' ? c.forgiven.by : '',
+          reason: typeof c.forgiven.reason === 'string' ? c.forgiven.reason : ''
+        };
+      } else c.forgiven = null;
+    });
+    // -----------------------------------------------------------------------
+    // Phase 3b — backfill history from state.collected.
+    //
+    // A tick in the old grid meant "this family paid the scout share of this line". That is
+    // a PAYMENT, and losing it would tell every square family they owe again. Each tick
+    // becomes one ledger entry with a scoutId — the same record a payment gets today, so
+    // there is nothing special about migrated money afterwards.
+    //
+    // The charges themselves are not written here: syncCharges() raises them from the line
+    // and its attendance/roster on the first commit, and these payments settle them.
+    // Runs once — `collected` is emptied, and the ABSENCE of ticks is the marker.
+    // -----------------------------------------------------------------------
+    if (d.collected && typeof d.collected === 'object' && !Array.isArray(d.collected)) {
+      var backfillDate = (function () {
+        var end = programYearEndISO(d.budget.programYear), now = todayISO();
+        return now < end ? now : end;
+      })();
+      Object.keys(d.collected).forEach(function (k) {
+        var cm = d.collected[k];
+        if (!cm || typeof cm !== 'object') return;
+        var lineId = k.indexOf('act:') === 0 ? k.slice(4) : k;
+        var line = d.budget.activities.concat(d.budget.expenses).filter(function (l) { return l.id === lineId; })[0];
+        if (!line) return;
+        var each = line.scoutRateCents || 0;
+        if (!each) return;
+        Object.keys(cm).forEach(function (sid) {
+          if (cm[sid] !== true) return;
+          d.ledger.push({
+            id: uid(), date: backfillDate,
+            description: (line.name || 'Fee') + ' — collected',
+            amountCents: each, direction: 'in', lineId: lineId,
+            method: '', ref: '', source: 'family', donor: '', scoutId: sid,
+            reconciled: false
+          });
+        });
+        delete d.collected[k];
+      });
+    }
     // Wave 3: collected — { expenseId: { scoutId: true } } for per-scout expenses
     if (!d.collected || typeof d.collected !== 'object' || Array.isArray(d.collected)) d.collected = {};
     Object.keys(d.collected).forEach(function (k) {
@@ -2096,6 +2179,7 @@
     // The new-entry draft. Held here rather than in the DOM so a re-render (which this app
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
+    forgiveFor: null,   // Phase 3b — charge id showing the inline "why" form
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
     parentTab: 'schedule',    // 'schedule' | 'standings'
     parentEarlierOpen: false  // "Earlier this year" disclosure on the parent Schedule tab
@@ -2146,6 +2230,10 @@
       render();
       return;
     }
+    // Phase 3b — commit() is the one seam every mutation goes through, so it is where
+    // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
+    // tens of scouts, not thousands.
+    syncCharges();
     if (liveEdit) { render(); schedulePersist(); return; }
     clearTimeout(persistTimer);
     persistTimer = null;
@@ -2411,6 +2499,10 @@
     // reimburse. Expected = est × roster (reduces what popcorn must raise); collected =
     // actually-ticked marks in the collect grids (joins funds-in). Activity keys in
     // state.collected are prefixed 'act:'; expense keys stay bare (legacy data).
+    // Phase 3b — family money is now read off CHARGES and payments, not a tick grid. This
+    // closes the 3a interim: the adult and sibling shares of a per-head line are real money
+    // families owe, and they count here as soon as the heads are recorded.
+    var chg = chargeTotals(state.charges, state.ledger);
     var feeIncomeExpected = 0, feeIncomeCollected = 0;
     var feeRoster = activeScouts();
     // Wave 21 — reward tiers. A scout who earned coverage for a charge means the PACK is
@@ -2442,6 +2534,14 @@
     }
     b.expenses.forEach(function (e) { addFeeItem(e, e.id); });
     b.activities.forEach(function (a) { addFeeItem(a, 'act:' + a.id); });
+    // What charges actually say. `standing` is what families still owe after waivers and
+    // forgiveness; `paid + donated` is what has arrived. Where charges exist they are the
+    // truth and the roster-assumption figure above is only a fallback for lines nobody has
+    // recorded heads against yet.
+    if (chg.raised > 0) {
+      feeIncomeExpected = chg.standing;
+      feeIncomeCollected = chg.paid + chg.donated;
+    }
     // Wave 17 — other fundraisers a leader opted into funds-in (default off).
     var otherFundraiserIn = 0;
     state.fundraisers.forEach(function (fr) {
@@ -2483,6 +2583,10 @@
       fundsIn: fundsIn, balance: fundsIn - actual,
       rewardDues: rewardDues, rewardCovered: reward.coveredCount, rewardDuesEach: reward.duesCents,
       feesAbsorbed: feesAbsorbed, coverageOn: tierCoverageConfigured(),
+      // Phase 3b — the four settlements, reported apart. A donation left the pack whole; a
+      // waiver or a forgiveness did not, and a committee should see that deliberately
+      // rather than discover it as a gap at year end.
+      charges: chg,
       feeIncomeExpected: feeIncomeExpected, feeIncomeCollected: feeIncomeCollected,
       otherFundraiserIn: otherFundraiserIn,
       pct: pct, salesGoal: salesGoal, perScoutGoal: perScoutGoal
@@ -2549,6 +2653,143 @@
     return l.paidDirectTo ? ('families pay ' + l.paidDirectTo + ' directly') : 'families pay, through the pack';
   }
 
+  /* ---------------- Charges (Phase 3b) ---------------- */
+  // Only a per-head, family-funded line the pack actually handles raises charges. A
+  // paid-direct line raises none at all — that money never passes through the pack.
+  function lineRaisesCharges(l) {
+    return linePerHead(l) && lineFamilyFunded(l) && lineThroughPack(l);
+  }
+  // How a line's charges are worked out. A line attached to an EVENT charges whoever turned
+  // up; a line with no event — dues, registration — charges the roster, because every
+  // registered scout owes those whether or not they come to anything. Raising dues from
+  // attendance would bill nobody, which is the sort of quiet wrong answer this redesign is
+  // meant to stop.
+  function chargeBasis(l) { return l.eventId ? 'attendance' : 'roster'; }
+  function chargeKey(c) { return c.lineId + '|' + c.scoutId + '|' + c.who + '|' + c.seq; }
+  // Pure: the charges a line SHOULD have, given what was recorded. One per head.
+  function chargeRowsFor(line, marked, roster) {
+    var rows = [];
+    function push(scoutId, who, seq, cents) {
+      if (cents > 0) rows.push({ scoutId: scoutId, lineId: line.id, who: who, seq: seq, amountCents: cents });
+    }
+    if (line.eventId) {
+      Object.keys(marked || {}).forEach(function (sid) {
+        var r = marked[sid] || {};
+        if (r.scout) push(sid, 'scout', 0, line.scoutRateCents || 0);
+        for (var i = 0; i < (r.adults || 0); i++) push(sid, 'adult', i, line.adultRateCents || 0);
+        for (var j = 0; j < (r.siblings || 0); j++) push(sid, 'sibling', j, line.siblingRateCents || 0);
+      });
+    } else {
+      (roster || []).forEach(function (sc) { push(sc.id, 'scout', 0, line.scoutRateCents || 0); });
+    }
+    return rows;
+  }
+  // Every payment against a scout's account, whoever it came from. A donation settles a
+  // charge exactly as a family payment does — the difference is who is thanked, and whether
+  // the pack is left whole, which is reported separately rather than hidden here.
+  function paymentsForScout(ledger, scoutId) {
+    return ledger.reduce(function (n, e) {
+      return (e.direction === 'in' && e.scoutId === scoutId) ? n + (e.amountCents || 0) : n;
+    }, 0);
+  }
+  function chargeIsOpen(c) { return !c.waivedBy && !c.forgiven; }
+  // Outstanding for a family = Σ charges that still stand − Σ payments from any source.
+  function familyOutstanding(charges, ledger, scoutId) {
+    var owed = charges.reduce(function (n, c) {
+      return (c.scoutId === scoutId && chargeIsOpen(c)) ? n + (c.amountCents || 0) : n;
+    }, 0);
+    return Math.max(0, owed - paymentsForScout(ledger, scoutId));
+  }
+  // The four settlements, counted apart, because collapsing them would misstate the pack's
+  // position. `donated` is money that arrived from somebody else — good news, and
+  // attributable. `waived` is what fundraising bought the families. `forgiven` is what the
+  // pack chose to absorb.
+  function chargeTotals(charges, ledger) {
+    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, outstanding: 0 };
+    var byScout = {};
+    charges.forEach(function (c) {
+      t.raised += c.amountCents || 0;
+      if (c.waivedBy) { t.waived += c.amountCents || 0; return; }
+      if (c.forgiven) { t.forgiven += c.amountCents || 0; return; }
+      t.standing += c.amountCents || 0;
+      byScout[c.scoutId] = (byScout[c.scoutId] || 0) + (c.amountCents || 0);
+    });
+    ledger.forEach(function (e) {
+      if (e.direction !== 'in' || !e.scoutId) return;
+      if (e.source === 'donation') t.donated += e.amountCents || 0;
+      else t.paid += e.amountCents || 0;
+    });
+    Object.keys(byScout).forEach(function (sid) {
+      t.outstanding += Math.max(0, byScout[sid] - paymentsForScout(ledger, sid));
+    });
+    return t;
+  }
+
+  // ---- reconcile stored charges against what should exist ----
+  //
+  // Charges are STORED, not derived: once raised, a charge stands and carries its reason.
+  // But attendance gets corrected and rates get fixed, so this reconciles the two — and it
+  // will not touch a charge that has been settled. Correcting a typo before anyone pays
+  // fixes the charge; after they have paid, it stands and needs a deliberate decision.
+  function syncCharges() {
+    var roster = activeScouts();
+    var want = {}, byKey = {};
+    allBudgetLines().forEach(function (r) {
+      if (!lineRaisesCharges(r.line)) return;
+      var marked = r.line.eventId ? (state.attendance[r.line.eventId] || {}) : null;
+      chargeRowsFor(r.line, marked, roster).forEach(function (row) { want[chargeKey(row)] = row; });
+    });
+    state.charges.forEach(function (c) { byKey[chargeKey(c)] = c; });
+    // Drop charges that should no longer exist — but never one that is settled or paid
+    // against. A book does not lose rows because somebody fixed a head count.
+    state.charges = state.charges.filter(function (c) {
+      if (want[chargeKey(c)]) return true;
+      if (c.waivedBy || c.forgiven) return true;
+      return paymentsForScout(state.ledger, c.scoutId) > 0;
+    });
+    // Add what is missing, and re-price what is still open.
+    Object.keys(want).forEach(function (k) {
+      var row = want[k], have = byKey[k];
+      if (!have) {
+        var ev = row.lineId ? eventForLine(getBudgetLine(row.lineId)) : null;
+        state.charges.push({
+          id: uid(), scoutId: row.scoutId, lineId: row.lineId, who: row.who, seq: row.seq,
+          amountCents: row.amountCents, date: (ev && ev.date) || todayISO(),
+          waivedBy: '', forgiven: null
+        });
+        return;
+      }
+      if (chargeIsOpen(have) && paymentsForScout(state.ledger, have.scoutId) === 0) {
+        have.amountCents = row.amountCents;
+      }
+    });
+    applyTierWaivers();
+  }
+  // "Until a scout reaches a fundraising tier, the family covers the scout and everyone they
+  // bring. Once the tier is reached, the family covers only the people they bring — the
+  // scout's own share is paid from fundraising."
+  //
+  // So a tier waives `who: 'scout'` charges ONLY. Adults and siblings always stand: a
+  // scout's fundraising buys the scout's seat, not the family's. In the model that is a
+  // one-line rule, and it is the entire feature.
+  function applyTierWaivers() {
+    var tiers = sortedTiers();
+    var covered = tierCoverageConfigured() ? packCoverage() : {};
+    state.charges.forEach(function (c) {
+      if (c.forgiven) return;
+      if (c.who !== 'scout') { c.waivedBy = ''; return; }   // never waive a head they brought
+      var line = getBudgetLine(c.lineId);
+      if (!line) return;
+      var key = state.budget.expenses.indexOf(line) === -1 ? ('act:' + line.id) : line.id;
+      var hit = (covered[key] || {})[c.scoutId];
+      if (!hit) { c.waivedBy = ''; return; }
+      // Record WHICH tier bought it, so total waived stays measurable against net proceeds.
+      var totals = computeScoutTotals();
+      var et = earnedTier(goalBaseOf({ t: totals[c.scoutId] || { sales: 0, onD: 0 } }), tiers);
+      c.waivedBy = et ? et.id : (tiers.length ? tiers[0].id : 'tier');
+    });
+  }
+
   /* ---------------- Ledger (Phase 0) ---------------- */
   // Every function in this block is PURE — it takes the ledger and the book rather than
   // reading `state` — so the Node harness can exercise the money math directly. The thin
@@ -2585,7 +2826,13 @@
   function lineActualCents(ledger, lineId) {
     if (!lineId) return 0;
     return ledger.reduce(function (n, e) {
-      return e.lineId === lineId ? n - entrySignedCents(e) : n;
+      if (e.lineId !== lineId) return n;
+      // Phase 3b — money in that settles a FAMILY's account is not a refund of what the
+      // pack spent; it is income against a charge. Counting it here would make a dues line
+      // read as NEGATIVE spending, and the pack's "actual spent" go below zero. A refund
+      // from the vendor carries no scoutId and still reduces the cost, as it should.
+      if (e.direction === 'in' && e.scoutId) return n;
+      return n - entrySignedCents(e);
     }, 0);
   }
   function ledgerTotals(ledger, book) {
@@ -2801,93 +3048,48 @@
   // state.collected = { lineId: { scoutId: true } } — per-head, family-funded lines the pack
   // fronts. Amount owed per scout is the line's SCOUT rate. (Phase 3b replaces this whole
   // mechanism with charges; until then it is the collection record.)
+  // Phase 3b — the dues roll-up now reads charges, not a tick grid.
   function feesTotals() {
-    var per = state.budget.expenses.filter(function (e) { return linePerHead(e) && lineThroughPack(e); });
-    var roster = activeScouts();
-    var col = 0, out = 0;
-    per.forEach(function (e) {
-      var cm = state.collected[e.id] || {};
-      roster.forEach(function (s) {
-        if (cm[s.id]) col += e.scoutRateCents || 0;
-        else out += e.scoutRateCents || 0;
-      });
-    });
-    return { any: per.length > 0, collected: col, outstanding: out };
+    var t = chargeTotals(state.charges, state.ledger);
+    return { any: t.raised > 0, collected: t.paid + t.donated, outstanding: t.outstanding, t: t };
   }
-  // Wave 21 — every per-scout charge in the pack record, expenses AND activities. Both render a
-  // collect grid in the budget, but this only ever counted expenses, so a scout who hadn't
-  // paid for a per-scout ACTIVITY showed as owing nothing.
-  //
-  // The `key` matters: state.collected is keyed by the bare id for expenses but by
-  // 'act:'+id for activities (legacy data left expense keys bare — see computeBudget's
-  // addFeeItem). Getting that wrong writes ticks to a key nothing else reads, so the same
-  // activity ends up with two independent collect states. Every caller takes the key from
-  // here rather than rebuilding it.
+  // Every per-head, family-funded line the pack handles. Still used by the reward-tier
+  // picker, which points a tier at the charges it buys.
   function perScoutCharges() {
-    function billable(l) { return linePerHead(l) && lineThroughPack(l); }
-    return state.budget.expenses.filter(billable)
+    return state.budget.expenses.filter(lineRaisesCharges)
       .map(function (e) { return { item: e, key: e.id, kind: 'expense' }; })
-      .concat(state.budget.activities.filter(billable)
+      .concat(state.budget.activities.filter(lineRaisesCharges)
         .map(function (a) { return { item: a, key: 'act:' + a.id, kind: 'activity' }; }));
   }
-  function scoutOwesCents(scoutId) {
-    var owe = 0;
-    // Wave 21 — a charge a reward tier covers for this scout is the pack's, not the
-    // family's, so it isn't owed. Without this the covered scout still reads "owes $80",
-    // and ticking them paid would book the pack's own money as family income.
-    var coverage = tierCoverageConfigured() ? packCoverage() : {};
-    perScoutCharges().forEach(function (c) {
-      if ((coverage[c.key] || {})[scoutId]) return;
-      var cm = state.collected[c.key] || {};
-      if (!cm[scoutId]) owe += c.item.scoutRateCents || 0;
-    });
-    return owe;
+  function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId); }
+  function chargesForScout(scoutId) {
+    return state.charges.filter(function (c) { return c.scoutId === scoutId; });
   }
-  // Collapsible collect grid for one per-scout item — same pattern as attendance.
-  // Wave 17 — generalized to (item, colKey) so per-scout ACTIVITIES share it: expenses
-  // keep their legacy bare-id keys in state.collected; activities pass 'act:'+id.
-  function renderCollectBlock(e, colKey) {
-    var open = !!ui.collectOpen[colKey];
-    var cm = state.collected[colKey] || {};
-    // Active scouts; anyone already marked stays visible even if archived since.
-    var roster = state.scouts.filter(function (s) { return cm[s.id] || !s.archived; });
-    var activeRoster = activeScouts();
-    // Wave 21 — scouts whose reward tier covers THIS charge. The pack is paying, so they
-    // are neither owing nor collectable: they come out of the denominator entirely rather
-    // than sitting in the list as a permanently unticked row.
-    var covered = (tierCoverageConfigured() ? packCoverage() : {})[colKey] || {};
-    var owingRoster = activeRoster.filter(function (s) { return !covered[s.id]; });
-    var coveredCount = activeRoster.length - owingRoster.length;
-    var count = owingRoster.filter(function (s) { return cm[s.id]; }).length;
-    var outstanding = (owingRoster.length - count) * (e.scoutRateCents || 0);
-    var label = 'Collected ' + count + ' of ' + owingRoster.length +
-      (coveredCount ? ' · ' + coveredCount + ' covered by the pack' : '') +
-      (outstanding > 0 ? ' · ' + fmt(outstanding) + ' outstanding' : '');
-    var h = '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
-      '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + colKey + '" aria-expanded="' + open + '">' +
-      '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' + esc(label) + '</button>';
-    if (open) {
-      h += '<div class="rsvp-list">';
-      if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on Scouts · Roster first.</p>';
-      roster.forEach(function (s) {
-        var dens = (s.den ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') +
-          (s.archived ? ' <span class="pill navy">archived</span>' : '');
-        // Wave 21 — a scout the pack is covering isn't collectable: no checkbox, because
-        // ticking one would record the pack's own money as family income.
-        if (covered[s.id]) {
-          h += '<div class="att-row" style="padding-left:26px"><span>' + esc(s.name) + dens +
-            ' <span class="pill">paid by the pack</span></span></div>';
-          return;
-        }
-        h += '<label class="att-row"><input type="checkbox" data-ch="collect-mark" data-id="' + colKey + '" data-scout="' + s.id + '"' +
-          (cm[s.id] ? ' checked' : '') + ' aria-label="' + esc((e.name || 'Fee') + ' collected from ' + s.name) + '"><span>' + esc(s.name) +
-          dens + '</span></label>';
-      });
-      h += '</div>';
+  function chargesForLine(lineId) {
+    return state.charges.filter(function (c) { return c.lineId === lineId; });
+  }
+  function chargeWhoLabel(c) {
+    if (c.who === 'scout') return 'scout';
+    return c.who + (c.seq ? ' ' + (c.seq + 1) : '');
+  }
+  // Phase 3b — the budget row's old collect grid is gone: ticking a scout paid is a LEDGER
+  // entry now, not a checkbox. What a line shows here is what its charges came to.
+  function lineChargeSummary(l) {
+    var rows = chargesForLine(l.id);
+    if (!rows.length) {
+      return '<span class="small muted lrate-note">' +
+        (chargeBasis(l) === 'attendance'
+          ? 'No charges yet — record who came on the event and they raise themselves.'
+          : 'No charges yet — set a scout rate and they raise from the roster.') + '</span>';
     }
-    h += '</div>';
-    return h;
+    var t = chargeTotals(rows, state.ledger);
+    var bits = [rows.length + ' charge' + (rows.length === 1 ? '' : 's') + ' · ' + fmt(t.raised)];
+    if (t.waived) bits.push(fmt(t.waived) + ' waived');
+    if (t.forgiven) bits.push(fmt(t.forgiven) + ' forgiven');
+    return '<span class="small muted lrate-note">' + esc(bits.join(' · ')) +
+      ' <button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="dues">Dues &amp; fees</button></span>';
   }
+
 
   /* ---------------- Wave 3: advancement (den Adventure board) ---------------- */
   // June-2024 Cub Scout program: each badge of rank = the 6 required Adventures below
@@ -6276,7 +6478,7 @@
           : '<span class="small muted lrate-note">The pack fronts it and is paid back by families.</span>') +
         '</div>';
     }
-    if (collectKey && lineFamilyFunded(l) && lineThroughPack(l) && perHead) h += renderCollectBlock(l, collectKey);
+    if (collectKey && lineRaisesCharges(l)) h += '<div class="lrates">' + lineChargeSummary(l) + '</div>';
     return h;
   }
   // Phase 2 — the DATE is not here: it belongs to the linked event, and is shown read-only
@@ -6490,7 +6692,8 @@
   function ledgerDraftDefault() {
     return {
       date: todayISO(), description: '', amount: '', direction: 'out',
-      lineId: '', method: '', ref: '', source: '', donor: ''
+      lineId: '', method: '', ref: '', source: '', donor: '',
+      scoutId: ''   // Phase 3b — set when this entry settles a family's charges
     };
   }
   function ledgerDraft() {
@@ -6547,6 +6750,14 @@
     return '<option value="">Method…</option>' + LEDGER_METHODS.map(function (m) {
       return '<option value="' + m + '"' + (sel === m ? ' selected' : '') + '>' + m + '</option>';
     }).join('');
+  }
+  // Phase 3b — which family's account an incoming payment settles.
+  function scoutSelectOptions(sel) {
+    var h = '<option value=""' + (sel ? '' : ' selected') + '>— not a family payment —</option>';
+    state.scouts.filter(function (s2) { return !s2.archived || s2.id === sel; }).forEach(function (s2) {
+      h += '<option value="' + esc(s2.id) + '"' + (sel === s2.id ? ' selected' : '') + '>' + esc(s2.name) + '</option>';
+    });
+    return h;
   }
   function sourceSelectOptions(sel) {
     return '<option value="">Source…</option>' + LEDGER_SOURCES.map(function (s) {
@@ -6636,7 +6847,8 @@
       '<select data-ch="ledn-method" aria-label="Method">' + methodSelectOptions(dr.method) + '</select>' +
       '<input class="lref" data-ch="ledn-ref" value="' + esc(dr.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
       (dr.direction === 'in'
-        ? '<select data-ch="ledn-source" aria-label="Source">' + sourceSelectOptions(dr.source) + '</select>' +
+        ? '<select data-ch="ledn-scout" aria-label="Settles whose account">' + scoutSelectOptions(dr.scoutId) + '</select>' +
+          '<select data-ch="ledn-source" aria-label="Source">' + sourceSelectOptions(dr.source) + '</select>' +
           (dr.source === 'donation'
             ? '<input class="lname" data-ch="ledn-donor" value="' + esc(dr.donor) + '" placeholder="Who gave it" aria-label="Donor">'
             : '')
@@ -6696,7 +6908,8 @@
               '<select data-ch="led-method" data-id="' + e.id + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
               '<input class="lref" data-ch="led-ref" data-id="' + e.id + '" value="' + esc(e.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
               (e.direction === 'in'
-                ? '<select data-ch="led-source" data-id="' + e.id + '" aria-label="Source">' + sourceSelectOptions(e.source) + '</select>' +
+                ? '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>' +
+                  '<select data-ch="led-source" data-id="' + e.id + '" aria-label="Source">' + sourceSelectOptions(e.source) + '</select>' +
                   (e.source === 'donation'
                     ? '<input class="lname" data-ch="led-donor" data-id="' + e.id + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
                     : '')
@@ -7186,6 +7399,19 @@
         unposted.slice(0, 3).map(function (a) { return a.name || 'Untitled'; }).join(', '),
         'money', 'ledger');
     }
+    // Phase 3b — the other half of an incomplete book, deferred from 2b because it needed
+    // fundedBy to know which lines care. Attendance only matters where families are billed
+    // per head: a pack-funded line's cost is whatever the ledger says, whoever turned up.
+    var unattended = state.budget.activities.filter(function (a) {
+      if (!lineRaisesCharges(a)) return false;
+      var uEv = eventForLine(a);
+      if (!uEv || !uEv.date || uEv.date >= today) return false;
+      return lineEntryCount(a.id) > 0 && !attTotals(state.attendance[uEv.id]).heads;
+    });
+    if (unattended.length) {
+      add('treasurer', 'week', unattended.length + ' past event' + (unattended.length === 1 ? '' : 's') + ' cost money but nobody recorded who came',
+        'Families can’t be charged until the head counts are in', 'program', 'calendar');
+    }
     // Phase 0 — reconciling is a real thing now, so the Treasurer's queue can carry it.
     var ledTot = ledgerTotals(state.ledger, state.book);
     if (ledTot.unreconciled >= 5) {
@@ -7503,61 +7729,106 @@
   // high-frequency Treasurer task in the app. Same renderCollectBlock, same state; this
   // just gathers every per-scout charge in one place and says who still owes.
   function renderDues() {
-    var charges = perScoutCharges();
     var roster = activeScouts();
-    if (!charges.length) {
+    var t = chargeTotals(state.charges, state.ledger);
+    if (!state.charges.length) {
       return '<div class="card"><h2 class="section display">Dues &amp; fees</h2>' +
-        '<div class="empty" style="margin:0">Nothing is charged per scout yet. Tick <strong>per scout</strong> on any ' +
-        'activity or expense in the budget and it shows up here to collect.</div>' +
+        '<div class="empty" style="margin:0">Nothing is charged to families yet. Mark a budget line ' +
+        '<strong>families pay</strong> and price it <strong>per head</strong>; charges raise themselves from ' +
+        'the roster, or from who came once you record attendance on the event.</div>' +
         '<div class="row no-print" style="margin-top:10px">' +
         '<button type="button" class="btn" data-act="goto" data-tab="money" data-section="budget">Open the budget</button></div></div>';
     }
-    // Who still owes, across every charge at once.
-    var owing = roster.map(function (s) { return { s: s, owe: scoutOwesCents(s.id) }; })
+    var owing = roster.map(function (s2) { return { s: s2, owe: scoutOwesCents(s2.id) }; })
       .filter(function (r) { return r.owe > 0; })
       .sort(function (a, b) { return b.owe - a.owe || a.s.name.localeCompare(b.s.name); });
-    var owedTotal = owing.reduce(function (n, r) { return n + r.owe; }, 0);
 
     var h = '<div class="card"><h2 class="section display">Dues &amp; fees</h2>' +
       '<div class="row">' +
-      '<div class="stat"><span class="v">' + charges.length + '</span><span class="l">Per-scout charges</span></div>' +
-      '<div class="stat"><span class="v">' + (roster.length - owing.length) + ' of ' + roster.length + '</span><span class="l">Fully paid up</span></div>' +
-      '<div class="stat"><span class="v money"' + (owedTotal ? ' style="color:var(--accent-text)"' : '') + '>' + fmt(owedTotal) + '</span><span class="l">Still owed</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(t.raised) + '</span><span class="l">Charged</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(t.paid + t.donated) + '</span><span class="l">Received</span></div>' +
+      '<div class="stat"><span class="v money"' + (t.outstanding ? ' style="color:var(--accent-text)"' : '') + '>' + fmt(t.outstanding) + '</span><span class="l">Still owed</span></div>' +
+      '<div class="stat"><span class="v">' + (roster.length - owing.length) + ' of ' + roster.length + '</span><span class="l">Square</span></div>' +
       '</div>';
-    if (owing.length) {
-      h += '<hr class="divider"><p class="eyebrow">Who still owes</p>';
-      owing.forEach(function (r) {
-        h += '<div class="assign-row"><span class="assign-name">' + esc(r.s.name) +
-          (r.s.den ? ' <span class="pill navy">' + esc(r.s.den) + '</span>' : '') + '</span>' +
-          '<span class="money" style="color:var(--accent-text)">' + fmt(r.owe) + '</span></div>';
-      });
-    } else if (roster.length) {
-      h += '<p class="small muted" style="margin:8px 0 0">Everyone’s square. Nothing outstanding.</p>';
-    }
-    // Seam: the roster carries the same "owes" figure on each scout's row.
-    if (owedTotal) {
-      h += handoffCard('Money', 'Scouts', 'roster', owing.length + (owing.length === 1 ? ' scout' : ' scouts'),
-        (owing.length === 1 ? 'shows' : 'show') + ' an amount owed on the roster.');
+    // The four settlements, apart. A donation left the pack whole; a waiver or forgiveness
+    // did not, and the difference is the whole point of reporting them separately.
+    var settled = [];
+    if (t.donated) settled.push('<span class="pill navy">Donated</span> <strong class="money">' + fmt(t.donated) + '</strong> came from somebody other than the family — the pack is whole, and the donor is worth thanking');
+    if (t.waived) settled.push('<span class="pill navy">Waived</span> <strong class="money">' + fmt(t.waived) + '</strong> is what fundraising bought the families — the pack absorbed it');
+    if (t.forgiven) settled.push('<span class="pill navy">Forgiven</span> <strong class="money">' + fmt(t.forgiven) + '</strong> the committee chose to absorb');
+    if (settled.length) {
+      h += '<hr class="divider">' + settled.map(function (l) { return '<p class="small" style="margin:6px 0 0">' + l + '.</p>'; }).join('');
     }
     h += '</div>';
 
-    // One card per charge, each with the collect grid that was previously buried.
-    h += '<div class="card"><h2 class="section display">Collect</h2>' +
-      '<p class="small muted" style="margin:0 0 8px">Tick a scout as they pay. Fees marked ' +
-      '<strong>families pay</strong> join the budget’s funds-in as they’re collected.</p>';
-    charges.forEach(function (c) {
-      // c.key, not c.item.id — activities are keyed 'act:'+id in state.collected, and
-      // ticking against the bare id would write somewhere the budget never reads.
+    // ---- per family ----
+    h += '<div class="card"><h2 class="section display">By family</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">Every charge stands until it is paid, donated for, waived by a reward tier, ' +
+      'or forgiven — and it keeps its reason either way. Record money arriving in <strong>Money · Ledger</strong>; ' +
+      'it settles here as soon as it carries a scout.</p>';
+    var shown = roster.filter(function (s2) { return chargesForScout(s2.id).length; });
+    if (!shown.length) h += '<p class="empty">No charges against anyone on the current roster.</p>';
+    shown.forEach(function (s2) {
+      var rows = chargesForScout(s2.id);
+      var ft = chargeTotals(rows, state.ledger);
+      var owe = scoutOwesCents(s2.id);
+      var open = !!ui.collectOpen[s2.id];
       h += '<div class="block-card" style="margin-top:8px">' +
-        '<div class="spread"><span class="assign-name">' + esc(c.item.name || ('Untitled ' + c.kind)) +
-        ' <span class="small muted">' + esc(c.kind) +
-        (lineFamilyFunded(c.item) ? ' · families pay' : '') + '</span></span>' +
-        '<span class="money">' + fmt(c.item.scoutRateCents || 0) + ' <span class="small muted">per scout</span></span></div>' +
-        renderCollectBlock(c.item, c.key) + '</div>';
+        '<div class="spread"><span class="assign-name">' + esc(s2.name) +
+        (s2.den ? ' <span class="pill navy">' + esc(s2.den) + '</span>' : '') + '</span>' +
+        '<span class="money"' + (owe ? ' style="color:var(--accent-text)"' : '') + '>' +
+        (owe ? fmt(owe) + ' owed' : 'square') + '</span></div>' +
+        '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
+        '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + s2.id + '" aria-expanded="' + open + '">' +
+        '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
+        rows.length + ' charge' + (rows.length === 1 ? '' : 's') + ' · ' + fmt(ft.raised) +
+        ' · ' + fmt(paymentsForScout(state.ledger, s2.id)) + ' received</button>';
+      if (open) {
+        h += '<div class="rsvp-list">';
+        rows.forEach(function (c) {
+          var line = getBudgetLine(c.lineId);
+          var status = c.waivedBy
+            ? '<span class="pill">waived</span>'
+            : (c.forgiven
+              ? '<span class="pill">forgiven' + (c.forgiven.reason ? ' — ' + esc(c.forgiven.reason) : '') + '</span>'
+              : '');
+          h += '<div class="att-row" style="cursor:default"><span class="att-name">' +
+            esc(line ? (line.name || 'Untitled line') : 'Removed line') +
+            ' <span class="small muted">' + esc(chargeWhoLabel(c)) + '</span> ' + status + '</span>' +
+            '<span class="money small">' + fmt(c.amountCents) + '</span>' +
+            (c.waivedBy ? '' :
+              (c.forgiven
+                ? '<button type="button" class="btn small ghost" data-act="charge-unforgive" data-id="' + c.id + '">Undo</button>'
+                : '<button type="button" class="btn small ghost" data-act="charge-forgive" data-id="' + c.id + '">Forgive…</button>')) +
+            '</div>';
+          if (ui.forgiveFor === c.id) {
+            h += '<form data-form="charge-forgive" data-id="' + c.id + '" class="row" style="margin:4px 0 8px">' +
+              '<label class="fld">Why<input name="reason" placeholder="e.g. family unable to pay this term" style="min-width:220px"></label>' +
+              '<label class="fld">Agreed by<input name="by" placeholder="Committee Chair"></label>' +
+              '<button class="btn small primary" type="submit" style="align-self:flex-end">Forgive ' + fmt(c.amountCents) + '</button>' +
+              '<button type="button" class="btn small ghost" data-act="charge-forgive-cancel" style="align-self:flex-end">Cancel</button>' +
+              '</form>';
+          }
+        });
+        h += '</div>' +
+          '<div class="row no-print" style="margin-top:8px">' +
+          '<button type="button" class="btn small primary" data-act="charge-pay" data-scout="' + s2.id + '">Record a payment…</button>' +
+          '</div>';
+      }
+      h += '</div></div>';
     });
     h += '</div>';
+
+    // Forgiveness is the practice the sample financial bylaws assume — the Treasurer is told
+    // to "sympathetically counsel with a family which may be financially unable to pay fees"
+    // and that "no boy should be left out of activities due to inability to pay". It is
+    // expected. It just has to leave a trace.
+    h += '<div class="card"><p class="small muted" style="margin:0">A forgiven charge stays on the books with its reason. ' +
+      'That is deliberate: an auditor can read a marked charge, whereas a missing one tells them nothing — and the pack ' +
+      'should see what it chose to absorb rather than discover it as a gap at year end.</p></div>';
     return h;
   }
+
 
   /* ----- Pack · Sharing — who can get in, and how the pack is published ----- */
   function renderPackSharing() {
@@ -11130,6 +11401,30 @@
     if (act === 'toggle-rsvp') { ui.rsvpOpen[el.dataset.key] = !ui.rsvpOpen[el.dataset.key]; render(); return; }
     if (act === 'toggle-att') { ui.attOpen[el.dataset.id] = !ui.attOpen[el.dataset.id]; render(); return; }
     if (act === 'toggle-collect') { ui.collectOpen[el.dataset.id] = !ui.collectOpen[el.dataset.id]; render(); return; }
+    /* ----- Phase 3b — settling a charge ----- */
+    if (act === 'charge-forgive') { ui.forgiveFor = el.dataset.id; render(); return; }
+    if (act === 'charge-forgive-cancel') { ui.forgiveFor = null; render(); return; }
+    if (act === 'charge-unforgive') {
+      var uc = state.charges.find(function (c) { return c.id === el.dataset.id; });
+      if (uc) { uc.forgiven = null; commit(); }
+      return;
+    }
+    // Money arriving is a LEDGER entry that carries a scout — the same record any other
+    // payment gets. Nothing about settling a charge is special, which is the point.
+    if (act === 'charge-pay') {
+      var paySid = el.dataset.scout;
+      var payScout = getScout(paySid);
+      ui.ledgerDraft = ledgerDraftDefault();
+      ui.ledgerDraft.direction = 'in';
+      ui.ledgerDraft.source = 'family';
+      ui.ledgerDraft.scoutId = paySid;
+      ui.ledgerDraft.description = payScout ? (payScout.name + ' — dues & fees') : 'Family payment';
+      ui.ledgerDraft.amount = dollars(scoutOwesCents(paySid));
+      ui.ledgerView = 'entries';
+      ui.ledgerFilter = { dir: '', lineId: '', text: '' };
+      gotoNav('money', 'ledger');
+      return;
+    }
     if (act === 'adv-toggle') { ui.advOpen[el.dataset.id] = !ui.advOpen[el.dataset.id]; render(); return; }
     if (act === 'adv-cycle') {
       var aKind = el.dataset.kind;
@@ -11273,7 +11568,9 @@
         lineId: dr.lineId, method: dr.method, ref: dr.ref.trim(),
         source: dr.direction === 'in' ? dr.source : '',
         donor: (dr.direction === 'in' && dr.source === 'donation') ? dr.donor.trim() : '',
-        scoutId: '', reconciled: false
+        // Phase 3b — a payment carries the scout whose account it settles. Set from the
+        // Dues screen, or picked here.
+        scoutId: dr.direction === 'in' ? dr.scoutId : '', reconciled: false
       });
       // Keep the date and direction — a treasurer posting a stack of receipts is nearly
       // always entering several from the same day, the same way.
@@ -11805,18 +12102,6 @@
       } else aMap[aSid] = aRec;
       commit(); return;
     }
-    if (ch === 'collect-mark') {
-      // Wave 3 — fee collected checkbox: { expenseId: { scoutId: true } }
-      var cMap = state.collected[el.dataset.id];
-      if (el.checked) {
-        if (!cMap) cMap = state.collected[el.dataset.id] = {};
-        cMap[el.dataset.scout] = true;
-      } else if (cMap) {
-        delete cMap[el.dataset.scout];
-        if (!Object.keys(cMap).length) delete state.collected[el.dataset.id];
-      }
-      commit(); return;
-    }
     if (ch === 'sync-pass') { setSyncPass(el.value); render(); return; }
     // Accounts: admin changes a member's role (writes directly to the members doc, NOT via commit()).
     if (ch === 'member-role') { setMemberRole(el.dataset.uid, el.value); return; }
@@ -11893,6 +12178,7 @@
       var nk = ch.slice(5);
       if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; render(); return; }
       if (nk === 'source') { nd.source = el.value; render(); return; }
+      if (nk === 'scout') { nd.scoutId = el.value; return; }
       if (nk === 'date') nd.date = el.value;
       else if (nk === 'desc') nd.description = el.value;
       else if (nk === 'amount') nd.amount = el.value;
@@ -11914,11 +12200,12 @@
       else if (lk === 'method') led.method = el.value;
       else if (lk === 'ref') led.ref = el.value;
       else if (lk === 'source') led.source = el.value;
+      else if (lk === 'scout') led.scoutId = el.value;
       else if (lk === 'donor') led.donor = el.value;
       else if (lk === 'rec') led.reconciled = el.checked;
       // Money-in fields are meaningless on a payment out, so switching direction drops
       // them rather than leaving a stale donor attached to a cheque to the campground.
-      if (led.direction !== 'in') { led.source = ''; led.donor = ''; }
+      if (led.direction !== 'in') { led.source = ''; led.donor = ''; led.scoutId = ''; }
       if (led.source !== 'donation') led.donor = '';
       commit(); return;
     }
@@ -12072,6 +12359,22 @@
     if (parentMode() || gateMode()) return; // Parent phase / join gates — neither renders a form
     var kind = f.dataset.form;
     var fd = new FormData(f);
+    // Phase 3b — forgiving a charge. It is NOT deleted: it stands, marked, with a reason
+    // and who agreed it, so the pack can see what it chose to absorb.
+    if (kind === 'charge-forgive') {
+      var fc = state.charges.find(function (c) { return c.id === f.dataset.id; });
+      if (fc) {
+        fc.forgiven = {
+          date: todayISO(),
+          by: String(fd.get('by') || '').trim(),
+          reason: String(fd.get('reason') || '').trim()
+        };
+        ui.forgiveFor = null;
+        showToast('Forgave ' + fmt(fc.amountCents) + ' — recorded with a reason.');
+        commit();
+      }
+      return;
+    }
     // Parent phase — admin invites someone by email (accounts layer; never touches the pack record).
     if (kind === 'invite-member') {
       createInvite(String(fd.get('email') || ''), String(fd.get('role') || ''));
@@ -12261,6 +12564,11 @@
   // Join link phase — read ?pack=&join= (or the hash equivalent) BEFORE the first paint, so
   // a link visitor's very first frame is the welcome gate, and scrub them out of the URL.
   consumeJoinParams();
+  // Phase 3b — reconcile charges once before the FIRST paint, not just on commit. A pack
+  // that has just migrated has charges to raise from its roster and payments backfilled
+  // from the old collect grids; without this, Dues & fees would open on "nothing is charged
+  // yet" until the treasurer happened to touch something unrelated.
+  syncCharges();
   render();
   // Wave 15 — surface a corrupt-load only after toastHost is rendered into a live page.
   if (loadBackupKept) showToast('Couldn’t read saved data — a backup copy was kept.');
