@@ -399,6 +399,150 @@ attendance, is an incomplete book and exactly the sort of item the Treasurer's q
 
 ---
 
+## 3.6 A year in the life
+
+How it actually works once built, in order, with the records each step writes.
+
+### July — the committee plans the year
+
+**Cubmaster and Activities chair** put the calendar together in **Program**. Fourteen events:
+den meetings, pack meetings, Fall campout, Blue & Gold, derby, day camp. Each is an **Event** —
+date, place, notes. No money anywhere yet.
+
+**Treasurer** opens **Money · Budget** and builds the plan from the 510-278 categories, one line
+per thing the pack will pay for. For each line: who pays, and at what rate.
+
+```
+Charter fee            flat    $100      payer: pack
+Awards & badges        flat    $350      payer: pack
+Fall campout           per-head  scout $40 · adult $40 · sibling $20   payer: family   → Event
+Blue & Gold            per-head  scout $15 · adult $15 · sibling $8    payer: family   → Event
+Cub day camp           per-head  scout $145                            payer: council  → Event
+Pack dues              per-head  scout $80                             payer: family
+```
+
+Planned totals use the roster assumption — every active scout, one adult each. Ten scouts:
+
+```
+A) Budgeted expenses        $3,150      (council lines excluded — not the pack's money)
+B) Income                     $420      carryover
+C) Fundraising need         $2,730   ÷ 32% commission = $8,531 pack popcorn goal
+                                                       ÷ 10  =   $853 per scout
+```
+
+**That last figure is currently typed in by hand.** After this it is derived from the plan, which
+is the entire point of the 510-278 worksheet.
+
+**Popcorn Kernel** sets the reward tiers in **Popcorn · Rewards** — tier 1 at $300 covers Pack
+dues; tier 2 at $600 also covers Blue & Gold.
+
+### September — popcorn
+
+Storefronts, shifts, standings, Trail's End imports: **completely unchanged**. The Kernel works
+exactly as they do today.
+
+One thing changes at the end. When the council cheque clears, the Treasurer posts **one ledger
+entry** rather than the app inferring commission from three subsystems:
+
+```
+IN  $2,730.00  "Trail's End commission"  line: Popcorn income  source: 'commission'
+```
+
+### October — the Fall campout
+
+Planned at $800 (10 scouts + 10 adults × $40). What actually happens:
+
+**After the event, the Cubmaster** opens the Event in **Program** and enters head counts — the
+same screen where attendance is already taken, just with numbers instead of ticks:
+
+```
+Ben    scout 1 · adults 2 · siblings 1
+Ivy    scout 1 · adults 1 · siblings 0
+Mae    scout 0 · adults 0 · siblings 0     (didn't go)
+…                                          8 scouts · 13 adults · 5 siblings
+```
+
+**The Treasurer** pays the campground and posts it in **Money · Ledger**:
+
+```
+OUT $1,020.00  "Fall campout — Camp Rainey"  line: Fall campout  method: check  ref: 1043
+```
+
+**Charges raise themselves** from the head counts × the rates. Three scouts are past tier 1, so
+their **scout** share is waived — their adults and siblings still pay:
+
+```
+8 scout   @ $40 = $320   (3 waived by "Dues covered" −$120)
+13 adult  @ $40 = $520
+5 sibling @ $20 = $100
+families owe                                    $820
+```
+
+Over the following weeks: seven families pay (ledger `in`, `source: 'family'`), St Mark's covers
+one scout's share (ledger `in`, `source: 'donation'`, `donor: "St Mark's Church"`), and one family
+is struggling so the Committee Chair forgives $60 with a reason recorded on the charge.
+
+The line now reads:
+
+```
+planned $800 · actual $1,020 · charged $940 · waived $120 · forgiven $60 · donated $40
+recovered $760 · pack absorbed $260
+```
+
+Every one of those is a stored record. **Today none of it exists** — the line would say
+`actual $102 × 10 scouts = $1,020` and stop.
+
+### Any month — the Treasurer's routine
+
+Home shows the Treasurer's queue, and it now knows about incomplete books:
+
+- *Fall campout has attendance but no spend recorded* — half a book
+- *Blue & Gold has spend but nobody entered who came* — the other half
+- *4 families owe $310*
+- *12 ledger entries not yet reconciled*
+
+**Reconciling** is a real thing now: open **Money · Ledger · Reconcile**, tick entries against the
+bank statement, type the statement's closing balance. The difference should be zero. If it isn't,
+something is missing — which is exactly what a treasurer needs to know and cannot currently find
+out from this app at all.
+
+At the committee meeting, budget-vs-actual by category, with variance, straight off the plan.
+
+### March — day camp, which is not the pack's money
+
+Day camp is on the calendar. Families pay council **directly**, $145 a scout.
+
+- It appears in Program like any other event.
+- It appears in the true-cost-to-a-family view: *"this year costs your family about $X."*
+- It raises **no charge**, writes **no ledger entry**, and does **not move the pack's balance**.
+
+Today there is no way to say that. Either the fee sits in the budget and overstates what the pack
+spends, or it is left out and the pack understates what Scouting costs a family.
+
+### June — closing the year
+
+Close-out works as it does now, with better inputs:
+
+- The archive stores **real actuals** from the ledger, not `estimate × roster`.
+- Carryover is the **reconciled bank balance**, not a derived figure.
+- Next year's estimates seed from what things actually cost, which is what the current rollover
+  already tries to do — it just finally has true numbers to do it with.
+
+### What the Treasurer can answer afterwards that they cannot today
+
+| Question | Today | After |
+|---|---|---|
+| What is our bank balance? | a derived guess | a reconciled figure, ticked against the statement |
+| Are we over budget, and where? | one number per line | per line, per category, with variance |
+| Who owes what? | a boolean grid | charges and payments, with dates |
+| Why has this not been collected? | *unanswerable* | paid · donated · waived · forgiven, with reasons |
+| What did fundraising buy the families? | *unanswerable* | total waived |
+| What did we give away? | *unanswerable* | total forgiven |
+| What did donors cover, and whom do we thank? | *unanswerable* | total donated, by donor |
+| What does Scouting cost one of our families? | *unanswerable* | pack charges + council fees |
+
+---
+
 ## 4. How today's features map on
 
 | Today | Becomes |
