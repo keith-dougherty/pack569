@@ -134,22 +134,46 @@ and the heads are not all the same kind or price.
   siblingRateCents,              // per sibling — often a child rate, sometimes 0
   flatCents,                     // used when basis === 'flat'
   eventId,                       // optional link to an Event
-  payer: 'pack'|'family'|'council' }
+  fundedBy: 'pack'|'families'|'council' }
 ```
 
-**`payer` is load-bearing** and replaces the old `familyPays` boolean:
+#### `fundedBy` — who the cost lands on in the end
 
-| `payer` | Money moves | In the pack's books? | Example |
-|---|---|---|---|
-| `pack` | pack pays, nobody is charged | yes — expense only | charter fee, awards, program materials |
-| `family` | pack pays the vendor, families reimburse | yes — expense **and** charges | Blue & Gold, pack campout |
-| `council` | **family pays council directly** | **no** — informational only | day camp, resident camp |
+This replaces the old `familyPays` boolean. It answers **"when the dust settles, whose money paid
+for this?"** — *not* "who wrote the first cheque", which is a different question and the reason an
+earlier draft of this called the field `payer` and confused everybody, including me.
 
-`council` lines never touch the ledger and never produce a pack charge. They exist so the
-committee can see the true cost of the year to a family, and so the event still appears on the
-calendar — but a council camp fee is not the pack's money and must never move the pack's balance.
-Today's model has no way to express that, so those costs either distort the budget or go
-unrecorded.
+**In two of the three cases the pack writes the first cheque anyway.** Here is the money actually
+moving:
+
+```
+fundedBy: 'pack'        vendor  ←──────────  PACK
+                        one ledger entry: OUT. Nobody is billed.
+                        This is what fundraising exists to cover.
+
+fundedBy: 'families'    vendor  ←──────────  PACK  ←────────  families
+                        ledger OUT to the vendor, then ledger IN per family.
+                        The pack fronts the money and is made whole.
+                        Net cost to the pack ≈ 0, except what it waives or forgives.
+
+fundedBy: 'council'     council ←────────────────────────────  families
+                        NO ledger entries. The pack is not in this transaction.
+```
+
+| `fundedBy` | Pack fronts it? | Families billed? | Touches the pack's balance? | Example |
+|---|---|---|---|---|
+| `pack` | yes | no | yes — an expense | charter fee, awards, program materials |
+| `families` | yes | yes | yes — out, then back in | Blue & Gold, pack campout, dues |
+| `council` | **no** | no *(they pay council direct)* | **no** | day camp, resident camp |
+
+The useful way to read it: **`pack` is what popcorn has to cover.** `families` passes through.
+`council` isn't ours at all.
+
+`council` lines exist so the committee can see the true cost of a year to a family, and so the
+event still appears on the calendar — but a council camp fee is not the pack's money and must
+never move the pack's balance. Today's model cannot express that, so those costs either sit in
+the budget and overstate what the pack spends, or get left out and understate what Scouting costs
+a family.
 
 #### Planning assumes; reality is entered afterwards
 
@@ -219,7 +243,7 @@ council cheque clears — which is when it's actually true.
 
 ### 3.4 Family account — `state.charges[]` and payments in the ledger
 
-A `payer: 'family'` line raises charges **from the recorded attendance head counts** — one per
+A `fundedBy: 'families'` line raises charges **from the recorded attendance head counts** — one per
 head, because that is how the cost is actually incurred.
 
 ```js
@@ -383,6 +407,7 @@ workspaces — which is exactly the split the jobs model already encodes.
 | After an event | Who | Where | Record written |
 |---|---|---|---|
 | Head counts — scouts, adults, siblings | Cubmaster / Activities chair / Den leader | **Program · Calendar**, on the event | `attendance[eventId][scoutId]` |
+| …or the same head counts | Treasurer, if nobody else did | **Money · Ledger**, while posting the spend | *the same record* |
 | What it actually cost | Treasurer | **Money · Ledger**, posted to the line | ledger entry `out` |
 | Charges raised | *automatic* | from head counts × rates | `charges[]` |
 | Waiving a scout's share | *automatic* | from the reward tier | `charge.waivedBy` |
@@ -396,6 +421,33 @@ chequebook says what it cost. The charges fall out of the two meeting.
 That also means **an event is not "closed" until both halves are in**, which is a genuinely useful
 thing for Home to nag about — a past event with attendance but no spend, or spend but no
 attendance, is an incomplete book and exactly the sort of item the Treasurer's queue should carry.
+
+#### The Treasurer must never be blocked waiting on someone else
+
+The division above is who *should* enter what, not a gate. In a small pack the Cubmaster may
+simply not get to it, and the books cannot wait. So **the head count is editable from the ledger
+side too**: posting the spend for an event shows its attendance inline, and lets the Treasurer
+enter or correct it in the same motion.
+
+If attendance is already recorded, it is shown as recorded — a summary with the counts, not an
+empty form — so the Treasurer can see it is done and move on, or correct an obvious error
+deliberately rather than silently overwriting somebody's work. **One record, two doors.**
+
+There is one honest limitation to surface rather than hide:
+
+| What is entered | Enough to… | Not enough to… |
+|---|---|---|
+| **Totals** — "8 scouts, 13 adults, 5 siblings came" | cost the line, compare to plan, close the books | raise family charges |
+| **Per family** — the grid | all of the above, **plus** charge each family correctly | — |
+
+For a `fundedBy: 'pack'` line, totals are the whole job and the grid is pointless. For a
+`fundedBy: 'families'` line, totals get the accounting right but the app cannot know *whose* $40
+it is. It should say exactly that — *"26 heads recorded. Add who came to raise family charges."* —
+rather than quietly billing nobody, or worse, guessing.
+
+That is also the graceful degradation path if the Cubmaster never adopts the head-count screen:
+the Treasurer alone can keep a completely correct set of books, and only per-family billing needs
+the extra detail.
 
 ---
 
@@ -413,12 +465,12 @@ date, place, notes. No money anywhere yet.
 per thing the pack will pay for. For each line: who pays, and at what rate.
 
 ```
-Charter fee            flat    $100      payer: pack
-Awards & badges        flat    $350      payer: pack
-Fall campout           per-head  scout $40 · adult $40 · sibling $20   payer: family   → Event
-Blue & Gold            per-head  scout $15 · adult $15 · sibling $8    payer: family   → Event
-Cub day camp           per-head  scout $145                            payer: council  → Event
-Pack dues              per-head  scout $80                             payer: family
+Charter fee            flat    $100      fundedBy: pack
+Awards & badges        flat    $350      fundedBy: pack
+Fall campout           per-head  scout $40 · adult $40 · sibling $20   fundedBy: families  → Event
+Blue & Gold            per-head  scout $15 · adult $15 · sibling $8    fundedBy: families  → Event
+Cub day camp           per-head  scout $145                            fundedBy: council → Event
+Pack dues              per-head  scout $80                             fundedBy: families
 ```
 
 Planned totals use the roster assumption — every active scout, one adult each. Ten scouts:
@@ -552,8 +604,8 @@ Close-out works as it does now, with better inputs:
 | `activity.actualCents × roster` | Σ ledger entries on that line |
 | `collected[key][scoutId] = true` | a charge + a payment ledger entry |
 | reward tier `covers[]` | tier threshold waives `who: 'scout'` charges |
-| `familyPays` boolean | `payer: 'pack'\|'family'\|'council'` |
-| camp fees in the pack budget | `payer: 'council'` — visible, outside the books |
+| `familyPays` boolean | `fundedBy: 'pack'\|'families'\|'council'` |
+| camp fees in the pack budget | `fundedBy: 'council'` — visible, outside the books |
 | `computeBudget().commission` | an income ledger entry, posted when it lands |
 | `meetings[]` + `attendance[]` | Events + attendance keyed on `event.id` |
 | storefront `salesCents`/`donationsCents` | unchanged — popcorn keeps its own subsystem |
@@ -592,8 +644,8 @@ calendar fields from budget lines.
 Add the post-event entry grid. Useful on its own even before charges exist — the pack finally
 knows how many people actually came to Blue & Gold.
 
-**Phase 3 — payer, charges and family accounts.** Introduce `payer`, migrating `familyPays: true`
-→ `'family'` and `false` → `'pack'` (nothing becomes `'council'` automatically — that is a
+**Phase 3 — fundedBy, charges and family accounts.** Introduce `fundedBy`, migrating
+`familyPays: true` → `'families'` and `false` → `'pack'` (nothing becomes `'council'` automatically — that is a
 judgement call per line, prompted once). Add the three rates and `adultsPerScout`. Generate
 charges from recorded attendance, waiving `who: 'scout'` where a tier applies. Backfill history
 from `collected[]`. Rework Dues & fees onto charges.
@@ -627,7 +679,7 @@ and are worth doing even if the rest waits.
 2. **Families are billed per event, per head** — scout and accompanying parent both.
 3. **A fundraising tier waives the scout's share only.** The adult share always stands.
 4. **Council events are paid by families directly to council** and never enter the pack's books —
-   `payer: 'council'`, on the calendar, costed for families, invisible to the balance.
+   `fundedBy: 'council'`, on the calendar, costed for families, invisible to the balance.
 
 5. **Plan from an assumption; charge from recorded attendance.** Parents will not be RSVPing here,
    so the plan assumes every active scout plus one adult. After the event the Treasurer enters the
