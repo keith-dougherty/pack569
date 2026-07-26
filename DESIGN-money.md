@@ -196,8 +196,14 @@ What actually moved. This is the record that makes the app reconcilable.
   lineId,                        // which budget line it posts against ('' = uncategorised)
   method: 'check'|'cash'|'card'|'transfer'|'',
   ref,                           // check number / receipt
-  scoutId }                      // set when it's a family payment
+  scoutId,                       // set when it settles a charge
+  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|''
+  donor }                        // who gave it, when source === 'donation'
 ```
+
+`source` is what lets income be read correctly. Two $80 entries that both settle Ben's dues are
+very different events if one came from Ben's family and the other from the chartered organisation,
+and the pack should be able to see and thank the second.
 
 Then:
 
@@ -226,30 +232,61 @@ charge = { id, scoutId, lineId, who: 'scout'|'adult'|'sibling',
 A family that brought the scout, both parents and a younger sibling gets four charges against that
 scout's account: one `scout`, two `adult`, one `sibling`.
 
-#### Waived and forgiven are different things, and both stay on the books
+#### Four ways a charge is settled, and they are not interchangeable
 
-A charge that is not collected can have got there two ways, and collapsing them would hide both:
+A charge stops being outstanding four different ways. Collapsing any of them into "paid" or
+"written off" would misstate the pack's position:
 
-| | Meaning | Who decides |
-|---|---|---|
-| `waivedBy` | The scout **earned** it by reaching a fundraising tier | the rule, automatically |
-| `forgiven` | The committee **granted** it — hardship, a no-show they chose not to pursue | a person, deliberately |
+| Settled by | Money arrives? | Pack out of pocket? | Record |
+|---|---|---|---|
+| **Family pays** | yes, from the family | no | ledger `in`, `source: 'family'` |
+| **Donation covers it** | **yes, from a third party** | **no** | ledger `in`, `source: 'donation'`, `donor` |
+| **Waived** — scout reached a tier | no | yes, from fundraising | `charge.waivedBy = tierId` |
+| **Forgiven** — committee granted it | no | yes, deliberately | `charge.forgiven = {date, by, reason}` |
 
-**Neither deletes the charge.** It was raised, it stands, and it carries a reason. That matters for
-three separate purposes:
+The middle two look identical on a family's statement — *"you owe nothing"* — and are completely
+different to the pack. **A donation leaves the pack whole; a waiver or forgiveness does not.**
 
-- *Total waived* tells you what fundraising actually bought the families — the number that keeps
-  the Scout Account boundary visible.
-- *Total forgiven* tells you what the pack chose to absorb. A committee should see that figure
-  deliberately, not discover it as a gap.
-- An auditor sees why the money is not there. A missing record cannot be audited; a marked one can.
+- *Total waived* is what fundraising bought the families. It is the number that keeps the Scout
+  Account boundary visible.
+- *Total forgiven* is what the pack chose to absorb. A committee should see that deliberately, not
+  discover it as a gap at year end.
+- *Total donated* is what somebody else paid for, and it is **good news** — it should be visible,
+  attributable, and thankable, not buried in the same bucket as a write-off.
 
-This is also the practice the sample financial bylaws assume — the Treasurer is told to
-*"sympathetically counsel with a family which may be financially unable to pay fees"* and that
-*"no boy should be left out of activities due to inability to pay."* Forgiveness is expected. It
-just has to leave a trace.
+**None of them delete the charge.** It was raised, it stands, and it carries a reason. An auditor
+can read a marked charge; a missing one tells them nothing.
 
-Outstanding for a family = `Σ charges where !waivedBy && !forgiven` − `Σ payments`.
+Forgiveness in particular is the practice the sample financial bylaws assume — the Treasurer is
+told to *"sympathetically counsel with a family which may be financially unable to pay fees"* and
+that *"no boy should be left out of activities due to inability to pay."* It is expected. It just
+has to leave a trace.
+
+Outstanding for a family = `Σ charges where !waivedBy && !forgiven` − `Σ payments (any source)`.
+
+#### Donations — designated and pooled
+
+Two patterns, and the app should handle both:
+
+**Designated** — the chartered org covers Ben's camp fee specifically. One ledger entry does it:
+
+```
+IN  $80.00  "St Mark's — camp assistance for Ben"   line: Camp   scoutId: s1
+            source: 'donation'   donor: "St Mark's Church"
+```
+
+That settles Ben's charge exactly as a family payment would, but is attributable to the donor.
+
+**Pooled** — the chartered org gives $500 toward "whoever needs help". That is income to a
+scholarship line, drawn down later per scout. Conveniently, 510-278 already has the line for it:
+**Reserve fund (11) — registration scholarships**. Money in when it arrives; each later use is a
+payment against a charge, tagged to that line, so the remaining balance is always visible.
+
+> **Two compliance notes worth carrying in the UI, not just here.** Units *"are not permitted to
+> solicit contributions for unit programs"* — accepting an offered gift is fine, asking is not.
+> And *"gifts to units are almost never tax deductible"*, so the app must never generate anything
+> that looks like a deductible-donation receipt. Recording a donor for a thank-you is the right
+> amount of ceremony.
 
 **This pack's rule, expressed exactly:**
 
@@ -350,7 +387,8 @@ workspaces — which is exactly the split the jobs model already encodes.
 | Charges raised | *automatic* | from head counts × rates | `charges[]` |
 | Waiving a scout's share | *automatic* | from the reward tier | `charge.waivedBy` |
 | Forgiving a charge | Treasurer / Committee Chair | **Money · Dues & fees** | `charge.forgiven` |
-| Recording a family payment | Treasurer | **Money · Ledger** | ledger entry `in` + `scoutId` |
+| Recording a family payment | Treasurer | **Money · Ledger** | ledger `in`, `source: 'family'` |
+| Recording a donation that covers a scout | Treasurer | **Money · Ledger** | ledger `in`, `source: 'donation'`, `donor` |
 
 Nobody has to be in two places. The person who ran the event says who came; the person with the
 chequebook says what it cost. The charges fall out of the two meeting.
@@ -457,9 +495,10 @@ and are worth doing even if the rest waits.
 7. **Attendance is entered on the event, after the fact** — by whoever ran it, in Program. The
    Treasurer separately posts what it cost, in Money. Charges fall out of the two meeting, so an
    event with only one half entered is an incomplete book and should be visible as such.
-8. **A charge stands even if the family did not attend, and can be forgiven.** Forgiveness is
-   recorded on the charge with a reason, never deleted — `waivedBy` (earned) and `forgiven`
-   (granted) are reported separately.
+8. **A charge stands even if the family did not attend, and can be settled four ways** — paid by
+   the family, covered by a donation, waived by a reward tier, or forgiven by the committee. All
+   four are recorded on the charge or in the ledger, never deleted, and reported separately:
+   a donation leaves the pack whole, a waiver or forgiveness does not.
 
 **Still open:**
 
