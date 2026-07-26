@@ -527,8 +527,10 @@ test('a handoff renders only when it carries a live figure', () => {
 
 test('every handoff points at a section that exists', () => {
   const sectionIds = new Set(nav.WORKSPACES.flatMap((w) => w.sections.map((s) => s.id)));
+  // Five seams. The sixth (Pack · People -> Popcorn two-deep gaps) went away with the
+  // storefront adults roster — this pack sends a parent with each scout.
   const calls = [...SCRIPT.matchAll(/handoffCard\('([^']+)', '([^']+)', '(\w+)'/g)];
-  ok(calls.length >= 6, `expected the six seams, found ${calls.length}`);
+  ok(calls.length >= 5, `expected the five seams, found ${calls.length}`);
   for (const [, , , section] of calls) {
     ok(sectionIds.has(section), `a handoff routes to unknown section "${section}"`);
   }
@@ -569,6 +571,50 @@ test('den scope is a default, never a lock', () => {
 test('den scope never gates a workspace', () => {
   // Scoping filters rows. It must not decide what someone can reach.
   ok(!/myDens\(\)[^;\n]*\?\s*'' :/.test(SCRIPT), 'myDens() is being used to hide a surface');
+});
+
+/* ================================================================
+   Wave 21 — storefront shifts track scouts only
+   ================================================================ */
+
+test('nothing tracks adults on a storefront shift', () => {
+  // Pack policy: a parent accompanies their scout, so adults are 1:1 with the scouts who
+  // sign up. A separate roster would be data nobody ever fills in, and a two-deep warning
+  // computed from it would fire on every shift forever.
+  for (const dead of ['blockAdultLeaders', 'blockNeedsAdults', 'storefrontNeedsAdults', 'getLeader']) {
+    ok(!SCRIPT.includes(dead + '('), `${dead}() is still referenced`);
+  }
+  for (const act of ['adult-assign', 'adult-remove']) {
+    ok(!SCRIPT.includes(`'${act}'`), `the ${act} handler still exists`);
+  }
+  ok(!/adults: \[\]/.test(SCRIPT), 'a new block is still seeded with an adults array');
+});
+
+test('no surface still says a shift needs adults', () => {
+  // String literals only — a comment explaining what was removed is legitimate history.
+  const literals = [...SCRIPT.matchAll(/'((?:[^'\\\n]|\\.)*)'/g)].map((m) => m[1]).join(' ');
+  for (const phrase of ['needs adults', 'Needs two-deep', 'no adults', 'Adults on this block']) {
+    ok(!literals.includes(phrase), `user-facing copy still reads "${phrase}"`);
+  }
+});
+
+test('the glance pill flags an unfilled shift instead', () => {
+  // An empty SHIFT is the real gap now — that is what leaves the table unstaffed.
+  const fn = /function glanceStatus\(sf\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'glanceStatus() not found');
+  ok(/storefrontCoverage\(sf\)/.test(fn[0]), 'glanceStatus no longer derives from shift coverage');
+  ok(/shift' \+ /.test(fn[0]), 'the middle state does not report open shifts');
+});
+
+test('the RSVP adults count is untouched', () => {
+  // Different feature: "how many adults are coming" on an RSVP, not shift staffing.
+  ok(/adults: rVal === 'yes'/.test(SCRIPT), 'the RSVP adults tally was removed by mistake');
+});
+
+test('deleting a leader no longer cascades into storefronts', () => {
+  const fn = /if \(act\.indexOf\('del-leader:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(fn, 'the del-leader handler was not found');
+  ok(!/storefronts/.test(fn[0]), 'deleting a leader still walks the storefronts');
 });
 
 /* ---------------- report ---------------- */

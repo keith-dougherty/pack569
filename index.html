@@ -1602,8 +1602,6 @@
           // Wave 16 — adults on a block: shape-check only (array of non-empty strings).
           // Ids that no longer resolve to a leader are filtered where rendered/counted,
           // NOT here — normalizeState never resolves references.
-          if (!Array.isArray(b.adults)) b.adults = [];
-          else b.adults = b.adults.filter(function (aid) { return typeof aid === 'string' && !!aid; });
           // Wave 17 — cash-box sanity: "of which card" portion of a block's total.
           // A reconciliation aid only — no other math consumes it.
           b.cardCents = (typeof b.cardCents === 'number' && isFinite(b.cardCents) && b.cardCents > 0) ? Math.round(b.cardCents) : 0;
@@ -3981,7 +3979,7 @@
   function newBlock(n, start, end) {
     // Wave 16: adults = leader ids (state.leaders) staffing this block, for two-deep tracking.
     // Wave 17: cardCents = "of which card" portion of the block total (cash-box sanity aid).
-    return { id: uid(), label: 'Block ' + n, start: start || '', end: end || '', assignments: [], adults: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
+    return { id: uid(), label: 'Block ' + n, start: start || '', end: end || '', assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
   }
   function addStorefront(name, date) {
     state.storefronts.push({
@@ -4597,21 +4595,12 @@
     return { covered: covered, total: total, full: total > 0 && covered === total };
   }
 
-  /* ----- Wave 16: adults on storefront blocks (two-deep leadership) ----- */
-  function getLeader(id) { return state.leaders.find(function (l) { return l.id === id; }); }
-  // Stored ids filtered to leaders that still exist — stale ids drop out here at
-  // render/count time (normalizeState only shape-checks, by design).
-  function blockAdultLeaders(b) {
-    return (b.adults || []).map(getLeader).filter(function (l) { return !!l; });
-  }
-  // Two-deep predicate: the block has scouts but fewer than 2 resolvable adults.
-  // Blocks with zero scouts never warn — empty future blocks are fine.
-  function blockNeedsAdults(b) {
-    return (b.assignments || []).length >= 1 && blockAdultLeaders(b).length < 2;
-  }
-  function storefrontNeedsAdults(sf) {
-    return (sf.blocks || []).some(blockNeedsAdults);
-  }
+  // Wave 21 — adults on storefront blocks (Wave 16) are GONE. This pack requires a parent
+  // to accompany their scout at a storefront, so the adults were always 1:1 with the scouts
+  // signed up: a separate roster was data nobody would ever fill in, and a "needs two-deep"
+  // warning computed from it would fire on every shift forever.
+  // Shifts are now purely "which scouts signed up". blocks[].adults is no longer read or
+  // written; any array left on an existing ledger is simply ignored rather than deleted.
 
   function storefrontRow(sf) {
     var t = storefrontTotals(sf);
@@ -4623,7 +4612,6 @@
       '<div><div class="lr-name">' + esc(sf.name) + '</div>' +
       '<div class="small muted">' + esc(fmtDate(sf.date)) + ' · ' + sf.blocks.length + ' block' + (sf.blocks.length === 1 ? '' : 's') +
       ' · ' + covSeg +
-      (storefrontNeedsAdults(sf) ? ' · <span class="pill bad">needs adults</span>' : '') +
       (function () { var rp = rsvpPill('sf:' + sf.id); return rp ? ' · ' + rp : ''; })() + '</div></div>' +
       '<div class="money" style="font-weight:650">' + (t.combined ? fmt(t.combined) : '<span class="muted">—</span>') + '</div></div>';
   }
@@ -4683,19 +4671,13 @@
         ? (cov.covered + ' of ' + cov.total + ' covered' + (cov.full ? ' — fully staffed' : ''))
         : 'No shifts added yet');
       if (tot.combined) h += line('Recorded', '<span class="money">' + fmt(tot.combined) + '</span> (' + fmt(tot.sales) + ' sales · ' + fmt(tot.don) + ' donations)');
-      if (storefrontNeedsAdults(sf)) {
-        h += line('Adults', '<span class="pill bad">Needs two-deep</span> at least one shift has scouts and fewer than 2 adults');
-      }
       (sf.blocks || []).forEach(function (b, i) {
         var when = fmtTimeRange(b.start, b.end) || ('Block ' + (i + 1));
         var kids = (b.assignments || []).map(function (as) {
           var sc = getScout(as.scoutId);
           return sc ? sc.name : '(removed scout)';
         });
-        var adults = blockAdultLeaders(b).map(function (l) { return l.name || 'Leader'; });
-        var who = kids.length ? esc(kids.join(', ')) : '<span class="muted">nobody assigned</span>';
-        if (adults.length) who += ' <span class="muted">· adults: ' + esc(adults.join(', ')) + '</span>';
-        else if (kids.length) who += ' <span class="pill bad">no adults</span>';
+        var who = kids.length ? esc(kids.join(', ')) : '<span class="muted">nobody signed up</span>';
         h += line(when, who, 'mo-shift');
       });
       h += '<div class="row no-print" style="margin-top:8px">' +
@@ -4766,7 +4748,6 @@
           var cov = storefrontCoverage(e.sf);
           meta.push(e.sf.blocks.length + ' shift' + (e.sf.blocks.length === 1 ? '' : 's'));
           if (cov.total) meta.push(cov.covered + ' of ' + cov.total + ' covered');
-          if (storefrontNeedsAdults(e.sf)) meta.push('needs adults');
           evKey = 'sf:' + e.sf.id;
         } else if (e.type === 'meeting') {
           label = e.m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (e.m.den ? ' · ' + e.m.den : ''));
@@ -5125,38 +5106,8 @@
     }
     h += '</div>';
 
-    // Wave 16 — adults staffing this block (two-deep leadership)
-    var adultsOn = blockAdultLeaders(b);
-    var addableAdults = state.leaders.filter(function (l) { return (b.adults || []).indexOf(l.id) === -1; });
-    h += '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Adults on this block</p>';
-    if (!state.leaders.length) {
-      h += '<p class="small muted" style="margin:4px 0 0">Add leaders on Pack to staff blocks.</p>';
-    } else {
-      if (adultsOn.length) {
-        h += '<div class="row" style="gap:6px;margin:6px 0 0">' + adultsOn.map(function (l) {
-          var rmLbl = 'Remove ' + (l.name || 'leader') + ' from this block';
-          return '<span class="adult-chip">' + esc(l.name || 'Leader') +
-            '<button type="button" class="btiny" data-act="adult-remove" data-sf="' + sf.id + '" data-id="' + b.id +
-            '" data-adult="' + l.id + '" aria-label="' + esc(rmLbl) + '" title="' + esc(rmLbl) + '">✕</button></span>';
-        }).join('') + '</div>';
-      } else {
-        h += '<p class="small muted" style="margin:4px 0 0">No adults assigned yet.</p>';
-      }
-      if (addableAdults.length) {
-        h += '<div class="row" style="margin-top:8px"><select data-ch="adult-assign" data-sf="' + sf.id + '" data-id="' + b.id + '" aria-label="Add an adult to this block">' +
-          '<option value="">+ Add adult…</option>' +
-          addableAdults.map(function (l) {
-            var lbl = leaderJobLabels(l); // Wave 21 — structured jobs, falling back to the old free text
-            return '<option value="' + l.id + '">' + esc(l.name || 'Leader') + (lbl ? ' — ' + esc(lbl) : '') + '</option>';
-          }).join('') +
-          '</select></div>';
-      }
-    }
-    h += '</div>';
-    if (blockNeedsAdults(b)) {
-      var adultN = adultsOn.length;
-      h += '<p class="warn" style="margin:10px 0 0">Two-deep leadership: this block has scouts but only ' + adultN + ' adult' + (adultN === 1 ? '' : 's') + ' assigned.</p>';
-    }
+    // Wave 21 — the "Adults on this block" roster (Wave 16) is gone: a parent comes with
+    // each scout, so signing up a scout IS signing up an adult.
 
     // Money entry (Wave 17 — "of which card" is a cash-box reconciliation aid only;
     // no other math consumes it)
@@ -5961,11 +5912,6 @@
             fmtDate(sf.date) + (d === 0 ? ' · today' : d === 1 ? ' · tomorrow' : ' · in ' + d + ' days'),
             'popcorn', 'storefronts');
         }
-        if (storefrontNeedsAdults(sf)) {
-          add('kernel', d <= 3 ? 'now' : 'week',
-            name + ' — a shift is short an adult',
-            'Two-deep leadership · ' + fmtDate(sf.date), 'popcorn', 'storefronts');
-        }
       } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0) {
         add('kernel', 'now', name + ' — no money entered yet',
           'Ran ' + fmtDate(sf.date) + ' with scouts assigned', 'popcorn', 'storefronts');
@@ -6456,17 +6402,9 @@
     }
     leaders.forEach(function (l) { h += renderLeaderRow(l); });
     if (canEdit()) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
-    // Seam: this roster is what staffs storefront shifts, so a thin roster shows up as a
-    // two-deep gap over on Popcorn. Makes the leader list consequential rather than a
-    // contact sheet.
-    var shortShifts = state.storefronts.filter(function (sf) {
-      return (sf.date || '') >= todayISO() && storefrontNeedsAdults(sf);
-    }).length;
-    if (shortShifts) {
-      h += handoffCard('Pack', 'Popcorn', 'storefronts',
-        shortShifts + (shortShifts === 1 ? ' storefront' : ' storefronts'),
-        (shortShifts === 1 ? 'still needs' : 'still need') + ' a second adult on a shift.');
-    }
+    // Wave 21 — this roster used to hand off to Popcorn's two-deep gaps. Storefront shifts
+    // no longer track adults at all (a parent comes with each scout), so that seam is gone:
+    // leaders here are about jobs, training and renewals, not staffing.
     h += '</div>';
 
     // Wave 19(40) — AHMR pointer (plain text, deliberately not a link).
@@ -7888,8 +7826,7 @@
       lines.push(b.label + (rng ? ' — ' + rng : ''));
       var dsScouts = (b.assignments || []).map(function (a) { var s = getScout(a.scoutId); return s ? s.name : 'Unknown scout'; });
       lines.push('  Scouts: ' + (dsScouts.length ? dsScouts.join(', ') : '—'));
-      var dsAdults = blockAdultLeaders(b).map(function (l) { return l.name || 'Leader'; });
-      lines.push('  Adults: ' + (dsAdults.length ? dsAdults.join(', ') : '—'));
+      lines.push('  (each scout is accompanied by their parent)');
       lines.push('  Walk-ups: ______________  ______________  ______________');
       lines.push('  Sales $ ______  Donations $ ______  Card $ ______');
     });
@@ -7912,11 +7849,9 @@
     (sf.blocks || []).forEach(function (b) {
       var rng = fmtTimeRange(b.start, b.end);
       var dsScouts = (b.assignments || []).map(function (a) { var s = getScout(a.scoutId); return s ? s.name : 'Unknown scout'; });
-      var dsAdults = blockAdultLeaders(b).map(function (l) { return l.name || 'Leader'; });
       h += '<div class="block-card" style="margin-bottom:10px">' +
         '<p class="eyebrow" style="margin:0 0 6px">' + esc(b.label) + (rng ? ' · ' + esc(rng) : '') + '</p>' +
         '<p class="small" style="margin:0 0 4px"><strong>Scouts:</strong> ' + (dsScouts.length ? esc(dsScouts.join(', ')) : '<span class="muted">none assigned</span>') + '</p>' +
-        '<p class="small" style="margin:0 0 8px"><strong>Adults:</strong> ' + (dsAdults.length ? esc(dsAdults.join(', ')) : '<span class="muted">none assigned</span>') + '</p>' +
         '<p class="small" style="margin:0 0 2px"><strong>Walk-ups:</strong></p>' +
         '<div class="ruled-line"></div><div class="ruled-line"></div><div class="ruled-line"></div>' +
         '<p class="small money" style="margin:12px 0 0">Sales $ ________&nbsp;&nbsp;&nbsp;Donations $ ________&nbsp;&nbsp;&nbsp;Card $ ________</p>' +
@@ -7928,13 +7863,16 @@
   }
 
   /* ----- Wave 19(15b): "Schedule at a glance" (the owner's favorite view) ----- */
-  // Status pill for an UPCOMING storefront: no scouts anywhere → gold "no scouts yet";
-  // scouts present but a block short on adults → bad "needs adults"; else navy "covered".
+  // Status pill for an UPCOMING storefront: nobody signed up anywhere → gold "no scouts
+  // yet"; a shift still empty → gold "shifts open"; else navy "covered".
   // Past storefronts show their combined $ instead.
+  // Wave 21 — the middle state used to be "needs adults", from the retired adults roster.
+  // An unfilled SHIFT is the real gap now: a parent comes with each scout, so an empty
+  // shift is the only thing that leaves the table unstaffed.
   function glanceStatus(sf) {
-    var anyScouts = (sf.blocks || []).some(function (b) { return (b.assignments || []).length > 0; });
-    if (!anyScouts) return { cls: '', label: 'no scouts yet' };
-    if (storefrontNeedsAdults(sf)) return { cls: ' bad', label: 'needs adults' };
+    var cov = storefrontCoverage(sf);
+    if (!cov.covered) return { cls: '', label: 'no scouts yet' };
+    if (!cov.full) return { cls: '', label: (cov.total - cov.covered) + ' shift' + (cov.total - cov.covered === 1 ? '' : 's') + ' open' };
     return { cls: ' navy', label: 'covered' };
   }
   // ALL storefronts — upcoming first, then completed, each chronological
@@ -8817,7 +8755,7 @@
       state.storefronts.push({
         id: uid(), name: it.name, date: it.date,
         blocks: it.shifts.map(function (s, i) {
-          return { id: uid(), label: 'Block ' + (i + 1), start: parseLegacyTime(s.start), end: parseLegacyTime(s.end), assignments: [], adults: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
+          return { id: uid(), label: 'Block ' + (i + 1), start: parseLegacyTime(s.start), end: parseLegacyTime(s.end), assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
         })
       });
       existing[key] = true;
@@ -10050,15 +9988,6 @@
         (mamHad ? ' · ' + mamHad + ' already had it' : ''));
       return;
     }
-    // Wave 16 — remove an adult from a storefront block (low-stakes: single tap, no arm).
-    if (act === 'adult-remove') {
-      var arSf = getStorefront(el.dataset.sf);
-      if (!arSf) return;
-      var arB = arSf.blocks.find(function (x) { return x.id === el.dataset.id; });
-      if (!arB) return;
-      arB.adults = (arB.adults || []).filter(function (aid) { return aid !== el.dataset.adult; });
-      commit(); return;
-    }
     // Wave 19(15) — storefront day sheet overlay + copy.
     if (act === 'sf-day-sheet') { ui.overlay = { kind: 'day-sheet', id: el.dataset.id }; render(); return; }
     if (act === 'copy-day-sheet') {
@@ -10116,29 +10045,15 @@
     }
     if (act.indexOf('del-leader:') === 0) {
       // Wave 18(21) — low-stakes: single tap + Undo toast (was two-tap armed).
-      // Wave 16's block-adults cascade is snapshotted per block (exact arrays) so
-      // Undo restores the leader AND every block assignment verbatim.
+      // Wave 21 — the block-adults cascade this used to snapshot is gone with the adults
+      // roster itself, so deleting a leader now touches nothing but the leaders list.
       var dlId = act.split(':')[1];
       var dlIx = -1;
       state.leaders.forEach(function (l, i) { if (l.id === dlId) dlIx = i; });
       if (dlIx === -1) return;
       var dlGone = state.leaders.splice(dlIx, 1)[0];
-      var dlBlocks = [];
-      state.storefronts.forEach(function (lsf) {
-        (lsf.blocks || []).forEach(function (lb) {
-          if (Array.isArray(lb.adults) && lb.adults.indexOf(dlId) !== -1) {
-            dlBlocks.push({ sf: lsf.id, b: lb.id, adults: lb.adults.slice() });
-            lb.adults = lb.adults.filter(function (aid) { return aid !== dlId; });
-          }
-        });
-      });
       deleteWithUndo(dlGone.name || 'leader', function () {
         state.leaders.splice(Math.min(dlIx, state.leaders.length), 0, dlGone);
-        dlBlocks.forEach(function (rec) {
-          var rsf = getStorefront(rec.sf);
-          var rb = rsf && rsf.blocks.find(function (x) { return x.id === rec.b; });
-          if (rb) rb.adults = rec.adults;
-        });
       });
       return;
     }
@@ -10535,15 +10450,6 @@
       if (el.value) {
         b.assignments.push({ scoutId: el.value, weight: 1 });
         commit();
-      }
-      return;
-    }
-    // Wave 16 — add an adult (leader id) to this block.
-    if (ch === 'adult-assign') {
-      if (el.value && getLeader(el.value)) {
-        if (!Array.isArray(b.adults)) b.adults = [];
-        if (b.adults.indexOf(el.value) === -1) { b.adults.push(el.value); commit(); }
-        else render(); // already on the block — just reset the select
       }
       return;
     }
