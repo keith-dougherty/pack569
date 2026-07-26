@@ -740,6 +740,9 @@
   .acct-email { flex-basis: 100%; }
   .acct-owner { text-transform: none; letter-spacing: 0; }
   .acct-ctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  /* Wave 21 — the account -> leader-record link. Full-width third line of .acct-row (the
+     row already wraps, and .acct-email uses the same flex-basis trick above). */
+  .acct-link { flex-basis: 100%; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .acct-select {
     min-height: 36px; padding: 4px 8px; border: 1px solid var(--line);
     border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 0.85rem;
@@ -899,6 +902,79 @@
 
   /* ---------------- State ---------------- */
   var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
+  // Wave 21 — the pack's real committee/program jobs, from the Scouting America pack
+  // organization (chair, secretary and treasurer are the three every pack must have; the
+  // rest are the usual additions). `home` is the workspace that job mostly lives in — it
+  // drives the "your workspaces" marker in the nav and Home's task queues.
+  //
+  // A JOB IS A LENS, NEVER A GATE. myJobs() may only be used for ordering, marking, and
+  // composing Home's queue. Permission is `admin`/`editor`/`viewer`/`parent` (MEMBER_ROLES)
+  // and nothing else — do not filter a workspace list, disable a control, or hide a card by
+  // job. Everything an editor can reach stays reachable by every editor.
+  var JOBS = [
+    { id: 'cubmaster',   label: 'Cubmaster',            home: 'program' },
+    { id: 'asstcub',     label: 'Assistant Cubmaster',  home: 'program' },
+    { id: 'chair',       label: 'Committee Chair',      home: 'pack' },
+    { id: 'treasurer',   label: 'Treasurer',            home: 'money' },
+    { id: 'secretary',   label: 'Secretary',            home: 'scouts' },
+    { id: 'kernel',      label: 'Popcorn Kernel',       home: 'popcorn' },
+    { id: 'advancement', label: 'Advancement Chair',    home: 'scouts' },
+    { id: 'activities',  label: 'Activities Chair',     home: 'program' },
+    { id: 'membership',  label: 'Membership Chair',     home: 'scouts' },
+    { id: 'outdoors',    label: 'Outdoor / Camping Chair', home: 'program' },
+    { id: 'derbychair',  label: 'Pinewood Derby Chair', home: 'program' },
+    { id: 'comms',       label: 'Communications',       home: 'pack' },
+    { id: 'trainer',     label: 'Pack Trainer',         home: 'pack' },
+    { id: 'denleader',   label: 'Den Leader',           home: 'scouts' },
+    { id: 'asstden',     label: 'Assistant Den Leader', home: 'scouts' },
+    { id: 'cor',         label: 'Chartered Org Rep',    home: 'pack' }
+  ];
+  var JOB_BY_ID = {};
+  JOBS.forEach(function (j) { JOB_BY_ID[j.id] = j; });
+  function jobLabel(id) { return JOB_BY_ID[id] ? JOB_BY_ID[id].label : ''; }
+  // Module-scope array guard. (normalizeSeasonArchive has its own `list()`, but that one is
+  // local to it — this is the one everything outside the normalizer uses.)
+  function arrOf(v) { return Array.isArray(v) ? v : []; }
+  // Wave 21 — one-time migration of the old free-text leaders[].role into structured jobs.
+  // Patterns are matched against the lowercased role text; the assistant variants are
+  // checked first and SUPPRESS their principal (so "Assistant Den Leader" is asstden alone,
+  // not asstden + denleader). Unmatched text stays in l.role and is still displayed —
+  // this only ever ADDS structure, it never destroys what someone typed.
+  var JOB_PATTERNS = [
+    { id: 'asstden',     re: /assist\w*\s*den|den\s*leader\s*assist|\badl\b/ },
+    { id: 'asstcub',     re: /assist\w*\s*cub|\bacm\b/ },
+    { id: 'denleader',   re: /den\s*lead|\bdl\b/,               notWith: 'asstden' },
+    { id: 'cubmaster',   re: /cub\s*master|\bcm\b/,             notWith: 'asstcub' },
+    { id: 'chair',       re: /committee\s*chair|pack\s*chair|\bcc\b/ },
+    { id: 'treasurer',   re: /treasur/ },
+    { id: 'secretary',   re: /secretar/ },
+    { id: 'kernel',      re: /kernel|popcorn/ },
+    { id: 'advancement', re: /advance\w*/ },
+    { id: 'activities',  re: /activit|outing|event/ },
+    { id: 'outdoors',    re: /outdoor|camp\w*|hike|hiking/ },
+    { id: 'derbychair',  re: /derby|pinewood/ },
+    { id: 'comms',       re: /communicat|webmaster|website|newsletter|social\s*media/ },
+    { id: 'membership',  re: /member|recruit/ },
+    { id: 'trainer',     re: /\btrainer\b|pack\s*train/ },
+    { id: 'cor',         re: /charter\w*\s*org|\bcor\b/ }
+  ];
+  function jobsFromRoleText(text) {
+    var t = String(text || '').toLowerCase();
+    if (!t) return [];
+    var hit = {}, out = [];
+    JOB_PATTERNS.forEach(function (p) { if (p.re.test(t)) hit[p.id] = true; });
+    JOB_PATTERNS.forEach(function (p) {
+      if (hit[p.id] && !(p.notWith && hit[p.notWith])) out.push(p.id);
+    });
+    return out;
+  }
+  // Den names mentioned in a free-text role ("Wolf Den Leader" -> ['Wolf']). Longest name
+  // first so 'Arrow of Light' isn't shadowed by a shorter match inside it.
+  function densFromRoleText(text) {
+    var t = String(text || '').toLowerCase();
+    if (!t) return [];
+    return DENS.filter(function (d) { return t.indexOf(d.toLowerCase()) !== -1; });
+  }
   // Wave 15 — official-handbook adventure renames, applied as a load-time migration in
   // normalizeState (every scout's advancement req/elect keys AND meetings[].adventure
   // free text, exact match). Future handbook renames are one-line 'old': 'new' additions
@@ -1042,8 +1118,19 @@
     });
     // Wave 19(20) — SYT completed-on date; expiry is computed (+1 year) when set.
     // Legacy sytExpiry stays as-is and keeps working when sytCompleted is blank.
+    // Wave 21 — additive job structure. `jobs` are ids from JOBS, `dens` scopes a den
+    // leader to their den(s), `uid` is an admin-set override linking this leader to a
+    // signed-in account (email match is the default — see leaderForUser). The first time
+    // a ledger is normalized these are seeded from the old free-text role, which is left
+    // exactly as it was: this migration only ever adds.
     d.leaders.forEach(function (l) {
-      if (l && typeof l === 'object' && typeof l.sytCompleted !== 'string') l.sytCompleted = '';
+      if (!l || typeof l !== 'object') return;
+      if (typeof l.sytCompleted !== 'string') l.sytCompleted = '';
+      if (typeof l.uid !== 'string') l.uid = '';
+      if (!Array.isArray(l.jobs)) l.jobs = jobsFromRoleText(l.role);
+      else l.jobs = l.jobs.filter(function (j) { return !!JOB_BY_ID[j]; });
+      if (!Array.isArray(l.dens)) l.dens = densFromRoleText(l.role);
+      else l.dens = l.dens.filter(function (dn) { return DENS.indexOf(dn) !== -1; });
     });
     // Wave 19(3) — program year the dens were last advanced for (0 = never).
     d.densAdvancedYear = (typeof d.densAdvancedYear === 'number' && isFinite(d.densAdvancedYear)) ? Math.floor(d.densAdvancedYear) : 0;
@@ -2871,6 +2958,40 @@
       if (sync.members[i].uid === uid) { sync.myRole = sync.members[i].role || null; return; }
     }
   }
+  // Wave 21 — the account -> leader-record link. `sync.members` (uid + email) and
+  // `state.leaders` (name + email) have always been two disconnected people-lists; this is
+  // the seam that joins them, and it's what makes "my jobs" mean anything.
+  //   1. an explicit l.uid an admin set from the Members card always wins;
+  //   2. otherwise the signed-in email matches a leader's email, case-insensitively.
+  // Returns null when signed out, unmatched, or when the ledger has no leaders — every
+  // caller must treat null as "we don't know who this is", never as "no permissions".
+  function leaderForUser() {
+    if (!sync.user) return null;
+    var uid = sync.user.uid || '';
+    var mail = String(sync.user.email || '').trim().toLowerCase();
+    var byUid = null, byMail = null;
+    for (var i = 0; i < state.leaders.length; i++) {
+      var l = state.leaders[i];
+      if (uid && l.uid && l.uid === uid) { byUid = l; break; }
+      if (!byMail && mail && String(l.email || '').trim().toLowerCase() === mail) byMail = l;
+    }
+    return byUid || byMail;
+  }
+  // Wave 21 — this user's job ids. ORDERING AND MARKING ONLY (see the JOBS banner): it may
+  // decide what Home shows first and which workspaces get the "yours" marker, and nothing
+  // else. It must never gate a workspace, disable a control, or hide a card — permission is
+  // MEMBER_ROLES' job alone. [] means "we don't know", which is a valid, fully-working state:
+  // Home falls back to the pack-wide queue and every workspace behaves exactly as before.
+  function myJobs() {
+    var l = leaderForUser();
+    return l ? arrOf(l.jobs) : [];
+  }
+  function hasJob(id) { return myJobs().indexOf(id) !== -1; }
+  // The dens a den-leader user is scoped to. [] = all dens (the default for everyone else).
+  function myDens() {
+    var l = leaderForUser();
+    return (l && leaderIsDenLeader(l)) ? arrOf(l.dens) : [];
+  }
   // A permission-denied on any accounts path means the strict rules aren't published yet
   // (legacy rules have no rule for packmeta/members). Degrade to "accounts not set up":
   // never enforce roles, never let it disturb the ledger sync.
@@ -4619,7 +4740,8 @@
         h += '<div class="row" style="margin-top:8px"><select data-ch="adult-assign" data-sf="' + sf.id + '" data-id="' + b.id + '" aria-label="Add an adult to this block">' +
           '<option value="">+ Add adult…</option>' +
           addableAdults.map(function (l) {
-            return '<option value="' + l.id + '">' + esc(l.name || 'Leader') + (l.role ? ' — ' + esc(l.role) : '') + '</option>';
+            var lbl = leaderJobLabels(l); // Wave 21 — structured jobs, falling back to the old free text
+            return '<option value="' + l.id + '">' + esc(l.name || 'Leader') + (lbl ? ' — ' + esc(lbl) : '') + '</option>';
           }).join('') +
           '</select></div>';
       }
@@ -5066,7 +5188,33 @@
         h += rolePill(m.role);
         if (isSelf && m.role === 'admin' && isLastAdmin(m.uid)) h += '<span class="small muted">· only admin</span>';
       }
-      h += '</div></div>';
+      h += '</div>';
+      // Wave 21 — link this account to a leader record, which is what gives the person a
+      // JOB (and therefore their own Home queue and den scope). Email match is automatic;
+      // this select is the manual override for when the two addresses differ. Admin-only,
+      // and never offered for a pending user — approve them first.
+      if (admin && m.role !== 'pending' && state.leaders.length) {
+        var linked = state.leaders.find(function (l) { return l.uid === m.uid; });
+        var autoMail = String(m.email || '').trim().toLowerCase();
+        var autoMatch = !linked && autoMail && state.leaders.find(function (l) {
+          return String(l.email || '').trim().toLowerCase() === autoMail;
+        });
+        var jobsNote = linked ? leaderJobLabels(linked) : (autoMatch ? leaderJobLabels(autoMatch) : '');
+        h += '<div class="acct-link">' +
+          '<label class="small muted" style="display:flex;align-items:center;gap:6px">This person is' +
+          '<select class="acct-select" data-ch="member-leader" data-uid="' + esc(m.uid) + '" aria-label="Leader record for ' + esc(m.name || m.email || 'member') + '">' +
+          '<option value="">' + (autoMatch ? esc(autoMatch.name || 'matched by email') + ' (matched by email)' : 'not linked yet') + '</option>' +
+          state.leaders.map(function (l) {
+            return '<option value="' + esc(l.id) + '"' + (linked && linked.id === l.id ? ' selected' : '') + '>' +
+              esc(l.name || 'Unnamed leader') + '</option>';
+          }).join('') +
+          '</select></label>' +
+          (jobsNote
+            ? '<span class="small muted">· ' + esc(jobsNote) + '</span>'
+            : '<span class="small muted">· no job set — they’ll see the whole pack’s list</span>') +
+          '</div>';
+      }
+      h += '</div>';
     });
     h += '</div>';
     if (!admin) {
@@ -5217,13 +5365,86 @@
     if (renewalDue(l.renewalMonth)) pills.push({ cls: '', label: 'Renewal due' });
     return pills;
   }
+  // Wave 21 — what to CALL this leader. Structured jobs win; the old free-text role is the
+  // fallback so a ledger that was never re-edited still reads exactly as it did before.
+  // Used by the leader roster, the storefront adult picker, and the season archive.
+  function leaderJobLabels(l) {
+    var names = arrOf(l && l.jobs).map(jobLabel).filter(Boolean);
+    if (names.length) return names.join(', ');
+    return (l && l.role) ? String(l.role) : '';
+  }
+  // Wave 21 — a den job is the only thing that makes the den scope meaningful, so the den
+  // chips only appear once one is chosen.
+  function leaderIsDenLeader(l) {
+    var j = arrOf(l && l.jobs);
+    return j.indexOf('denleader') !== -1 || j.indexOf('asstden') !== -1;
+  }
+  // Wave 21 — chips + a "+ Add…" select, matching the storefront adult-staffing pattern
+  // exactly (.adult-chip with a ✕ .btiny, then a select of what's left). Reusing that shape
+  // means no new interaction vocabulary and no new CSS.
+  function chipPicker(opts) {
+    var h = '';
+    if (opts.chosen.length) {
+      h += '<div class="row" style="gap:6px;margin:4px 0 0">' + opts.chosen.map(function (c) {
+        var rmLbl = 'Remove ' + c.label;
+        return '<span class="adult-chip">' + esc(c.label) +
+          (opts.canEdit ? '<button type="button" class="btiny" data-act="' + esc(opts.removeAct) + '" data-id="' + esc(opts.id) +
+            '" data-name="' + esc(c.value) + '" aria-label="' + esc(rmLbl) + '" title="' + esc(rmLbl) + '">✕</button>' : '') +
+          '</span>';
+      }).join('') + '</div>';
+    }
+    if (opts.canEdit && opts.addable.length) {
+      h += '<div class="row" style="margin:6px 0 0"><select data-ch="' + esc(opts.addCh) + '" data-id="' + esc(opts.id) + '" aria-label="' + esc(opts.addLabel) + '">' +
+        '<option value="">' + esc(opts.addLabel) + '</option>' +
+        opts.addable.map(function (c) { return '<option value="' + esc(c.value) + '">' + esc(c.label) + '</option>'; }).join('') +
+        '</select></div>';
+    }
+    return h;
+  }
   function renderLeaderRow(l) {
     var pills = leaderStatus(l);
     var pillHtml = pills.map(function (p) { return '<span class="pill' + p.cls + '">' + esc(p.label) + '</span>'; }).join(' ');
+    var myJobIds = arrOf(l.jobs);
+    var jobsBlock = '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
+      // The leftover-role note below already says "no job yet", so only one of the two shows.
+      ((myJobIds.length || l.role) ? '' : '<p class="small muted" style="margin:4px 0 0">No job set yet — this leader sees the whole pack’s to-do list instead of their own.</p>') +
+      chipPicker({
+        id: l.id, canEdit: canEdit(), removeAct: 'ldr-job-remove', addCh: 'ldr-job-add', addLabel: '+ Add a job…',
+        chosen: myJobIds.map(function (j) { return { value: j, label: jobLabel(j) }; }),
+        addable: JOBS.filter(function (j) { return myJobIds.indexOf(j.id) === -1; })
+          .map(function (j) { return { value: j.id, label: j.label }; })
+      });
+    if (leaderIsDenLeader(l)) {
+      var myDens = arrOf(l.dens);
+      jobsBlock += '<p class="eyebrow" style="margin-top:10px">Their den' + (myDens.length > 1 ? 's' : '') + '</p>' +
+        chipPicker({
+          id: l.id, canEdit: canEdit(), removeAct: 'ldr-den-remove', addCh: 'ldr-den-add', addLabel: '+ Add a den…',
+          chosen: myDens.map(function (dn) { return { value: dn, label: dn }; }),
+          addable: DENS.filter(function (dn) { return myDens.indexOf(dn) === -1; })
+            .map(function (dn) { return { value: dn, label: dn }; })
+        });
+    }
+    // Wave 21 — there is no free-text role field any more: a person can hold as many jobs
+    // as they actually do (Assistant Cubmaster + Popcorn Kernel, Den Leader + Treasurer),
+    // so the picker above covers the real cases and a text box would just be a second,
+    // competing answer to the same question.
+    //
+    // The old l.role text is still KEPT in state (it's what the migration reads, and what
+    // season archives flatten to), and it's shown here only when it failed to map to any
+    // job — otherwise a note somebody typed would silently vanish. Once a job is chosen the
+    // leftover is redundant, so this hides itself.
+    if (l.role && !myJobIds.length) {
+      jobsBlock += '<p class="small muted" style="margin:10px 0 0">No job set yet — previously recorded as “' + esc(l.role) + '”. ' +
+        'Pick the job or jobs above that match' +
+        (canEdit() ? ', then <button type="button" class="btn small ghost" data-act="ldr-role-clear" data-id="' + l.id + '">clear this note</button>' : '.') +
+        '</p>';
+    }
+    jobsBlock += '</div>';
     return '<div class="leader-row">' +
       '<div class="row" style="align-items:flex-end">' +
       '<label class="fld">Name<input data-ch="ldr-name" data-id="' + l.id + '" value="' + esc(l.name) + '" placeholder="First name" style="width:140px"></label>' +
-      '<label class="fld">Role<input data-ch="ldr-role" data-id="' + l.id + '" value="' + esc(l.role) + '" placeholder="Cubmaster, Den leader…" style="width:160px"></label>' +
+      // Wave 21 — the free-text role moved out of this row and into the Jobs block below,
+      // where the structured picker is now the primary answer to "what do they do".
       '<label class="fld">Phone<input type="tel" data-ch="ldr-phone" data-id="' + l.id + '" value="' + esc(l.phone) + '" placeholder="Optional" style="width:130px"></label>' +
       '<label class="fld">Email<input type="email" data-ch="ldr-email" data-id="' + l.id + '" value="' + esc(l.email) + '" placeholder="Optional" style="width:180px"></label>' +
       (pillHtml ? '<span class="row" style="gap:4px;padding-bottom:9px">' + pillHtml + '</span>' : '') +
@@ -5241,7 +5462,7 @@
       '<label class="fld">Registration renews<input type="month" data-ch="ldr-renew" data-id="' + l.id + '" value="' + esc(l.renewalMonth) + '"></label>' +
       '<label class="fld" style="flex:1 1 160px">Notes<input data-ch="ldr-notes" data-id="' + l.id + '" value="' + esc(l.notes) + '" placeholder="Optional"></label>' +
       tinyDangerBtn('del-leader:' + l.id, 'Remove ' + (l.name || 'leader')) +
-      '</div></div>';
+      '</div>' + jobsBlock + '</div>';
   }
   function renderPack() {
     // Sync card
@@ -6269,7 +6490,7 @@
     state.leaders.forEach(function (l) {
       var pills = leaderStatus(l);
       if (pills.length) {
-        needs.push('- ' + (l.name || 'A leader') + (l.role ? ' (' + l.role + ')' : '') + ': ' +
+        needs.push('- ' + (l.name || 'A leader') + (leaderJobLabels(l) ? ' (' + leaderJobLabels(l) + ')' : '') + ': ' +
           pills.map(function (p) { return p.label; }).join(', '));
       }
     });
@@ -7918,7 +8139,9 @@
         orderTotalCents: invT.orderTotalCents, earningsCents: invT.earningsCents,
         containersOrdered: invT.totalContainers, containersDistributed: distributed
       } : null,
-      leaders: state.leaders.map(function (l) { return { name: l.name || '', role: l.role || '' }; })
+      // Wave 21 — flatten structured jobs into the archive's existing 2-field leader shape,
+      // so archives gain no new fields and every already-stored archive still renders.
+      leaders: state.leaders.map(function (l) { return { name: l.name || '', role: leaderJobLabels(l) }; })
     };
   }
 
@@ -8480,7 +8703,27 @@
       return;
     }
     if (act === 'add-leader') {
-      state.leaders.push({ id: uid(), name: '', role: '', phone: '', email: '', sytExpiry: '', sytCompleted: '', renewalMonth: '', notes: '' });
+      // Wave 21 — jobs/dens/uid ship blank; the Jobs picker below the row fills them in.
+      state.leaders.push({ id: uid(), name: '', role: '', phone: '', email: '', sytExpiry: '', sytCompleted: '', renewalMonth: '', notes: '', jobs: [], dens: [], uid: '' });
+      commit(); return;
+    }
+    // Wave 21 — remove a job / a den scope from a leader. data-name carries the value
+    // (job id or den name) so the chip matches the .adult-chip removal shape exactly.
+    // Wave 21 — dismiss the leftover free-text role once its jobs have been picked.
+    if (act === 'ldr-role-clear') {
+      var clrLdr = state.leaders.find(function (x) { return x.id === el.dataset.id; });
+      if (!clrLdr) return;
+      clrLdr.role = '';
+      commit(); return;
+    }
+    if (act === 'ldr-job-remove' || act === 'ldr-den-remove') {
+      var rmLdr = state.leaders.find(function (x) { return x.id === el.dataset.id; });
+      if (!rmLdr) return;
+      var rmKey = act === 'ldr-job-remove' ? 'jobs' : 'dens';
+      rmLdr[rmKey] = arrOf(rmLdr[rmKey]).filter(function (v) { return v !== el.dataset.name; });
+      // Dropping the last den job makes any den scope meaningless — clear it rather than
+      // leaving an invisible scope behind that would silently filter their roster.
+      if (rmKey === 'jobs' && !leaderIsDenLeader(rmLdr)) rmLdr.dens = [];
       commit(); return;
     }
     // Wave 15 — also switch tabs: storefront rows are embedded in the Calendar day detail
@@ -9147,6 +9390,19 @@
     if (ch === 'sync-pass') { setSyncPass(el.value); render(); return; }
     // Accounts: admin changes a member's role (writes directly to the members doc, NOT via commit()).
     if (ch === 'member-role') { setMemberRole(el.dataset.uid, el.value); return; }
+    // Wave 21 — link an account to a leader record. Unlike member-role (which writes the
+    // members doc directly), this is an ordinary LEDGER edit, so it goes through commit().
+    // A uid can only be on one leader at a time, so claiming it clears it everywhere else;
+    // choosing the blank option just unlinks and lets the email match take over again.
+    if (ch === 'member-leader') {
+      var claimUid = el.dataset.uid, wantId = el.value;
+      state.leaders.forEach(function (l) { if (l.uid === claimUid) l.uid = ''; });
+      if (wantId) {
+        var pick = state.leaders.find(function (l) { return l.id === wantId; });
+        if (pick) pick.uid = claimUid;
+      }
+      commit(); return;
+    }
     // Join link phase — the self-serve config doc (admin-only; never touches the ledger).
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
@@ -9164,13 +9420,20 @@
       var ldr = state.leaders.find(function (x) { return x.id === el.dataset.id; });
       if (!ldr) return;
       if (ch === 'ldr-name') ldr.name = el.value.trim();
-      else if (ch === 'ldr-role') ldr.role = el.value.trim();
       else if (ch === 'ldr-phone') ldr.phone = el.value.trim();
       else if (ch === 'ldr-email') ldr.email = el.value.trim();
       else if (ch === 'ldr-syt') ldr.sytExpiry = el.value;
       else if (ch === 'ldr-sytdone') ldr.sytCompleted = el.value; // Wave 19(20)
       else if (ch === 'ldr-renew') ldr.renewalMonth = el.value;
       else if (ch === 'ldr-notes') ldr.notes = el.value;
+      // Wave 21 — the "+ Add a job…" / "+ Add a den…" selects. Each is a one-shot: it adds
+      // the value, then the select re-renders back to its placeholder because the chosen
+      // option has moved into the chip row above it.
+      else if (ch === 'ldr-job-add') {
+        if (el.value && JOB_BY_ID[el.value] && arrOf(ldr.jobs).indexOf(el.value) === -1) ldr.jobs = arrOf(ldr.jobs).concat([el.value]);
+      } else if (ch === 'ldr-den-add') {
+        if (el.value && DENS.indexOf(el.value) !== -1 && arrOf(ldr.dens).indexOf(el.value) === -1) ldr.dens = arrOf(ldr.dens).concat([el.value]);
+      }
       commit(); return;
     }
     // Budget fields
