@@ -390,6 +390,114 @@ test('the printable money map lists the same seams the UI does', () => {
   }
 });
 
+/* ================================================================
+   Wave 21 — Home
+   ================================================================ */
+const home = sandbox(['TIER_ORDER', 'pickHomeTasks']);
+
+test('the urgency rank is shared by every job', () => {
+  // Per-job urgency scales would make a three-job person's Home incoherent.
+  eq(Object.keys(home.TIER_ORDER).sort(), ['now', 'week', 'whenever'], 'tiers');
+  ok(home.TIER_ORDER.now < home.TIER_ORDER.week, 'now must outrank week');
+  ok(home.TIER_ORDER.week < home.TIER_ORDER.whenever, 'week must outrank whenever');
+});
+
+test('a noisy job cannot crowd a quiet one out', () => {
+  // Kernel+Treasurer in November: five popcorn items and one dues item. Without
+  // round-robin the treasurer never learns the app knows about dues.
+  const tasks = [
+    ...Array.from({ length: 5 }, (_, i) => ({ job: 'kernel', tier: 'now', title: `k${i}` })),
+    { job: 'treasurer', tier: 'week', title: 't0' },
+  ];
+  const picked = home.pickHomeTasks(tasks, ['kernel', 'treasurer'], 5);
+  eq(picked.length, 5, 'picked count');
+  ok(picked.some((t) => t.job === 'treasurer'), 'the treasurer got no slot at all');
+  ok(picked.filter((t) => t.job === 'kernel').length <= 4, 'the kernel took every slot');
+});
+
+test('the picked queue comes back in urgency order', () => {
+  const tasks = [
+    { job: 'a', tier: 'whenever', title: 'w' },
+    { job: 'a', tier: 'now', title: 'n' },
+    { job: 'b', tier: 'week', title: 'k' },
+  ];
+  const picked = home.pickHomeTasks(tasks, ['a', 'b'], 5);
+  eq(picked.map((t) => t.tier), ['now', 'week', 'whenever'], 'tier order');
+});
+
+test('pickHomeTasks terminates on odd input', () => {
+  eq(home.pickHomeTasks([], ['kernel'], 5).length, 0, 'no tasks');
+  eq(home.pickHomeTasks([{ job: 'nobody', tier: 'now', title: 'x' }], ['kernel'], 5).length, 0,
+    'a task whose job nobody holds must not be picked');
+  eq(home.pickHomeTasks([{ job: 'kernel', tier: 'now', title: 'x' }], [], 5).length, 0, 'no jobs');
+});
+
+test('Home renders no inputs', () => {
+  // The app re-renders on every keystroke; an input here would put computeBudget() and
+  // computeScoutTotals() in the typing path.
+  const fn = /function renderHome\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderHome() not found');
+  ok(!/data-ch="/.test(fn[0]), 'renderHome emits a data-ch input');
+  const flow = /function packFlow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(!/data-ch="/.test(flow[0]), 'packFlow emits a data-ch input');
+});
+
+test('every Home task routes somewhere that exists', () => {
+  // A task pointing at a dead section is a dead row — silent, and only found by tapping it.
+  const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT);
+  ok(fn, 'homeTasks() not found');
+  const sectionIds = new Set(nav.WORKSPACES.flatMap((w) => w.sections.map((s) => s.id)));
+  const wsIds = new Set(nav.WORKSPACES.map((w) => w.id));
+  const calls = [...fn[0].matchAll(/'(\w+)',\s*'(\w+)'\);/g)];
+  ok(calls.length >= 8, `expected many add() calls, found ${calls.length}`);
+  for (const [, tab, section] of calls) {
+    ok(wsIds.has(tab), `a task routes to unknown workspace "${tab}"`);
+    ok(sectionIds.has(section), `a task routes to unknown section "${section}"`);
+  }
+});
+
+test('every Home task names a real job', () => {
+  const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT);
+  for (const m of fn[0].matchAll(/add\('(\w+)',/g)) {
+    ok(jobs.JOB_BY_ID[m[1]], `a task is owned by unknown job "${m[1]}"`);
+  }
+});
+
+test('the Pack Flow map is real text, not SVG', () => {
+  // SVG <text> does not wrap, ignores the reader's font size, and is not selectable.
+  const fn = /function packFlow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'packFlow() not found');
+  ok(!/<svg/i.test(fn[0]), 'packFlow emits SVG');
+  ok(/<ol class="flow">/.test(fn[0]), 'packFlow is not an ordered list');
+  ok(/flow-step list-row/.test(fn[0]), 'flow stages do not reuse .list-row, so Enter/Space will not work');
+});
+
+test('the job pill is never coloured by urgency', () => {
+  // The pill says who owns the item. A column of red job names reads as alarm, not
+  // ownership — urgency gets its own quiet marker instead.
+  const fn = /function homeTaskRow\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'homeTaskRow() not found');
+  ok(!/pill' \+ \(t\.tier/.test(fn[0]), 'the job pill is still styled by tier');
+  ok(/<span class="urg"/.test(fn[0]), 'there is no separate urgency marker');
+  ok(/visually-hidden/.test(fn[0]), 'the urgency marker is not announced to screen readers');
+});
+
+test('the moved notice is an additive, dismissible flag', () => {
+  ok(/d\.movedNoticeDismissed = d\.movedNoticeDismissed === true/.test(SCRIPT),
+    'movedNoticeDismissed is not defaulted in the normalizer');
+  ok(/movedNoticeDismissed: false/.test(SCRIPT), 'movedNoticeDismissed is missing from freshState');
+  ok(/act === 'moved-dismiss'/.test(SCRIPT), 'no dismiss action');
+  ok(/act === 'moved-go'/.test(SCRIPT), 'using a row to navigate does not dismiss the notice');
+});
+
+test('Start here lives on Home, not Calendar', () => {
+  const cal = /function renderCalendarTab\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(cal, 'renderCalendarTab not found');
+  ok(!/Start here<\/h2>/.test(cal[0]), 'the Start here card is still on the Calendar');
+  const hm = /function renderHome\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(/Start here<\/h2>/.test(hm[0]), 'the Start here card is not on Home');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

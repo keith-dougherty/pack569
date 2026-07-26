@@ -920,6 +920,65 @@
     .tab { font-size: 0.85rem; padding: 8px 9px 10px; }
     .tab.mine::before { width: 4px; height: 4px; margin-right: 4px; }
   }
+  /* Home's urgency marker. Deliberately NOT applied to the job pill: that pill is who owns
+     the item, and a column of red job names reads as alarm instead of ownership. */
+  .urg {
+    display: inline-block;
+    width: 7px; height: 7px;
+    margin-right: 5px;
+    vertical-align: 1px;
+    border-radius: 50%;
+    background: var(--bad);
+  }
+
+  /* Pack Flow map — a single-column <ol> with CSS connectors. No SVG, no library: the text
+     is real text, so it wraps at 375px, scales with the reader's font size, is selectable,
+     and degrades to a plain numbered list with the stylesheet off. */
+  .flow { list-style: none; margin: 0; padding: 0; }
+  .flow-step { position: relative; align-items: flex-start; margin-bottom: 22px; }
+  .flow-step:last-child { margin-bottom: 0; }
+  /* The connector between stages: a line and an arrowhead, both --ink-soft so they survive
+     the ink-on-white print remap. Purely decorative, so aria never sees them. */
+  .flow-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 22px;
+    top: 100%;
+    width: 2px;
+    height: 22px;
+    background: var(--ink-soft);
+  }
+  .flow-step:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: 18px;
+    top: calc(100% + 14px);
+    border: 5px solid transparent;
+    border-bottom: none;
+    border-top-color: var(--ink-soft);
+  }
+  .flow-n {
+    flex: 0 0 auto;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--ink-soft);
+    font-size: 0.72rem; font-weight: 700; line-height: 24px; text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  /* A stage you own. This is the persona payoff — you can see where you sit in the chain
+     and who you hand to. On --surface, gold clears contrast (unlike on the navy strip). */
+  .flow-step.mine .flow-n { background: var(--accent); border-color: var(--accent); color: #1A1408; }
+  .flow-b { flex: 1 1 auto; min-width: 0; display: block; }
+  .flow-hand { display: block; font-size: 0.85rem; color: var(--ink-soft); margin-top: 2px; }
+  .flow-side { display: block; font-size: 0.85rem; color: var(--ink-soft); margin-top: 3px; padding-left: 14px; text-indent: -14px; }
+  .flow-loop {
+    text-align: center; margin: 12px 0 0;
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
   @media print { .subnav-wrap, .skip-link { display: none !important; } }
 </style>
 
@@ -1128,6 +1187,7 @@
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
       startHereDismissed: false, // Wave 19(19) — first-run "Start here" card dismissed
+      movedNoticeDismissed: false, // Wave 21 — one-time "where things moved" card on Home
       rev: 0
     };
   }
@@ -1246,6 +1306,8 @@
     d.densAdvancedYear = (typeof d.densAdvancedYear === 'number' && isFinite(d.densAdvancedYear)) ? Math.floor(d.densAdvancedYear) : 0;
     // Wave 19(19) — first-run card dismissal.
     d.startHereDismissed = d.startHereDismissed === true;
+    // Wave 21 — the one-time "nine tabs became six workspaces" notice on Home.
+    d.movedNoticeDismissed = d.movedNoticeDismissed === true;
     if (typeof d.rev !== 'number') d.rev = 0;
     if (typeof d.goalCents !== 'number') d.goalCents = 0;
     if (typeof d.cashGoalCents !== 'number') d.cashGoalCents = 0;
@@ -1546,6 +1608,7 @@
     tab: 'home',
     sections: {},    // Wave 21 — { workspaceId: sectionId }, the last section visited in each
     seasonSetupOpen: false, // Wave 21 — the shared Season setup card's disclosure on Popcorn
+    homeRestOpen: false,    // Wave 21 — Home's "Elsewhere in the pack" disclosure
     storefrontId: null,
     expandedScouts: {},
     armed: null,
@@ -4689,21 +4752,9 @@
       state.startHereDismissed = true;
       save();
     }
-    if (startHereVisible(state)) {
-      h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Start here</h2>' +
-        '<button type="button" class="btn small ghost" data-act="start-here-dismiss">Dismiss</button></div>' +
-        '<p class="small muted" style="margin:6px 0 4px">Five steps to set up your pack’s year:</p>' +
-        '<div class="assign-row"><span class="assign-name">1 · Pack name &amp; sync</span><button type="button" class="btn small" data-act="goto-pack">Pack</button></div>' +
-        // Wave 21 — these use data-act="goto" rather than "tab". "tab" + data-tab="scouts"
-        // would produce the SAME focus signature as the Scouts button in the workspace
-        // strip, and findBySignature takes the first match in document order — so focus
-        // would silently jump to the topbar after every re-render.
-        '<div class="assign-row"><span class="assign-name">2 · Add your scouts</span><button type="button" class="btn small" data-act="goto" data-tab="scouts" data-section="roster">Scouts</button></div>' +
-        '<div class="assign-row"><span class="assign-name">3 · Seed the standard year</span><button type="button" class="btn small" data-act="start-here-seed">Seed now</button></div>' +
-        '<div class="assign-row"><span class="assign-name">4 · Import your Trail’s End schedule</span><button type="button" class="btn small" data-act="goto" data-tab="popcorn" data-section="storefronts">Popcorn</button></div>' +
-        '<div class="assign-row"><span class="assign-name">5 · Set commission &amp; goals</span><button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>' +
-        '</div>';
-    }
+    // Wave 21 — the Start here card moved to Home, which is where a first-run checklist
+    // belongs now that there is a Home to put it on. The auto-retire above stays here
+    // because renderCalendarTab is where the ledger stops being empty in practice.
     // Wave 19(16) — "Next up": the next 1–2 upcoming dated things; hidden when none.
     var nextUp = nextUpEvents();
     if (nextUp.length) {
@@ -5770,43 +5821,363 @@
       tinyDangerBtn('del-leader:' + l.id, 'Remove ' + (l.name || 'leader')) +
       '</div>' + jobsBlock + '</div>';
   }
-  // Wave 21 — Home. PLACEHOLDER SHAPE: Phase 4 replaces the body with the per-job "needs
-  // you this week" queue and the Pack Flow map. What's already true here and must stay
-  // true: Home renders NO data-ch inputs. The whole app re-renders on every keystroke, so
-  // an editable field on Home would drag computeBudget()/computeScoutTotals() and every
-  // queue predicate into the typing path. Home routes; the workspaces do the work.
+  /* ---------------- Wave 21: Home ---------------- */
+  // Home is a QUEUE AND A ROUTER, not a dashboard, and it renders NO data-ch inputs.
+  // The whole app re-renders on every keystroke, so an editable field here would drag
+  // computeBudget() + computeScoutTotals() and every predicate below into the typing path.
+  // Home routes; the workspaces do the work. (It also means a read-only viewer needs no
+  // special case: every destination already enforces canEdit() in commit().)
+
+  // Whole days from today to an ISO date; negative = in the past, null = no date.
+  function daysUntil(iso) {
+    if (!iso) return null;
+    var t = todayISO();
+    if (iso === t) return 0;
+    var a = new Date(t + 'T00:00:00'), b = new Date(iso + 'T00:00:00');
+    return Math.round((b - a) / 86400000);
+  }
+  // One shared, job-agnostic urgency rank. Every job's queue feeds into the SAME three
+  // tiers — per-job scales would make a three-job person's Home incoherent.
+  //   now      — blocks something dated, or someone is waiting on you
+  //   week     — real, not urgent
+  //   whenever — true but never worth interrupting for; disclosure only
+  var TIER_ORDER = { now: 0, week: 1, whenever: 2 };
+
+  // Every open item in the pack, tagged with the job that owns it. Pure read.
+  // Each task: { job, tier, title, detail, tab, section }.
+  function homeTasks() {
+    var out = [];
+    var today = todayISO();
+    function add(job, tier, title, detail, tab, section) {
+      out.push({ job: job, tier: tier, title: title, detail: detail, tab: tab, section: section });
+    }
+
+    /* ----- Popcorn Kernel ----- */
+    state.storefronts.forEach(function (sf) {
+      var d = daysUntil(sf.date);
+      if (d == null) return;
+      var cov = storefrontCoverage(sf);
+      var name = sf.name || 'Storefront';
+      if (d >= 0) {
+        var openShifts = cov.total - cov.covered;
+        if (openShifts > 0) {
+          add('kernel', d <= 3 ? 'now' : 'week',
+            name + ' — ' + openShifts + ' shift' + (openShifts === 1 ? '' : 's') + ' with nobody on',
+            fmtDate(sf.date) + (d === 0 ? ' · today' : d === 1 ? ' · tomorrow' : ' · in ' + d + ' days'),
+            'popcorn', 'storefronts');
+        }
+        if (storefrontNeedsAdults(sf)) {
+          add('kernel', d <= 3 ? 'now' : 'week',
+            name + ' — a shift is short an adult',
+            'Two-deep leadership · ' + fmtDate(sf.date), 'popcorn', 'storefronts');
+        }
+      } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0) {
+        add('kernel', 'now', name + ' — no money entered yet',
+          'Ran ' + fmtDate(sf.date) + ' with scouts assigned', 'popcorn', 'storefronts');
+      }
+    });
+    var scoutTotals = computeScoutTotals();
+    // `combined` is sales + donations across storefront shares, wagon and online — the
+    // whole "has this scout sold anything" question in one field.
+    var zeroScouts = activeScouts().filter(function (s) {
+      var t = scoutTotals[s.id];
+      return !t || t.combined === 0;
+    });
+    if (zeroScouts.length) {
+      add('kernel', 'whenever', zeroScouts.length + ' scout' + (zeroScouts.length === 1 ? ' has' : 's have') + ' no sales yet',
+        zeroScouts.slice(0, 4).map(function (s) { return s.name; }).join(', ') + (zeroScouts.length > 4 ? '…' : ''),
+        'popcorn', 'totals');
+    }
+
+    /* ----- Treasurer ----- */
+    var owingScouts = activeScouts().filter(function (s) { return scoutOwesCents(s.id) > 0; });
+    if (owingScouts.length) {
+      var owedTotal = owingScouts.reduce(function (n, s) { return n + scoutOwesCents(s.id); }, 0);
+      add('treasurer', 'week', owingScouts.length + ' scout' + (owingScouts.length === 1 ? '' : 's') + ' still owe ' + fmt(owedTotal),
+        'Dues and per-scout fees', 'money', 'dues');
+    }
+    var unreconciled = state.budget.activities.filter(function (a) {
+      return a.date && a.date < today && (a.estCents || 0) > 0 && !(a.actualCents || 0);
+    });
+    if (unreconciled.length) {
+      add('treasurer', 'week', unreconciled.length + ' past activit' + (unreconciled.length === 1 ? 'y has' : 'ies have') + ' no actual cost',
+        unreconciled.slice(0, 3).map(function (a) { return a.name || 'Untitled'; }).join(', '),
+        'money', 'budget');
+    }
+    var bud = computeBudget();
+    if (bud.balance < 0) {
+      add('treasurer', 'now', 'The budget is ' + fmt(-bud.balance) + ' short',
+        fmt(bud.fundsIn) + ' in against ' + fmt(bud.planned) + ' planned', 'money', 'budget');
+    }
+
+    /* ----- Committee Chair ----- */
+    state.leaders.forEach(function (l) {
+      leaderStatus(l).forEach(function (p) {
+        add('chair', p.label === 'Training expired' ? 'now' : 'week',
+          (l.name || 'A leader') + ' — ' + p.label.toLowerCase(),
+          leaderJobLabels(l) || 'No job set', 'pack', 'people');
+      });
+    });
+    var pending = sync.members.filter(function (m) { return m.role === 'pending'; });
+    if (pending.length) {
+      add('chair', 'now', pending.length + ' person' + (pending.length === 1 ? '' : 's') + ' waiting for access',
+        pending.map(function (m) { return m.name || m.email; }).slice(0, 3).join(', '), 'pack', 'sharing');
+    }
+    var renewScouts = activeScouts().filter(function (s) { return renewalDue(s.renewalMonth); });
+    if (renewScouts.length) {
+      add('membership', 'week', renewScouts.length + ' scout registration' + (renewScouts.length === 1 ? '' : 's') + ' due to renew',
+        renewScouts.slice(0, 4).map(function (s) { return s.name; }).join(', '), 'scouts', 'roster');
+    }
+
+    /* ----- Cubmaster / Activities ----- */
+    var upcomingMeetings = state.meetings.filter(function (m) { return m.date && m.date >= today; })
+      .sort(function (a, b) { return a.date.localeCompare(b.date); });
+    var nextPack = upcomingMeetings.find(function (m) { return m.kind === 'pack'; });
+    if (nextPack && !nextPack.note) {
+      add('cubmaster', 'week', 'The next pack meeting has no plan yet',
+        fmtDate(nextPack.date) + (fmtClock(nextPack.time) ? ' · ' + fmtClock(nextPack.time) : ''), 'program', 'calendar');
+    }
+    var vagueActivities = state.budget.activities.filter(function (a) {
+      var d = daysUntil(a.date);
+      return d != null && d >= 0 && d <= 45 && (!a.time || !a.location);
+    });
+    if (vagueActivities.length) {
+      add('activities', 'whenever', vagueActivities.length + ' upcoming activit' + (vagueActivities.length === 1 ? 'y is' : 'ies are') + ' missing a time or place',
+        vagueActivities.slice(0, 3).map(function (a) { return a.name || 'Untitled'; }).join(', '), 'program', 'calendar');
+    }
+
+    /* ----- Advancement / Den leaders ----- */
+    var dens = myDens();
+    var advRoster = activeScouts().filter(function (s) { return s.den && (!dens.length || dens.indexOf(s.den) !== -1); });
+    var bobcats = advRoster.filter(function (s) { return bobcatNudgeFor(s.id); });
+    if (bobcats.length) {
+      add(dens.length ? 'denleader' : 'advancement', 'whenever',
+        bobcats.length + ' scout' + (bobcats.length === 1 ? ' has' : 's have') + ' adventures marked but not Bobcat',
+        'Bobcat comes first · ' + bobcats.slice(0, 4).map(function (s) { return s.name; }).join(', '),
+        'scouts', 'advancement');
+    }
+    var shop = shopItems();
+    if (shop.length) {
+      add('advancement', 'week', shop.length + ' award' + (shop.length === 1 ? '' : 's') + ' ready to buy',
+        'Not yet marked as awarded', 'scouts', 'advancement');
+    }
+    return out;
+  }
+
+  // Round-robin across YOUR jobs in urgency order, so each job gets at least ceil(5/N)
+  // slots and a noisy job can never crowd a quiet one out entirely. Without this a
+  // Kernel+Treasurer in November sees five popcorn rows and never learns the app knows
+  // about dues.
+  function pickHomeTasks(tasks, jobIds, limit) {
+    var byJob = {};
+    jobIds.forEach(function (j) { byJob[j] = []; });
+    tasks.forEach(function (t) { if (byJob[t.job]) byJob[t.job].push(t); });
+    jobIds.forEach(function (j) {
+      byJob[j].sort(function (a, b) { return TIER_ORDER[a.tier] - TIER_ORDER[b.tier]; });
+    });
+    var picked = [], guard = 0;
+    while (picked.length < limit && guard < 50) {
+      var tookOne = false;
+      for (var i = 0; i < jobIds.length && picked.length < limit; i++) {
+        var q = byJob[jobIds[i]];
+        if (q && q.length) { picked.push(q.shift()); tookOne = true; }
+      }
+      if (!tookOne) break;
+      guard += 1;
+    }
+    return picked.sort(function (a, b) { return TIER_ORDER[a.tier] - TIER_ORDER[b.tier]; });
+  }
+
+  function homeTaskRow(t) {
+    // The job pill is IDENTITY and always neutral — colouring it by urgency would make a
+    // row of red job names, which reads as alarm rather than "these are yours". Urgency is
+    // a separate, quieter marker: a filled dot for `now`, nothing otherwise. The dot is
+    // decorative, so the tier is also spelled out for screen readers.
+    var isNow = t.tier === 'now';
+    return '<div class="list-row" role="button" tabindex="0" data-act="goto" data-tab="' + esc(t.tab) +
+      '" data-section="' + esc(t.section) + '">' +
+      '<div style="min-width:0">' +
+      '<div class="lr-name">' +
+      (isNow ? '<span class="urg" aria-hidden="true"></span><span class="visually-hidden">Needs attention now: </span>' : '') +
+      '<span class="pill navy">' + esc(jobLabel(t.job) || t.job) + '</span> ' + esc(t.title) + '</div>' +
+      (t.detail ? '<div class="small muted">' + esc(t.detail) + '</div>' : '') +
+      '</div><span class="mo-chev" aria-hidden="true">›</span></div>';
+  }
+
   function renderHome() {
     var me = leaderForUser();
     var jobIds = myJobs();
     var h = '';
+
+    // Greeting — the identity surface. Home is the default tab and `ui` isn't persisted,
+    // so this is seen every session, which is the whole mechanism for one line of markup.
     if (me && me.name) {
       h += '<p class="row" style="gap:6px;margin:0 2px 12px;align-items:center">' +
         '<span class="display" style="font-size:1.05rem">Hi ' + esc(me.name) + '</span>' +
         jobIds.map(function (j) { return '<span class="pill">' + esc(jobLabel(j)) + '</span>'; }).join('') +
         '</p>';
     }
-    h += '<div class="card"><h2 class="section display">Your pack, by job</h2>';
-    if (jobIds.length) {
-      h += '<p class="small muted" style="margin:0 0 8px">The workspaces marked with a dot are where your jobs live. ' +
-        'Everything else stays open to you — a job decides what’s highlighted, never what you’re allowed to see.</p>';
-    } else if (sync.user) {
-      h += '<p class="small muted" style="margin:0 0 8px">No job linked to your sign-in yet. ' +
-        'A pack admin can set one on <button type="button" class="btn small ghost" data-act="goto-pack">Pack</button> — ' +
-        'until then you see the whole pack’s view, which works exactly as it always has.</p>';
-    } else {
-      h += '<p class="small muted" style="margin:0 0 8px">Pick where you’re headed. Sign in on the Pack workspace and ' +
-        'this page starts showing what needs <em>you</em>.</p>';
+
+    // One-time "where things moved" card. Nine rows of words people already know beats
+    // nine sentences of explanation. Dismisses on Dismiss OR on using any row to navigate.
+    if (!state.movedNoticeDismissed && (state.scouts.length || state.storefronts.length || state.leaders.length)) {
+      h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Where things moved</h2>' +
+        '<button type="button" class="btn small ghost" data-act="moved-dismiss">Dismiss</button></div>' +
+        '<p class="small muted" style="margin:6px 0 8px">Nine tabs became six workspaces. Everything is still here.</p>';
+      [['Calendar', 'program', 'calendar'], ['Derby', 'program', 'derby'],
+        ['Scouts', 'scouts', 'roster'], ['Advancement', 'scouts', 'advancement'],
+        ['Storefronts', 'popcorn', 'storefronts'], ['Standings', 'popcorn', 'totals'],
+        ['Inventory', 'popcorn', 'inventory'], ['Budget', 'money', 'budget'],
+        ['Pack', 'pack', 'sharing']].forEach(function (r) {
+        var ws = WS_BY_ID[r[1]];
+        var scn = ws.sections.find(function (s) { return s.id === r[2]; });
+        h += '<div class="assign-row"><span class="assign-name">' + esc(r[0]) +
+          ' <span class="small muted">→ ' + esc(ws.label) + ' · ' + esc(scn.label) + '</span></span>' +
+          '<button type="button" class="btn small ghost" data-act="moved-go" data-tab="' + esc(r[1]) + '" data-section="' + esc(r[2]) + '">Go</button></div>';
+      });
+      h += '</div>';
     }
-    var mineMap = myWorkspaceIds();
-    WORKSPACES.forEach(function (w) {
-      if (w.id === 'home') return;
-      var isMine = !!mineMap[w.id];
-      h += '<div class="assign-row"><span class="assign-name">' + (isMine ? '<span class="pill">yours</span> ' : '') + esc(w.label) +
-        ' <span class="small muted">' + esc(w.sections.map(function (s) { return s.label; }).join(' · ')) + '</span></span>' +
-        '<button type="button" class="btn small" data-act="goto" data-tab="' + esc(w.id) + '" data-section="' + esc(w.sections[0].id) + '">Open</button></div>';
-    });
+
+    // Start here — relocated from the Calendar tab, where a first-run checklist never belonged.
+    if (startHereVisible(state)) {
+      h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Start here</h2>' +
+        '<button type="button" class="btn small ghost" data-act="start-here-dismiss">Dismiss</button></div>' +
+        '<p class="small muted" style="margin:6px 0 4px">Five steps to set up your pack’s year:</p>' +
+        '<div class="assign-row"><span class="assign-name">1 · Pack name &amp; sync</span><button type="button" class="btn small" data-act="goto-pack">Pack</button></div>' +
+        '<div class="assign-row"><span class="assign-name">2 · Add your scouts</span><button type="button" class="btn small" data-act="goto" data-tab="scouts" data-section="roster">Scouts</button></div>' +
+        '<div class="assign-row"><span class="assign-name">3 · Seed the standard year</span><button type="button" class="btn small" data-act="start-here-seed">Seed now</button></div>' +
+        '<div class="assign-row"><span class="assign-name">4 · Import your Trail’s End schedule</span><button type="button" class="btn small" data-act="goto" data-tab="popcorn" data-section="storefronts">Popcorn</button></div>' +
+        '<div class="assign-row"><span class="assign-name">5 · Set commission &amp; goals</span><button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>' +
+        '</div>';
+    }
+
+    /* ----- Needs you ----- */
+    var tasks = homeTasks();
+    var LIMIT = 5;
+    var mine = [], rest = [];
+    if (jobIds.length) {
+      mine = pickHomeTasks(tasks, jobIds, LIMIT).filter(function (t) { return t.tier !== 'whenever'; });
+      var mineSet = {};
+      mine.forEach(function (t) { mineSet[t.title] = true; });
+      rest = tasks.filter(function (t) { return !mineSet[t.title]; });
+    } else {
+      // No job linked: show the pack-wide queue un-attributed but still job-pilled, which
+      // is also how the jobs feature gets discovered at all.
+      mine = tasks.filter(function (t) { return t.tier === 'now'; }).slice(0, LIMIT);
+      var seen = {};
+      mine.forEach(function (t) { seen[t.title] = true; });
+      rest = tasks.filter(function (t) { return !seen[t.title]; });
+    }
+
+    h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Needs you</h2>' +
+      (mine.length ? '<span class="small muted">' + mine.length + ' item' + (mine.length === 1 ? '' : 's') + '</span>' : '') +
+      '</div>';
+    if (mine.length) {
+      h += mine.map(homeTaskRow).join('');
+      if (!jobIds.length) {
+        h += '<p class="small muted" style="margin:10px 0 0">These are everyone’s. Tell the app your job and this list becomes yours — ' +
+          '<button type="button" class="btn small ghost" data-act="goto" data-tab="pack" data-section="people">Pack · People</button></p>';
+      }
+    } else {
+      // The all-clear. Status plus one forward look — never a blank card, never a
+      // celebration graphic that would be wrong the second time you saw it.
+      var packT = computePackTotals();
+      var nx = nextUpEvents();
+      h += '<div class="empty" style="margin:0 0 10px">Nothing needs you right now.</div>' +
+        '<div class="row">' +
+        '<div class="stat"><span class="v">' + (nx.length ? esc(fmtDate(nx[0].date)) : '—') + '</span><span class="l">Next up</span></div>' +
+        '<div class="stat"><span class="v money">' + fmt(bud0().fundsIn) + '</span><span class="l">Funds in</span></div>' +
+        '<div class="stat"><span class="v">' + (packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) + '%' : '—') + '</span><span class="l">Of goal</span></div>' +
+        '</div>';
+      var later = tasks.filter(function (t) { return t.tier === 'whenever'; })[0];
+      if (later) h += '<hr class="divider"><p class="small muted" style="margin:0">Looking ahead: ' + esc(later.title.toLowerCase()) + '.</p>';
+    }
     h += '</div>';
+
+    // Everything else, collapsed. `+ N more` NAVIGATES, it never expands in place — the
+    // moment Home can expand a full list it becomes a second copy of every screen.
+    if (rest.length) {
+      var open = !!ui.homeRestOpen;
+      h += '<div class="card"><button type="button" class="exp-toggle" data-act="toggle-home-rest" aria-expanded="' + open + '">' +
+        '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>Elsewhere in the pack · ' + rest.length + ' open item' + (rest.length === 1 ? '' : 's') + '</button>';
+      if (open) h += '<div style="margin-top:8px">' + rest.slice(0, 12).map(homeTaskRow).join('') + '</div>';
+      h += '</div>';
+    }
+
+    // Next up — the existing predicate, on the page people now land on.
+    var nextUp = nextUpEvents();
+    if (nextUp.length) {
+      h += '<div class="card"><h2 class="section display">Next up</h2>';
+      nextUp.forEach(function (e) {
+        var title = e.type === 'storefront' ? (e.sf.name || 'Storefront')
+          : e.type === 'meeting' ? (e.m.kind === 'pack' ? 'Pack meeting' : ((e.m.den ? e.m.den + ' den' : 'Den') + ' meeting'))
+            : (e.a.name || 'Activity');
+        h += '<div class="list-row" role="button" tabindex="0" data-act="goto" data-tab="' +
+          (e.type === 'storefront' ? 'popcorn" data-section="storefronts' : 'program" data-section="calendar') + '">' +
+          '<div style="min-width:0"><div class="lr-name">' + esc(title) + '</div>' +
+          '<div class="small muted">' + esc(fmtDate(e.date)) + '</div></div>' +
+          '<span class="mo-chev" aria-hidden="true">›</span></div>';
+      });
+      h += '</div>';
+    }
+
+    h += packFlow();
     return h;
+  }
+  // Tiny wrapper so the all-clear card can read the budget without recomputing it twice
+  // in the common (non-empty) path.
+  function bud0() { return computeBudget(); }
+
+  // Wave 21 — the Pack Flow map: how each job hands work to the next, which is the whole
+  // point of organising by persona. It's an <ol> of stages with CSS connectors, NOT an SVG:
+  // SVG <text> doesn't wrap, ignores the reader's font size, isn't selectable, and shrinks
+  // below legibility at 375px. This reflows at any width, needs zero measurement, and
+  // rebuilds identically from a string on every render.
+  // Stages you own get a filled dot and an accent job pill — you can see where you sit in
+  // the chain and who you hand off to.
+  function packFlow() {
+    var packT = computePackTotals();
+    var bud = computeBudget();
+    var mineJobs = {};
+    myJobs().forEach(function (j) { mineJobs[j] = true; });
+    var events = state.meetings.length + state.budget.activities.filter(function (a) { return a.date; }).length;
+    var marked = 0;
+    Object.keys(state.advancement).forEach(function (sid) {
+      var a = state.advancement[sid] || {};
+      marked += Object.keys(a.req || {}).length + Object.keys(a.elect || {}).length;
+    });
+    var steps = [
+      { jobs: ['cubmaster', 'asstcub', 'activities', 'outdoors'], t: 'Plan the year',
+        who: 'Cubmaster · Activities', hand: events + ' meetings and activities on the calendar',
+        side: 'sets what the year costs', tab: 'program', section: 'calendar' },
+      { jobs: ['treasurer'], t: 'Build the budget', who: 'Treasurer',
+        hand: fmt(bud.planned) + ' planned · ' + fmt(bud.startingBalance) + ' carried over',
+        side: 'sets the fundraising goal', tab: 'money', section: 'budget' },
+      { jobs: ['kernel'], t: 'Sell popcorn', who: 'Popcorn Kernel',
+        hand: fmt(packT.combined) + ' sold across ' + state.storefronts.length + ' storefronts',
+        side: 'commission returns to the budget as funds-in', tab: 'popcorn', section: 'storefronts' },
+      { jobs: ['denleader', 'asstden', 'advancement'], t: 'Deliver the program', who: 'Den leaders · Advancement',
+        hand: activeScouts().length + ' scouts · ' + marked + ' adventures marked',
+        side: 'what dues and fees pay for', tab: 'scouts', section: 'advancement' },
+      { jobs: ['chair', 'secretary'], t: 'Close the year', who: 'Committee Chair',
+        hand: state.archives.length + ' season' + (state.archives.length === 1 ? '' : 's') + ' archived',
+        side: 'the ending balance starts next year’s budget', tab: 'pack', section: 'season' }
+    ];
+    return '<div class="card"><h2 class="section display">How the pack hands off</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">Each stage feeds the next. Tap one to go there.</p>' +
+      '<ol class="flow">' + steps.map(function (s, i) {
+        var isMine = s.jobs.some(function (j) { return mineJobs[j]; });
+        return '<li class="flow-step list-row' + (isMine ? ' mine' : '') + '" role="button" tabindex="0" ' +
+          'data-act="goto" data-tab="' + esc(s.tab) + '" data-section="' + esc(s.section) + '">' +
+          '<span class="flow-n" aria-hidden="true">' + (i + 1) + '</span>' +
+          '<span class="flow-b">' +
+          '<span class="lr-name">' + esc(s.t) + ' <span class="pill' + (isMine ? '' : ' navy') + '">' + esc(s.who) + '</span>' +
+          (isMine ? ' <span class="small muted">· you</span>' : '') + '</span>' +
+          '<span class="flow-hand">' + esc(s.hand) + '</span>' +
+          '<span class="flow-side"><span aria-hidden="true">↳</span> ' + esc(s.side) + '</span>' +
+          '</span><span class="mo-chev" aria-hidden="true">›</span></li>';
+      }).join('') + '</ol>' +
+      '<p class="flow-loop">↻ and the carryover starts step 1 again</p></div>';
   }
   /* ----- Money · Dues & fees ----- */
   // Wave 21 — a real home for the collect grids. They existed before, but the only way to
@@ -9084,6 +9455,16 @@
     if (act === 'section' || act === 'goto') { gotoNav(el.dataset.tab, el.dataset.section, false); return; }
     if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
+    if (act === 'toggle-home-rest') { ui.homeRestOpen = !ui.homeRestOpen; render(); return; }
+    // Wave 21 — the one-time "where things moved" card. Using a row to navigate counts as
+    // having understood it, so that dismisses it too.
+    if (act === 'moved-dismiss') { state.movedNoticeDismissed = true; commit(); return; }
+    if (act === 'moved-go') {
+      state.movedNoticeDismissed = true;
+      if (canEdit()) save();
+      gotoNav(el.dataset.tab, el.dataset.section, false);
+      return;
+    }
     // ---- Parent phase (the only navigation the parent app has) ----
     if (act === 'parent-tab') {
       ui.parentTab = el.dataset.tab === 'standings' ? 'standings' : 'schedule';
