@@ -689,6 +689,282 @@ test('coverage is derived, never written into state.collected', () => {
   ok(!/state\.collected/.test(fn[0]), 'packCoverage writes or reads state.collected');
 });
 
+/* ================================================================
+   Money redesign — Phase 0 (the ledger) and Phase 1 (actual = sum of ledger).
+   See DESIGN-money.md sections 3.3 and 5.
+   ================================================================ */
+
+// The ledger math is deliberately pure — it takes (ledger, book) rather than reading
+// `state` — precisely so it can be exercised here rather than by clicking around.
+const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
+  'lineActualCents', 'ledgerTotals', 'reconcileTotals', 'runningBalances'];
+
+function entry(o) {
+  return Object.assign({ id: 'x', date: '2025-10-01', description: '', amountCents: 0,
+    direction: 'out', lineId: '', method: '', ref: '', source: '', donor: '',
+    scoutId: '', reconciled: false }, o);
+}
+
+test('money in and money out are the only sign — amounts are always positive', () => {
+  const { entrySignedCents } = sandbox(LEDGER_FNS);
+  eq(entrySignedCents(entry({ amountCents: 5000, direction: 'in' })), 5000, 'money in');
+  eq(entrySignedCents(entry({ amountCents: 5000, direction: 'out' })), -5000, 'money out');
+});
+
+test('the bank balance is the opening figure plus what actually moved', () => {
+  const { ledgerBalance } = sandbox(LEDGER_FNS);
+  const book = { openingCents: 42000, openingDate: '2025-09-01' };
+  const led = [
+    entry({ id: 'a', date: '2025-09-15', amountCents: 10000, direction: 'out' }),
+    entry({ id: 'b', date: '2025-10-02', amountCents: 273000, direction: 'in' })
+  ];
+  eq(ledgerBalance(led, book), 42000 - 10000 + 273000, 'balance');
+});
+
+test('an entry dated before the opening date never moves the bank balance', () => {
+  // The opening figure is the bank's word for everything up to that date, so counting a
+  // backfilled receipt again would double it. This is the whole reason both ways of
+  // starting a ledger (opening balance / backfill) can share one mechanism.
+  const { ledgerBalance, ledgerTotals } = sandbox(LEDGER_FNS);
+  const book = { openingCents: 50000, openingDate: '2025-09-01' };
+  const led = [
+    entry({ id: 'old', date: '2025-08-14', amountCents: 9900, direction: 'out' }),
+    entry({ id: 'new', date: '2025-09-14', amountCents: 9900, direction: 'out' })
+  ];
+  eq(ledgerBalance(led, book), 50000 - 9900, 'only the post-opening entry counts');
+  eq(ledgerTotals(led, book).preOpening, 1, 'the pre-opening entry is reported, not hidden');
+});
+
+test('with no opening date set, every entry counts', () => {
+  const { ledgerBalance } = sandbox(LEDGER_FNS);
+  const led = [entry({ date: '2001-01-01', amountCents: 700, direction: 'in' })];
+  eq(ledgerBalance(led, { openingCents: 0, openingDate: '' }), 700, 'balance');
+});
+
+test("a line's actual is money out against it, less anything refunded back", () => {
+  const { lineActualCents } = sandbox(LEDGER_FNS);
+  const led = [
+    entry({ id: '1', lineId: 'L', amountCents: 102000, direction: 'out' }),
+    entry({ id: '2', lineId: 'L', amountCents: 2000, direction: 'in' }),
+    entry({ id: '3', lineId: 'OTHER', amountCents: 500000, direction: 'out' }),
+    entry({ id: '4', lineId: '', amountCents: 1234, direction: 'out' })
+  ];
+  eq(lineActualCents(led, 'L'), 100000, 'actual for L');
+  eq(lineActualCents(led, ''), 0, 'an empty lineId matches nothing, not everything');
+});
+
+test("a line's actual ignores the opening date", () => {
+  // A backfilled receipt is still what the line cost, even though the opening balance
+  // already accounts for the cash having left. Cost and cash position are separate
+  // questions, which is the point of splitting them at all.
+  const { lineActualCents } = sandbox(LEDGER_FNS);
+  const led = [entry({ id: '1', date: '2025-08-01', lineId: 'L', amountCents: 4200, direction: 'out' })];
+  eq(lineActualCents(led, 'L'), 4200, 'actual');
+});
+
+test('the running balance is computed in date order, not entry order', () => {
+  const { runningBalances } = sandbox(LEDGER_FNS);
+  const book = { openingCents: 10000, openingDate: '' };
+  const led = [
+    entry({ id: 'later', date: '2025-11-01', amountCents: 3000, direction: 'out' }),
+    entry({ id: 'earlier', date: '2025-10-01', amountCents: 5000, direction: 'in' })
+  ];
+  const run = runningBalances(led, book);
+  eq(run.earlier, 15000, 'earlier row');
+  eq(run.later, 12000, 'later row');
+});
+
+test('a pre-opening entry has no place in the running balance', () => {
+  const { runningBalances } = sandbox(LEDGER_FNS);
+  const run = runningBalances(
+    [entry({ id: 'old', date: '2025-01-01', amountCents: 100, direction: 'out' })],
+    { openingCents: 0, openingDate: '2025-09-01' });
+  eq(run.old, null, 'pre-opening row');
+});
+
+test('reconciling compares the TICKED entries to the statement', () => {
+  const { reconcileTotals } = sandbox(LEDGER_FNS);
+  const book = { openingCents: 10000, openingDate: '2025-09-01', statementCents: 12000 };
+  const led = [
+    entry({ id: 'cleared', date: '2025-09-10', amountCents: 5000, direction: 'in', reconciled: true }),
+    entry({ id: 'outstanding', date: '2025-09-20', amountCents: 900, direction: 'out', reconciled: false })
+  ];
+  const rec = reconcileTotals(led, book);
+  eq(rec.cleared, 15000, 'ticked balance excludes the outstanding entry');
+  eq(rec.ticked, 1, 'ticked count');
+  eq(rec.open, 1, 'outstanding count');
+  eq(rec.difference, 12000 - 15000, 'difference is statement minus ticked');
+});
+
+/* ---- Phase 1 migration: totals identical before and after ---- */
+
+// normalizeState is the single migration seam, so the migration is tested through it
+// rather than through a reimplementation of it.
+const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO',
+  'programYearEndISO', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
+  'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
+  'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
+  'parseLegacyTime', 'normalizeState', 'lineActualCents', 'entrySignedCents'];
+
+function preMigrationState() {
+  // A pre-Phase-0 pack record, with the two shapes that matter: a flat line and a
+  // per-scout line (whose actualCents was a RATE multiplied by the roster on every read).
+  return {
+    version: 1, packName: 'Pack 569',
+    scouts: [
+      { id: 's1', name: 'Ben' }, { id: 's2', name: 'Ivy' }, { id: 's3', name: 'Mae' },
+      { id: 's4', name: 'Gus', archived: true }   // archived scouts were never multiplied
+    ],
+    budget: {
+      programYear: 2025, startingBalance: 42000,
+      activities: [
+        { id: 'a1', slot: 1, name: 'Fall campout', date: '2025-10-18', estCents: 80000, actualCents: 102000, perScout: false, familyPays: false },
+        { id: 'a2', slot: 9, name: 'Cub day camp', date: '', estCents: 14500, actualCents: 14500, perScout: true, familyPays: true },
+        { id: 'a3', slot: 3, name: 'Not paid for yet', date: '', estCents: 5000, actualCents: 0, perScout: false, familyPays: false }
+      ],
+      expenses: [
+        { id: 'e1', name: 'Charter fee', estCents: 10000, actualCents: 10000, perScout: false, familyPays: false },
+        { id: 'e2', name: 'Pack dues', estCents: 8000, actualCents: 2500, perScout: true, familyPays: true }
+      ]
+    }
+  };
+}
+
+// What computeBudget used to produce for "actual": rate x roster for a per-scout line.
+function legacyActualTotal(d) {
+  const n = d.scouts.filter(s => !s.archived).length;
+  const sum = rows => rows.reduce((t, x) => t + (x.actualCents || 0) * (x.perScout ? n : 1), 0);
+  return sum(d.budget.activities) + sum(d.budget.expenses);
+}
+
+test('Phase 1 migration: actual totals are identical before and after', () => {
+  // This is THE migration test named in DESIGN-money.md section 5. If it ever fails, a
+  // pack's books moved on their own during an upgrade, which is unforgivable in a
+  // financial record however small.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const before = preMigrationState();
+  const expected = legacyActualTotal(before);
+  const after = ctx.normalizeState(before);
+  ok(after, 'normalizeState rejected the record');
+  const rows = after.budget.activities.concat(after.budget.expenses);
+  const got = rows.reduce((t, x) => t + ctx.lineActualCents(after.ledger, x.id), 0);
+  eq(got, expected, 'total actual across every line');
+});
+
+test('Phase 1 migration: a per-scout rate becomes a total, once', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preMigrationState());
+  // 3 active scouts (the archived one never counted), $145 each.
+  eq(ctx.lineActualCents(after.ledger, 'a2'), 14500 * 3, 'day camp');
+  eq(ctx.lineActualCents(after.ledger, 'e2'), 2500 * 3, 'dues');
+  eq(ctx.lineActualCents(after.ledger, 'a1'), 102000, 'a flat line is not multiplied');
+});
+
+test('Phase 1 migration: actualCents is deleted and never migrated twice', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const once = ctx.normalizeState(preMigrationState());
+  const n = once.ledger.length;
+  ok(once.budget.activities.every(a => !('actualCents' in a)), 'actualCents survived on an activity');
+  ok(once.budget.expenses.every(e => !('actualCents' in e)), 'actualCents survived on an expense');
+  // The field's ABSENCE is the marker that migration has run. Re-normalizing (which happens
+  // on every load, every import and every sync adoption) must add nothing.
+  const twice = ctx.normalizeState(JSON.parse(JSON.stringify(once)));
+  eq(twice.ledger.length, n, 'ledger grew on a second normalize');
+});
+
+test('Phase 1 migration: a zero actual writes no entry', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preMigrationState());
+  ok(!after.ledger.some(e => e.lineId === 'a3'), 'an unpaid line got a $0 ledger entry');
+  eq(after.ledger.length, 4, 'one entry per line that had an actual');
+});
+
+test('Phase 1 migration: entries land on the line, dated, and unreconciled', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preMigrationState());
+  const campout = after.ledger.find(e => e.lineId === 'a1');
+  eq(campout.date, '2025-10-18', "a dated line keeps the event's date");
+  eq(campout.direction, 'out', 'direction');
+  eq(campout.description, 'Fall campout', 'description');
+  ok(after.ledger.every(e => e.reconciled === false),
+    'migrated money was marked reconciled — it has never been held next to a statement');
+  const undated = after.ledger.find(e => e.lineId === 'e1');
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(undated.date), 'an undated line got no date at all');
+  ok(undated.date <= '2026-08-31' && undated.date >= '2025-09-01',
+    `an undated line landed outside its program year (${undated.date})`);
+});
+
+test('Phase 0: the ledger and book survive normalization additively', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = preMigrationState();
+  d.ledger = [{ id: 'k', date: '2025-09-09', description: 'Deposit', amountCents: -500,
+    direction: 'in', lineId: 'a1', method: 'nonsense', source: 'donation',
+    donor: 'St Marks', scoutId: 's1', reconciled: true }];
+  d.book = { openingCents: 12345.6, openingDate: '2025-09-01' };
+  const after = ctx.normalizeState(d);
+  const k = after.ledger.find(e => e.id === 'k');
+  eq(k.amountCents, 500, 'a stored negative is folded into direction');
+  eq(k.method, '', 'an unknown method is dropped');
+  eq(k.source, 'donation', 'a known source is kept');
+  eq(k.scoutId, 's1', 'scoutId is carried through for Phase 3');
+  eq(after.book.openingCents, 12346, 'the opening figure is rounded to whole cents');
+  eq(after.book.reconciledThrough, '', 'missing book fields are defaulted');
+});
+
+test('actual is no longer a field a budget row can type into', () => {
+  // Phase 1's contract: actual is derived. A stray input would silently reintroduce the
+  // second source of truth this whole redesign exists to remove.
+  ok(!/data-ch="act-actual"/.test(SCRIPT), 'the activity row still has an Actual input');
+  ok(!/data-ch="exp-actual"/.test(SCRIPT), 'the expense row still has an Actual input');
+  ok(!/ch === 'act-actual'/.test(SCRIPT), 'act-actual is still handled');
+  ok(!/ch === 'exp-actual'/.test(SCRIPT), 'exp-actual is still handled');
+  // computeBudget must read the ledger, and must NOT multiply actual by the roster.
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'computeBudget() not found');
+  ok(/actActual \+= lineActualCents\(state\.ledger, a\.id\)/.test(fn[0]), 'activity actual is not ledger-derived');
+  ok(/expActual \+= lineActualCents\(state\.ledger, e\.id\)/.test(fn[0]), 'expense actual is not ledger-derived');
+  ok(!/actualCents \|\| 0\) \* /.test(fn[0]), 'computeBudget still multiplies an actual by the roster');
+});
+
+test('the year rollover clears the ledger and opens next year at the bank balance', () => {
+  // The old entries point at line ids that no longer exist after the re-seed, so leaving
+  // them would strand every one of them as uncategorised.
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'rolloverYear() not found');
+  ok(/state\.ledger = \[\]/.test(fn[0]), 'the ledger is carried into the new year');
+  ok(/var closingBank = bookBalance\(\)/.test(fn[0]), 'the closing bank balance is not captured');
+  ok(/closingBank/.test(fn[0]) && /openingCents = closingBank/.test(fn[0]),
+    "next year's book does not open at the closing bank balance");
+  ok(/Math\.round\(act \/ bud\.scouts\)/.test(fn[0]),
+    'a per-scout line seeds next year from a total instead of a rate');
+});
+
+test('a divergence merge never drops a ledger entry', () => {
+  // The append-only merge is the recovery path when two copies of a pack record diverge.
+  // Popcorn sales are protected there; transactions must be too.
+  const fn = /function mergeRemoteAppendOnly\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'mergeRemoteAppendOnly() not found');
+  ok(/unionById\(state\.ledger, remote\.ledger\)/.test(fn[0]),
+    'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
+});
+
+test('a record holding only a ledger does not read as empty', () => {
+  // isStateEmpty gates whether a remote copy is adopted wholesale. A treasurer who opens
+  // the books before anyone types a roster must not have that work adopted away.
+  const fn = /function isStateEmpty\(s\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'isStateEmpty() not found');
+  ok(/s\.ledger && s\.ledger\.length/.test(fn[0]), 'isStateEmpty ignores the ledger');
+});
+
+test('the parent view never carries the ledger', () => {
+  // Parents get a sanitized calendar. The pack's transactions are not theirs to see, and
+  // the published doc is world-readable to anyone the pack has approved as a parent.
+  const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'buildParentView() not found');
+  ok(!/ledger/i.test(fn[0]), 'buildParentView references the ledger');
+  ok(!/\bbook\b/.test(fn[0]), 'buildParentView references the book (opening/statement balances)');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

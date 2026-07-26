@@ -1,7 +1,15 @@
 # Design — separating the plan, the money, and the calendar
 
-**Status:** proposal, not built. Written 2026-07-26.
+**Status:** Written 2026-07-26. **Phases 0 and 1 are built** (2026-07-26) — the ledger,
+bank reconciliation, and `actual = Σ ledger`. Phases 2–4 remain proposal.
 **Problem:** budgeting and spending are the same record, so neither can be done properly.
+
+> **Naming note.** `state.ledger` is the transaction register described in §3.3. The word
+> "ledger" used to mean *the saved pack document* throughout `index.html` (`subscribeLedger`,
+> "the shared ledger"); that usage was renamed to **"the pack record"** / `subscribeDoc` when
+> Phase 0 landed, so the word now means one thing. The localStorage key
+> `pack-popcorn-ledger-v1` keeps its old name — it addresses data already in every leader's
+> browser and must never change.
 
 ---
 
@@ -646,19 +654,42 @@ internals.
 Non-negotiable: **`version` stays `1`**, migration is in `normalizeState`, and no ledger is ever
 destroyed. There is precedent — `cashInCommission`/`cashInGoal` were migrated and deleted in place.
 
-**Phase 0 — the ledger, and bank reconciliation.** Add `state.ledger = []`, a Money · Ledger
-section with entry, filtering and a running balance, plus a **reconcile** view: tick entries
-against a bank statement, enter the statement closing balance, see the difference. Nothing else
-changes — `computeBudget` still works exactly as today, so the app keeps functioning while the
-Treasurer starts keeping the real book alongside it.
+**Phase 0 — the ledger, and bank reconciliation. ✅ BUILT.** `state.ledger = []` plus
+`state.book`, a Money · Ledger section with entry, filtering and a running balance, and a
+**reconcile** view: tick entries against a bank statement, enter its closing balance, see the
+difference. `computeBudget` was left alone in this phase, so the app kept functioning while the
+Treasurer started keeping the real book alongside it.
 
-*This is now the load-bearing phase.* Everything after it is about removing the duplicate,
+*This is the load-bearing phase.* Everything after it is about removing the duplicate,
 derived version of numbers the ledger already holds.
 
-**Phase 1 — derive actual from the ledger.** For each budget line with `actualCents > 0`, write
-one ledger entry (date = event date, else program-year end, description = line name). Then
-`actual = Σ ledger`, and `actualCents` is deleted. Totals must be **identical before and after** —
-that is the migration test, and it should be a test in `test/harness.mjs`, not a spot-check.
+As built, three details worth carrying forward:
+
+- **The running balance is computed over the whole ledger in date order**, then looked up per
+  row — never over the filtered subset, or filtering to "money out" would show a running total
+  that never existed.
+- **Until an opening figure is set, the headline stat reads "Net movement", not "Bank
+  balance".** A freshly migrated book with expenses and no income would otherwise announce a
+  large negative bank balance that is not true.
+- **The Budget's own Balance is labelled as a projection** wherever a ledger exists, with the
+  real cash position shown next to it. The gap between them is information, not an error.
+
+**Phase 1 — derive actual from the ledger. ✅ BUILT.** Every budget line with
+`actualCents > 0` was migrated to one ledger entry (date = event date, else today clamped into
+the program year; description = line name), and `actualCents` was deleted — its *absence* is
+the marker that migration has run, so re-loading never migrates twice. `actual = Σ ledger`.
+
+The migrated amount is the line's **total, not its rate**: `actualCents` on a per-scout line
+was multiplied by the roster on every read, so the entry records rate × roster-as-it-stood.
+Totals are identical before and after, asserted in `test/harness.mjs`
+(*"Phase 1 migration: actual totals are identical before and after"*). From there the figure is
+frozen — a transaction does not change when a scout joins the pack.
+
+Two consequences that had to be handled at the same time: the **year rollover** now clears the
+ledger, opens the new year's book at the closing bank balance, and divides a per-scout line's
+real spend back down by the roster before seeding next year's estimate; and the **append-only
+divergence merge** unions `state.ledger`, so two leaders posting receipts from two devices
+cannot lose each other's transactions.
 
 **Phase 2 — split events out.** Create `state.events[]` from `meetings[]` + the calendar half of
 `budget.activities[]`. Repoint the seven calendar readers. Budget lines keep `eventId`. Delete the
@@ -722,6 +753,20 @@ and are worth doing even if the rest waits.
    four are recorded on the charge or in the ledger, never deleted, and reported separately:
    a donation leaves the pack whole, a waiver or forgiveness does not.
 
+**Settled (owner, 2026-07-26, during the Phase 0/1 build):**
+
+12. **Opening balance and history — both, through one mechanism.** `state.book` holds an
+    opening figure and the date it was true. An entry dated **on or after** that date moves the
+    bank balance; an entry dated **before** it does not, because the opening figure already
+    embodies it. That one rule gives both ways of starting:
+    *opening balance* — type today's real bank balance and record forward, and the first
+    reconciliation is meaningful immediately; *backfill* — set the date to the start of the
+    program year with the balance you had then and enter the season.
+    They also mix: a pack can start from today and later backfill September's receipts, which
+    will count toward those lines' actual cost **without** double-counting the cash. A
+    pre-opening entry is reported on screen rather than hidden, so nobody has to guess why it
+    isn't in the balance.
+
 **Still open:**
 
 9. **Scout Account ceiling.** Should the app warn when total tier-waived value gets large relative
@@ -730,5 +775,3 @@ and are worth doing even if the rest waits.
 10. **Categories.** Adopt 510-278's list verbatim, or a shorter pack-specific one?
 11. **Who may forgive?** Treasurer alone, or Committee Chair too? The app has jobs now, so this
     can be a real distinction rather than "any editor".
-12. **Opening balance and history.** Does the ledger start at the current bank balance on a chosen
-    date, or do we backfill this season's transactions to make the first reconciliation meaningful?

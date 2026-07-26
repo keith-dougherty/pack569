@@ -369,6 +369,22 @@
   .erow input.money-in { width: 92px; min-height: 36px; }
   .erow .perscout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
   .erow .perscout input { min-height: auto; width: auto; }
+  /* Money · Ledger (Phase 0) — same wrapping-row idiom as .erow, with a left rule that
+     tells money in from money out at a glance without relying on colour alone. */
+  .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .lrow:last-of-type { border-bottom: none; }
+  .lrow.entry { border-left: 3px solid var(--bad); padding-left: 8px; }
+  .lrow.entry.in { border-left-color: var(--good); }
+  .lrow .lname { flex: 1 1 180px; min-height: 36px; min-width: 0; }
+  .lrow .lref { flex: 0 1 140px; min-height: 36px; min-width: 0; }
+  .lrow select { min-height: 36px; max-width: 100%; }
+  .lrow input.money-in { width: 96px; min-height: 36px; }
+  .lrow input[type="date"] { min-height: 36px; }
+  .lrow .lbal { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  .lrow .lmore { flex: 0 0 auto; }
+  .lrow .perscout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
+  .lrow .perscout input { min-height: auto; width: auto; }
+  .ldetail { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0 2px; }
   .tier-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
   .tier-row:first-of-type { border-top: 1px solid var(--line); }
   .tier-row .tname { flex: 1 1 130px; min-height: 36px; min-width: 0; }
@@ -1188,6 +1204,50 @@
   function freshBudget() {
     return { programYear: defaultProgramYear(), startingBalance: 0, activities: [], expenses: [] };
   }
+  // The program year runs Sept 1 → Aug 31, exactly as slotYear/PROGRAM_MONTHS assume.
+  function programYearStartISO(py) { return py + '-09-01'; }
+  function programYearEndISO(py) { return (py + 1) + '-08-31'; }
+  // ---------------------------------------------------------------------------
+  // MONEY REDESIGN, Phase 0 — the ledger (DESIGN-money.md §3.3).
+  //
+  // Until now the pack's "balance" was a MODEL OUTPUT: computeBudget derived it from the
+  // starting figure plus commission plus retained cash plus collected fees plus other
+  // fundraisers, minus estimate × roster. Every term came from another subsystem, so
+  // nothing in the app could be checked against a bank statement — which is the one thing
+  // a treasurer is actually accountable for.
+  //
+  // state.ledger is what actually MOVED. It is the record that makes the pack reconcilable.
+  // ---------------------------------------------------------------------------
+  var LEDGER_METHODS = ['check', 'cash', 'card', 'transfer'];
+  // Where money came from, for income. Two $80 entries that both settle Ben's dues are very
+  // different events if one came from Ben's family and the other from the chartered
+  // organisation — and the pack should be able to see and thank the second.
+  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'other'];
+  var LEDGER_SOURCE_LABELS = {
+    family: 'Family payment', donation: 'Donation', fundraiser: 'Fundraiser',
+    commission: 'Popcorn commission', carryover: 'Carryover', other: 'Other'
+  };
+  // The book — where the ledger's running balance starts. Decision 12 in DESIGN-money.md
+  // asked whether the ledger should open at the current bank balance or backfill the
+  // season; the answer is that BOTH are the same mechanism:
+  //   * opening balance — type today's real bank balance and the date it was true, then
+  //     record forward from there. The first reconciliation is meaningful immediately.
+  //   * backfill — set the date to the start of the program year with the balance you had
+  //     then, and enter the season's transactions.
+  // An entry dated BEFORE openingDate still counts toward its budget line's actual, so
+  // budget-vs-actual can be completed after the fact — but it never moves the bank
+  // balance, because the opening figure already embodies it. Getting that wrong would
+  // double-count every backfilled receipt. An empty openingDate means no opening figure is
+  // set at all, and then every entry counts.
+  function freshBook() {
+    return {
+      openingCents: 0, openingDate: '',
+      // The statement being reconciled right now — kept so a half-finished reconciliation
+      // survives a reload, and cleared when it's locked in.
+      statementDate: '', statementCents: 0,
+      reconciledThrough: ''
+    };
+  }
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
   // Trail's End lineup (names + containers/case only) is offered as an opt-in template
   // via the Inventory tab's empty state (TE_LINEUP below). Pack records that already carry an
@@ -1210,6 +1270,7 @@
       version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
+      ledger: [], book: freshBook(),   // Phase 0 — what actually moved, and where it starts
       rsvps: {}, attendance: {},
       collected: {}, advancement: {},
       fundraisers: [],
@@ -1355,7 +1416,8 @@
     if (!Array.isArray(d.budget.activities)) d.budget.activities = [];
     if (!Array.isArray(d.budget.expenses)) d.budget.expenses = [];
     // Wave 17 — per-scout activities (camp fees) and family-paid fees. Booleans only;
-    // amounts still live in estCents/actualCents. familyPays is only meaningful alongside
+    // amounts still live in estCents (actualCents was migrated away in Phase 1 — actual
+    // is now Σ ledger). familyPays is only meaningful alongside
     // perScout (computeBudget gates on both).
     // Wave 20 — activities carry event detail: a canonical 'HH:MM' start/end (same shape
     // as meetings), a location, free-text notes, and the source calendar's UID so a
@@ -1375,6 +1437,81 @@
       if (!e || typeof e !== 'object') return;
       e.familyPays = e.familyPays === true;
     });
+    // Phase 0 — the ledger. Absent on every pre-Phase-0 pack record → []. Coerced in place
+    // and never destructive: only an entry that isn't an object at all is dropped, because
+    // a ledger you can silently lose rows from is not a book.
+    if (!Array.isArray(d.ledger)) d.ledger = [];
+    d.ledger = d.ledger.filter(function (e) { return e && typeof e === 'object' && !Array.isArray(e); });
+    d.ledger.forEach(function (e) {
+      if (typeof e.id !== 'string' || !e.id) e.id = uid();
+      e.date = typeof e.date === 'string' ? e.date : '';
+      e.description = typeof e.description === 'string' ? e.description : '';
+      // Always positive; `direction` carries the sign. A stored negative would make the
+      // same movement expressible two ways, and then no total can be trusted.
+      e.amountCents = (typeof e.amountCents === 'number' && isFinite(e.amountCents)) ? Math.abs(Math.round(e.amountCents)) : 0;
+      e.direction = e.direction === 'in' ? 'in' : 'out';
+      e.lineId = typeof e.lineId === 'string' ? e.lineId : '';
+      e.method = LEDGER_METHODS.indexOf(e.method) === -1 ? '' : e.method;
+      e.ref = typeof e.ref === 'string' ? e.ref : '';
+      e.source = LEDGER_SOURCES.indexOf(e.source) === -1 ? '' : e.source;
+      e.donor = typeof e.donor === 'string' ? e.donor : '';
+      // Reserved for Phase 3 (charges + family accounts): normalized so it survives every
+      // round-trip now, which is what lets that phase be purely additive later.
+      e.scoutId = typeof e.scoutId === 'string' ? e.scoutId : '';
+      e.reconciled = e.reconciled === true;
+    });
+    if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
+    // The opening figure is the one money field that may legitimately be negative — a pack
+    // can start a season overdrawn, and the ledger has to be able to say so.
+    if (typeof d.book.openingCents !== 'number' || !isFinite(d.book.openingCents)) d.book.openingCents = 0;
+    else d.book.openingCents = Math.round(d.book.openingCents);
+    if (typeof d.book.openingDate !== 'string') d.book.openingDate = '';
+    if (typeof d.book.statementDate !== 'string') d.book.statementDate = '';
+    if (typeof d.book.statementCents !== 'number' || !isFinite(d.book.statementCents)) d.book.statementCents = 0;
+    else d.book.statementCents = Math.round(d.book.statementCents);
+    if (typeof d.book.reconciledThrough !== 'string') d.book.reconciledThrough = '';
+    // -----------------------------------------------------------------------
+    // MONEY REDESIGN, Phase 1 — actual cost is now Σ ledger (DESIGN-money.md §5).
+    //
+    // The old actualCents field is migrated into one real transaction per line and then
+    // DELETED. The field's absence is the marker that this has run, so re-loading an
+    // already-migrated pack record is a no-op and no entry is ever written twice.
+    //
+    // Two things this has to get right:
+    //   * The migrated amount is the line's TOTAL, not its rate. actualCents on a per-scout
+    //     line was multiplied by the roster every time it was read — "$42 actual × 10
+    //     scouts even if 6 attended" is precisely the modelling this redesign undoes — so
+    //     the entry records rate × roster-as-it-stands-now. Totals are identical the
+    //     instant before and after migration; test/harness.mjs asserts exactly that.
+    //   * From here the figure is FROZEN. A transaction does not change when a scout joins
+    //     the pack, which is the whole point of recording one instead of deriving it.
+    // -----------------------------------------------------------------------
+    var migScouts = d.scouts.filter(function (s) { return s && !s.archived; }).length;
+    // Undated lines are stamped with today when we're still inside the program year, and
+    // with the year's last day when it has already ended — either way the entry lands
+    // inside the year it belongs to.
+    var migEnd = programYearEndISO(d.budget.programYear);
+    var migToday = todayISO();
+    var migDate = migToday < migEnd ? migToday : migEnd;
+    function migrateLineActual(line, fallbackName) {
+      if (typeof line.id !== 'string' || !line.id) line.id = uid();
+      if (typeof line.actualCents !== 'number' || !isFinite(line.actualCents)) { delete line.actualCents; return; }
+      var cents = Math.round(line.actualCents);
+      delete line.actualCents;
+      if (!cents) return;
+      var total = cents * (line.perScout ? migScouts : 1);
+      if (!total) return;
+      d.ledger.push({
+        id: uid(), date: line.date || migDate,
+        description: line.name || fallbackName,
+        amountCents: Math.abs(total), direction: total < 0 ? 'in' : 'out',
+        lineId: line.id, method: '', ref: '', source: '', donor: '', scoutId: '',
+        // Migrated money has never been held next to a statement, so it starts unticked.
+        reconciled: false
+      });
+    }
+    d.budget.activities.forEach(function (a) { if (a && typeof a === 'object') migrateLineActual(a, 'Activity'); });
+    d.budget.expenses.forEach(function (e) { if (e && typeof e === 'object') migrateLineActual(e, 'Expense'); });
     // Wave 2: RSVPs — { 'sf:'|'mtg:'|'act:'+id: { scoutId: { s:'yes'|'no'|'maybe', adults:int } } }
     if (!d.rsvps || typeof d.rsvps !== 'object' || Array.isArray(d.rsvps)) d.rsvps = {};
     Object.keys(d.rsvps).forEach(function (k) {
@@ -1669,6 +1806,13 @@
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
     repeatOffer: null,  // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
     agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
+    // Phase 0 — Money · Ledger. All transient, like the rest of `ui`.
+    ledgerView: 'entries',   // 'entries' | 'reconcile'
+    ledgerOpen: {},          // { entryId: true } expanded entry detail (method/ref/source/donor)
+    ledgerFilter: { dir: '', lineId: '', text: '' },
+    // The new-entry draft. Held here rather than in the DOM so a re-render (which this app
+    // does on every commit) can't wipe half-typed input.
+    ledgerDraft: null,
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
     parentTab: 'schedule',    // 'schedule' | 'standings'
     parentEarlierOpen: false  // "Earlier this year" disclosure on the parent Schedule tab
@@ -1936,17 +2080,22 @@
     var scouts = activeScouts().length;
     var actPlanned = 0, actActual = 0;
     // Wave 17 — per-scout activities (camp fees) multiply by the active roster, exactly
-    // like per-scout expenses always have.
+    // like per-scout expenses always have. That is still true of the PLAN, which is a
+    // deliberate assumption about a roster.
+    //
+    // Phase 1 — but it is NOT true of the actual, which no longer multiplies by anything.
+    // A ledger entry is a total: what the pack really paid, on a date, to somebody. The
+    // roster changing afterwards cannot alter it, and that is the point.
     b.activities.forEach(function (a) {
       var aMult = a.perScout ? scouts : 1;
       actPlanned += (a.estCents || 0) * aMult;
-      actActual += (a.actualCents || 0) * aMult;
+      actActual += lineActualCents(state.ledger, a.id);
     });
     var expPlanned = 0, expActual = 0;
     b.expenses.forEach(function (e) {
       var mult = e.perScout ? scouts : 1;
       expPlanned += (e.estCents || 0) * mult;
-      expActual += (e.actualCents || 0) * mult;
+      expActual += lineActualCents(state.ledger, e.id);
     });
     var planned = actPlanned + expPlanned;
     var actual = actActual + expActual;
@@ -2020,6 +2169,97 @@
   }
   function activitiesInSlot(slot) {
     return state.budget.activities.filter(function (a) { return a.slot === slot; });
+  }
+
+  /* ---------------- Ledger (Phase 0) ---------------- */
+  // Every function in this block is PURE — it takes the ledger and the book rather than
+  // reading `state` — so the Node harness can exercise the money math directly. The thin
+  // `state`-reading wrappers are at the end of the block.
+
+  // Date order, with insertion order as the tiebreak so two entries on the same day keep
+  // the sequence the treasurer typed them in (which is the only order they have).
+  function ledgerSort(ledger) {
+    return ledger.map(function (e, i) { return { e: e, i: i }; })
+      .sort(function (a, b) {
+        var d = String(a.e.date || '').localeCompare(String(b.e.date || ''));
+        return d || (a.i - b.i);
+      })
+      .map(function (x) { return x.e; });
+  }
+  // Money in is positive, money out is negative — the sign lives here and nowhere else.
+  function entrySignedCents(e) { return e.direction === 'in' ? (e.amountCents || 0) : -(e.amountCents || 0); }
+  // Does this entry move the BANK balance? Anything on or after the opening date does. An
+  // entry before it is history that the opening figure already contains, so counting it
+  // again would double it (see freshBook).
+  function entryAfterOpening(e, book) {
+    return !book.openingDate || String(e.date || '') >= book.openingDate;
+  }
+  // The reconcilable cash position: opening figure ± everything that has moved since.
+  // This is the number a treasurer can hold next to a bank statement.
+  function ledgerBalance(ledger, book) {
+    return ledger.reduce(function (n, e) {
+      return entryAfterOpening(e, book) ? n + entrySignedCents(e) : n;
+    }, book.openingCents || 0);
+  }
+  // What a budget line ACTUALLY cost: money out against it, less anything refunded back in.
+  // Note this deliberately ignores the opening date — a backfilled receipt is still what
+  // the line cost, even though the opening balance already accounts for the cash leaving.
+  function lineActualCents(ledger, lineId) {
+    if (!lineId) return 0;
+    return ledger.reduce(function (n, e) {
+      return e.lineId === lineId ? n - entrySignedCents(e) : n;
+    }, 0);
+  }
+  function ledgerTotals(ledger, book) {
+    var inC = 0, outC = 0, pre = 0, unrec = 0, uncat = 0;
+    ledger.forEach(function (e) {
+      if (!entryAfterOpening(e, book)) { pre++; return; }
+      if (e.direction === 'in') inC += (e.amountCents || 0); else outC += (e.amountCents || 0);
+      if (!e.reconciled) unrec++;
+      if (!e.lineId) uncat++;
+    });
+    return {
+      count: ledger.length, inCents: inC, outCents: outC,
+      balance: (book.openingCents || 0) + inC - outC,
+      preOpening: pre, unreconciled: unrec, uncategorised: uncat
+    };
+  }
+  // Reconciling. The cleared balance is the opening figure plus every TICKED entry; when it
+  // equals the statement's closing balance the book agrees with the bank. When it doesn't,
+  // the difference is exactly what's missing — which is the thing this app could not tell a
+  // treasurer at all before.
+  function reconcileTotals(ledger, book) {
+    var cleared = book.openingCents || 0, ticked = 0, open = 0;
+    ledger.forEach(function (e) {
+      if (!entryAfterOpening(e, book)) return;
+      if (e.reconciled) { cleared += entrySignedCents(e); ticked++; } else open++;
+    });
+    return {
+      cleared: cleared, ticked: ticked, open: open,
+      statement: book.statementCents || 0,
+      difference: (book.statementCents || 0) - cleared
+    };
+  }
+
+  // ---- state-reading wrappers ----
+  function bookBalance() { return ledgerBalance(state.ledger, state.book); }
+  function lineActual(lineId) { return lineActualCents(state.ledger, lineId); }
+  function lineEntryCount(lineId) {
+    if (!lineId) return 0;
+    return state.ledger.filter(function (e) { return e.lineId === lineId; }).length;
+  }
+  // Budget lines still live in two arrays — activities (dated, per month) and expenses
+  // (fixed) — until Phase 2 merges them into budget.lines[]. A ledger entry stores whichever
+  // id it posts against, so every lookup goes through here and Phase 2 changes one function.
+  function getBudgetLine(id) {
+    if (!id) return null;
+    return state.budget.activities.find(function (a) { return a.id === id; }) ||
+      state.budget.expenses.find(function (e) { return e.id === id; }) || null;
+  }
+  function budgetLineName(id) {
+    var ln = getBudgetLine(id);
+    if (!ln) return '';
+    return ln.name || (state.budget.expenses.indexOf(ln) === -1 ? 'Untitled activity' : 'Untitled expense');
   }
 
   /* ---------------- Two-tap confirm ---------------- */
@@ -2571,7 +2811,7 @@
     var added = 0;
     SEED_ACTIVITIES.forEach(function (t) {
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot
-      state.budget.activities.push({ id: uid(), slot: t.slot, name: t.name, date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push({ id: uid(), slot: t.slot, name: t.name, date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, perScout: false, familyPays: false });
       added += 1;
     });
     if (added) {
@@ -3848,6 +4088,10 @@
       });
     }
     unionById(state.entries, remote.entries);
+    // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
+    // for a stronger reason: two leaders posting receipts from two devices must not be able
+    // to lose one another's transactions. A book that silently drops a row is not a book.
+    unionById(state.ledger, remote.ledger);
     if (state.inventory && remote.inventory) unionById(state.inventory.distributions, remote.inventory.distributions);
     var frById = {};
     state.fundraisers.forEach(function (fr) { frById[fr.id] = fr; });
@@ -3901,6 +4145,9 @@
   function isStateEmpty(s) {
     return !(s.scouts && s.scouts.length) && !(s.storefronts && s.storefronts.length) &&
       !(s.entries && s.entries.length) && !(s.meetings && s.meetings.length) &&
+      // Phase 0 — a treasurer may well open the ledger before anyone has typed a roster.
+      // Without this, that work reads as "empty" and can be adopted away by a remote copy.
+      !(s.ledger && s.ledger.length) &&
       !(s.leaders && s.leaders.length);
   }
   // Compare pack records ignoring the sync counter itself.
@@ -4069,8 +4316,11 @@
     ] },
     // Wave 21 — "Other fundraisers" lives here, not under Popcorn: it is defined as the
     // money that ISN'T popcorn, and its only systemic effect is on the budget's funds-in.
+    // Phase 0 — Ledger sits immediately after Budget, because that is the order the work
+    // happens in: plan it, then record what actually moved against the plan.
     { id: 'money', label: 'Money', sections: [
       { id: 'budget', label: 'Budget' },
+      { id: 'ledger', label: 'Ledger' },
       { id: 'dues', label: 'Dues & fees' },
       { id: 'fundraisers', label: 'Fundraisers' }
     ] },
@@ -4279,6 +4529,7 @@
     else if (sec === 'roster') v.innerHTML = renderScouts();
     else if (sec === 'advancement') v.innerHTML = renderAdvancement();
     else if (sec === 'budget') v.innerHTML = renderBudget();
+    else if (sec === 'ledger') v.innerHTML = renderLedger();
     else if (sec === 'dues') v.innerHTML = renderDues();
     else if (sec === 'fundraisers') v.innerHTML = renderFundraisers();
     else if (sec === 'rewards') v.innerHTML = renderRewardTiers();
@@ -4760,7 +5011,10 @@
       } else {
         h += line('Estimated', '<span class="muted">no cost entered</span>');
       }
-      if (a.actualCents) h += line('Actual', '<span class="money">' + fmt(a.actualCents) + '</span>' + (a.perScout ? ' per scout' : ''));
+      // Phase 1 — actual is what the ledger says was paid against this line, in total.
+      // It is deliberately NOT labelled "per scout": a transaction is never a rate.
+      var aActual = lineActual(a.id);
+      if (aActual) h += line('Actual', '<span class="money">' + fmt(aActual) + '</span> <span class="muted">recorded in the ledger</span>');
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary('act:' + a.id))));
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this activity</button>' +
@@ -5547,6 +5801,16 @@
       'because the Kernel sets the goals and the Treasurer needs the rate.</p>' +
       '</div>';
   }
+  // Phase 1 — the "Actual" box on a budget row is gone. Actual is no longer something you
+  // type next to the plan; it is what the ledger says was paid. This button reports that
+  // figure and opens Money · Ledger with a transaction started against this line.
+  function actualBtn(lineId) {
+    var n = lineEntryCount(lineId);
+    var v = lineActual(lineId);
+    return '<button type="button" class="btn small ghost lpost" data-act="ledger-post" data-line="' + esc(lineId) + '" ' +
+      'title="' + (n ? 'Recorded in the ledger — tap to add another' : 'Record what this actually cost') + '">' +
+      (n ? '<span class="money">' + fmt(v) + '</span> actual · ' + n : 'Record actual') + '</button>';
+  }
   function renderBudget() {
     var b = state.budget;
     var bud = computeBudget();
@@ -5558,6 +5822,7 @@
       '<div class="row">' +
       '<div class="stat"><span class="v money">' + fmt(bud.planned) + '</span><span class="l">Planned</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(bud.actual) + '</span><span class="l">Actual spent</span></div>' +
+      // Phase 1 — "Actual spent" is now the sum of the ledger, not estimate × roster.
       '<div class="stat"><span class="v money">' + fmt(bud.fundsIn) + '</span><span class="l">Funds in</span></div>' +
       '<div class="stat"><span class="v money" style="color:' + balColor + '">' + fmt(bud.balance) + '</span><span class="l">Balance</span></div>' +
       '</div>' +
@@ -5594,7 +5859,28 @@
       (bud.feeIncomeCollected > 0 ? ' + family-paid fees collected (' + fmt(bud.feeIncomeCollected) + ')' : '') +
       (bud.otherFundraiserIn > 0 ? ' + other fundraisers (' + fmt(bud.otherFundraiserIn) + ')' : '') +
       '. <strong>Balance</strong> = funds in − actual spent.' +
-      (bud.viaTE ? ' Cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of cash donations, so they’re added here in full.') + '</p>';
+      (bud.viaTE ? ' Cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of cash donations, so they’re added here in full.') + '</p>' +
+      // Phase 0/1 — this Balance is still a MODEL figure: every term feeding it is derived
+      // from another part of the app. The ledger's balance is the real cash position. When
+      // the two disagree that gap is information, not an error — so say so, rather than
+      // quietly showing a treasurer two different numbers in the same workspace.
+      (function () {
+        if (!state.ledger.length) return '';
+        var open = '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="ledger">Open the ledger</button>';
+        // Without an opening figure the ledger knows what has MOVED but not where the pack
+        // started, so it cannot state a cash position — and calling the difference a "bank
+        // balance" would be a worse lie than the projection it is meant to correct.
+        if (!state.book.openingDate) {
+          return '<p class="small" style="margin:8px 0 0"><span class="pill navy">Ledger</span> The figure above is a projection built from the plan. ' +
+            'Set an opening bank balance in the ledger and it can report the real cash position instead. ' + open + '</p>';
+        }
+        var bank = bookBalance();
+        var gap = bud.balance - bank;
+        return '<p class="small" style="margin:8px 0 0"><span class="pill navy">Ledger</span> The figure above is a projection built from the plan. ' +
+          'The <strong>bank balance</strong> — opening figure plus what actually moved — is <strong class="money">' + fmt(bank) + '</strong>' +
+          (gap ? ', ' + fmt(Math.abs(gap)) + ' ' + (gap > 0 ? 'below' : 'above') + ' this projection' : ', the same figure') +
+          '. ' + open + '</p>';
+      })();
 
     // Funding the plan → two goals
     if (bud.salesGoal != null) {
@@ -5617,7 +5903,8 @@
 
     // Monthly activity plan
     h += '<div class="card"><h2 class="section display">Activity plan by month</h2>' +
-      '<p class="small muted" style="margin:0 0 4px">Plan each month’s activities and estimated cost, then fill in the actual cost as you go. ' +
+      '<p class="small muted" style="margin:0 0 4px">Plan each month’s activities and estimated cost. <em>Actual</em> is not typed here any more — ' +
+      'it is whatever the ledger says was paid against the line, so tap it to record a transaction. ' +
       'Tick <em>per scout</em> for a cost paid for each scout (camp fees) — it multiplies by the ' + bud.scouts + ' active scouts, ' +
       'and <em>families pay</em> adds a collect grid and counts collected fees as funds-in, like dues.</p>';
     if (state.budget.activities.some(function (a) { return a.date; })) {
@@ -5634,7 +5921,7 @@
       acts.forEach(function (a) {
         var aMult = a.perScout ? bud.scouts : 1;
         mp += (a.estCents || 0) * aMult;
-        ma += (a.actualCents || 0) * aMult;
+        ma += lineActual(a.id); // Phase 1 — a total from the ledger, never a rate × roster
       });
       h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
         '<strong>' + esc(slotLabel(slot)) + '</strong>' +
@@ -5646,7 +5933,7 @@
           '<input class="aname" data-ch="act-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
           '<input type="date" class="adate" data-ch="act-date" data-id="' + a.id + '" value="' + esc(a.date || '') + '" aria-label="Date (optional)">' +
           '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + a.id + '" value="' + dollars(a.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
-          '<input class="money-in" inputmode="decimal" data-ch="act-actual" data-id="' + a.id + '" value="' + dollars(a.actualCents) + '" placeholder="Actual" aria-label="Actual cost">' +
+          actualBtn(a.id) +
           '<label class="perscout"><input type="checkbox" data-ch="act-perscout" data-id="' + a.id + '"' + (a.perScout ? ' checked' : '') + '> per scout</label>' +
           (a.perScout ? '<label class="perscout"><input type="checkbox" data-ch="act-familypays" data-id="' + a.id + '"' + (a.familyPays ? ' checked' : '') + '> families pay</label>' : '') +
           (a.perScout ? '<span class="small muted money">= ' + fmt((a.estCents || 0) * bud.scouts) + '</span>' : '') +
@@ -5668,7 +5955,7 @@
         h += '<div class="erow">' +
           '<input class="ename" data-ch="exp-name" data-id="' + e.id + '" value="' + esc(e.name) + '" placeholder="Expense name">' +
           '<input class="money-in" inputmode="decimal" data-ch="exp-est" data-id="' + e.id + '" value="' + dollars(e.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
-          '<input class="money-in" inputmode="decimal" data-ch="exp-actual" data-id="' + e.id + '" value="' + dollars(e.actualCents) + '" placeholder="Actual" aria-label="Actual cost">' +
+          actualBtn(e.id) +
           '<label class="perscout"><input type="checkbox" data-ch="exp-perscout" data-id="' + e.id + '"' + (e.perScout ? ' checked' : '') + '> per scout</label>' +
           (e.perScout ? '<label class="perscout"><input type="checkbox" data-ch="exp-familypays" data-id="' + e.id + '"' + (e.familyPays ? ' checked' : '') + '> families pay</label>' : '') +
           (e.perScout ? '<span class="small muted money">= ' + fmt(line) + '</span>' : '') +
@@ -5679,6 +5966,285 @@
     }
     h += '<button type="button" class="btn small ghost" data-act="add-expense" style="margin-top:8px">+ Add expense</button></div>';
     return h;
+  }
+
+  /* ----- Money · Ledger (Phase 0) ----- */
+  var LEDGER_FILTERS = [
+    ['', 'All'], ['in', 'Money in'], ['out', 'Money out'],
+    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line']
+  ];
+  function ledgerDraftDefault() {
+    return {
+      date: todayISO(), description: '', amount: '', direction: 'out',
+      lineId: '', method: '', ref: '', source: '', donor: ''
+    };
+  }
+  function ledgerDraft() {
+    if (!ui.ledgerDraft) ui.ledgerDraft = ledgerDraftDefault();
+    return ui.ledgerDraft;
+  }
+  // Running balance is computed over the WHOLE sorted ledger and then looked up per row —
+  // never over the filtered subset, or filtering to "money out" would show a running total
+  // that never existed. Pre-opening entries map to null: they have no place in the running
+  // balance at all, because the opening figure already contains them.
+  function runningBalances(ledger, book) {
+    var run = book.openingCents || 0, map = {};
+    ledgerSort(ledger).forEach(function (e) {
+      if (!entryAfterOpening(e, book)) { map[e.id] = null; return; }
+      run += entrySignedCents(e);
+      map[e.id] = run;
+    });
+    return map;
+  }
+  function ledgerMatches(e, filter) {
+    var f = filter || {};
+    if (f.dir === 'in' && e.direction !== 'in') return false;
+    if (f.dir === 'out' && e.direction !== 'out') return false;
+    if (f.dir === 'unreconciled' && e.reconciled) return false;
+    if (f.dir === 'uncategorised' && e.lineId) return false;
+    if (f.lineId && e.lineId !== f.lineId) return false;
+    var q = String(f.text || '').trim().toLowerCase();
+    if (q) {
+      var hay = (String(e.description || '') + ' ' + String(e.ref || '') + ' ' + String(e.donor || '')).toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  }
+  // `blank` is the label for the empty option, which means two different things depending
+  // on where the select is: on an ENTRY it means "this transaction belongs to no line", on a
+  // FILTER it means "don't filter by line at all". Same markup, opposite sense — so the
+  // caller says which.
+  function lineSelectOptions(sel, blank) {
+    var h = '<option value=""' + (sel ? '' : ' selected') + '>' + esc(blank || '— no budget line —') + '</option>';
+    function group(label, rows, fallback) {
+      if (!rows.length) return '';
+      var g = '<optgroup label="' + esc(label) + '">';
+      rows.forEach(function (r) {
+        g += '<option value="' + esc(r.id) + '"' + (sel === r.id ? ' selected' : '') + '>' +
+          esc(r.name || fallback) + (r.date ? ' · ' + esc(fmtDate(r.date)) : '') + '</option>';
+      });
+      return g + '</optgroup>';
+    }
+    h += group('Activities', state.budget.activities, 'Untitled activity');
+    h += group('Other pack expenses', state.budget.expenses, 'Untitled expense');
+    return h;
+  }
+  function methodSelectOptions(sel) {
+    return '<option value="">Method…</option>' + LEDGER_METHODS.map(function (m) {
+      return '<option value="' + m + '"' + (sel === m ? ' selected' : '') + '>' + m + '</option>';
+    }).join('');
+  }
+  function sourceSelectOptions(sel) {
+    return '<option value="">Source…</option>' + LEDGER_SOURCES.map(function (s) {
+      return '<option value="' + s + '"' + (sel === s ? ' selected' : '') + '>' + esc(LEDGER_SOURCE_LABELS[s]) + '</option>';
+    }).join('');
+  }
+  // The book card — where the running balance starts, and the one place the two ways of
+  // beginning a ledger are explained (DESIGN-money.md decision 12).
+  function bookCard() {
+    var bk = state.book;
+    var tot = ledgerTotals(state.ledger, bk);
+    var h = '<div class="card"><h2 class="section display">Opening balance</h2>';
+    if (!bk.openingDate) {
+      h += '<p class="small muted" style="margin:0 0 8px">No opening figure yet, so the balance below is just money in minus money out. ' +
+        'Set the bank balance and the date it was true, and the ledger runs forward from there.</p>';
+      if (state.budget.startingBalance) {
+        h += '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small" data-act="ledger-use-carryover">' +
+          'Start from the carryover figure (' + fmt(state.budget.startingBalance) + ') on ' +
+          esc(fmtDate(programYearStartISO(state.budget.programYear))) + '</button></div>';
+      }
+    }
+    h += '<div class="row">' +
+      '<label class="fld">Bank balance ($)<input class="money-in" inputmode="decimal" data-ch="book-opening" value="' +
+        dollars(bk.openingCents) + '" placeholder="0.00"></label>' +
+      '<label class="fld">…as it stood on<input type="date" data-ch="book-opening-date" value="' + esc(bk.openingDate) + '"></label>' +
+      '</div>';
+    h += '<p class="small muted" style="margin:8px 0 0">Two ways to start, and they use the same two fields. ' +
+      '<strong>Today’s balance</strong> — type what the bank says right now and record forward from here; the first reconciliation works immediately. ' +
+      '<strong>Backfill</strong> — put in the balance you had at the start of the program year and enter the season’s transactions, ' +
+      'and budget-vs-actual is true for the whole year.</p>';
+    if (tot.preOpening) {
+      h += '<p class="small" style="margin:8px 0 0"><span class="pill navy">Before the opening date</span> ' +
+        tot.preOpening + ' entr' + (tot.preOpening === 1 ? 'y is' : 'ies are') + ' dated before ' + esc(fmtDate(bk.openingDate)) +
+        '. They still count toward their budget line’s actual cost, but they don’t move the bank balance — ' +
+        'the opening figure already includes them.</p>';
+    }
+    if (bk.reconciledThrough) {
+      h += '<p class="small muted" style="margin:8px 0 0">Last reconciled through <strong>' + esc(fmtDate(bk.reconciledThrough)) + '</strong>.</p>';
+    }
+    return h + '</div>';
+  }
+  function renderLedger() {
+    var bk = state.book;
+    var tot = ledgerTotals(state.ledger, bk);
+    var balColor = tot.balance >= 0 ? 'var(--good)' : 'var(--bad)';
+    var h = '<div class="card"><h2 class="section display">Ledger</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
+      'so the balance below can be held next to a bank statement and checked.</p>' +
+      '<div class="row">' +
+      // Until an opening figure is set this is only the NET MOVEMENT — the ledger knows what
+      // has moved but not where the pack started, and a freshly migrated book showing
+      // "bank balance −$3,222" would be alarming and simply untrue.
+      '<div class="stat"><span class="v money" style="color:' + balColor + '">' + fmt(tot.balance) + '</span>' +
+        '<span class="l">' + (bk.openingDate ? 'Bank balance' : 'Net movement') + '</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(tot.inCents) + '</span><span class="l">Money in</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(tot.outCents) + '</span><span class="l">Money out</span></div>' +
+      '<div class="stat"><span class="v">' + tot.unreconciled + '</span><span class="l">Not reconciled</span></div>' +
+      '</div>';
+    if (bk.openingDate) {
+      h += '<p class="small muted" style="margin:8px 0 0">Opening ' + fmt(bk.openingCents) + ' on ' + esc(fmtDate(bk.openingDate)) +
+        ' + money in − money out.</p>';
+    }
+    if (tot.uncategorised) {
+      h += '<p class="small" style="margin:8px 0 0"><span class="pill navy">Uncategorised</span> ' + tot.uncategorised +
+        ' entr' + (tot.uncategorised === 1 ? 'y has' : 'ies have') + ' no budget line, so ' +
+        (tot.uncategorised === 1 ? 'it isn’t' : 'they aren’t') + ' counted in any line’s actual cost.</p>';
+    }
+    h += '<div class="row no-print" style="margin-top:10px">' +
+      '<button type="button" class="btn small' + (ui.ledgerView === 'entries' ? ' primary' : '') + '" data-act="ledger-view" data-view="entries">Entries</button>' +
+      '<button type="button" class="btn small' + (ui.ledgerView === 'reconcile' ? ' primary' : '') + '" data-act="ledger-view" data-view="reconcile">Reconcile</button>' +
+      '</div></div>';
+    h += bookCard();
+    return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
+  }
+  function renderLedgerEntries() {
+    var dr = ledgerDraft();
+    var h = '<div class="card"><h2 class="section display">Record a transaction</h2>' +
+      '<div class="lrow">' +
+      '<input type="date" data-ch="ledn-date" value="' + esc(dr.date) + '" aria-label="Date">' +
+      '<select data-ch="ledn-dir" aria-label="In or out">' +
+        '<option value="out"' + (dr.direction === 'out' ? ' selected' : '') + '>Money out</option>' +
+        '<option value="in"' + (dr.direction === 'in' ? ' selected' : '') + '>Money in</option>' +
+      '</select>' +
+      '<input class="lname" data-ch="ledn-desc" value="' + esc(dr.description) + '" placeholder="What was it? (e.g. Camp Rainey — fall campout)">' +
+      '<input class="money-in" inputmode="decimal" data-ch="ledn-amount" value="' + esc(dr.amount) + '" placeholder="Amount" aria-label="Amount">' +
+      '<select data-ch="ledn-line" aria-label="Budget line">' + lineSelectOptions(dr.lineId) + '</select>' +
+      '<select data-ch="ledn-method" aria-label="Method">' + methodSelectOptions(dr.method) + '</select>' +
+      '<input class="lref" data-ch="ledn-ref" value="' + esc(dr.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
+      (dr.direction === 'in'
+        ? '<select data-ch="ledn-source" aria-label="Source">' + sourceSelectOptions(dr.source) + '</select>' +
+          (dr.source === 'donation'
+            ? '<input class="lname" data-ch="ledn-donor" value="' + esc(dr.donor) + '" placeholder="Who gave it" aria-label="Donor">'
+            : '')
+        : '') +
+      '<button type="button" class="btn small primary" data-act="ledger-add">Add entry</button>' +
+      '</div>' +
+      '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
+      'Leave it blank if it doesn’t belong to one — you can set it later.</p></div>';
+
+    // ---- filters + list ----
+    var f = ui.ledgerFilter;
+    h += '<div class="card"><h2 class="section display">Entries</h2>';
+    if (!state.ledger.length) {
+      h += '<p class="empty">Nothing recorded yet. Add the first transaction above — or set an opening balance and start from today.</p></div>';
+      return h;
+    }
+    h += '<div class="row no-print" style="margin:0 0 8px">' +
+      LEDGER_FILTERS.map(function (ft) {
+        return '<button type="button" class="snav" data-act="ledger-filter" data-f="' + ft[0] + '"' +
+          ((f.dir || '') === ft[0] ? ' aria-current="true"' : '') + '>' + esc(ft[1]) + '</button>';
+      }).join('') +
+      '</div>' +
+      '<div class="row" style="margin:0 0 8px">' +
+      '<label class="fld">Search<input data-ch="ledger-search" value="' + esc(f.text || '') + '" placeholder="Description, check no., donor"></label>' +
+      '<label class="fld">Budget line<select data-ch="ledger-line-filter">' + lineSelectOptions(f.lineId, '— any budget line —') + '</select></label>' +
+      '</div>';
+    var run = runningBalances(state.ledger, state.book);
+    var rows = ledgerSort(state.ledger).filter(function (e) { return ledgerMatches(e, f); });
+    // Newest first: a treasurer is almost always looking at what just happened. The running
+    // balance still reads correctly because it was computed in date order above.
+    rows.reverse();
+    if (!rows.length) {
+      h += '<p class="empty">No entries match that filter.</p></div>';
+      return h;
+    }
+    h += '<p class="small muted" style="margin:0 0 6px">' + rows.length + ' of ' + state.ledger.length + ' entries.</p>';
+    rows.forEach(function (e) {
+      var open = !!ui.ledgerOpen[e.id];
+      var bal = run[e.id];
+      var pre = bal === null;
+      h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
+        '<input type="date" data-ch="led-date" data-id="' + e.id + '" value="' + esc(e.date) + '" aria-label="Date">' +
+        '<select data-ch="led-dir" data-id="' + e.id + '" aria-label="In or out">' +
+          '<option value="out"' + (e.direction === 'out' ? ' selected' : '') + '>Out</option>' +
+          '<option value="in"' + (e.direction === 'in' ? ' selected' : '') + '>In</option>' +
+        '</select>' +
+        '<input class="lname" data-ch="led-desc" data-id="' + e.id + '" value="' + esc(e.description) + '" placeholder="Description">' +
+        '<input class="money-in" inputmode="decimal" data-ch="led-amount" data-id="' + e.id + '" value="' + dollars(e.amountCents) + '" placeholder="0.00" aria-label="Amount">' +
+        '<select data-ch="led-line" data-id="' + e.id + '" aria-label="Budget line">' + lineSelectOptions(e.lineId) + '</select>' +
+        '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
+        '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>' +
+        '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
+          '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
+        tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry') +
+        (open
+          ? '<div class="ldetail">' +
+              '<select data-ch="led-method" data-id="' + e.id + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
+              '<input class="lref" data-ch="led-ref" data-id="' + e.id + '" value="' + esc(e.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
+              (e.direction === 'in'
+                ? '<select data-ch="led-source" data-id="' + e.id + '" aria-label="Source">' + sourceSelectOptions(e.source) + '</select>' +
+                  (e.source === 'donation'
+                    ? '<input class="lname" data-ch="led-donor" data-id="' + e.id + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
+                    : '')
+                : '') +
+            '</div>'
+          : '') +
+        '</div>';
+    });
+    return h + '</div>';
+  }
+  function renderReconcile() {
+    var bk = state.book;
+    var rec = reconcileTotals(state.ledger, bk);
+    var agrees = rec.difference === 0;
+    var h = '<div class="card"><h2 class="section display">Reconcile to the bank</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">Tick every entry that appears on the statement, then type the statement’s closing balance. ' +
+      'The difference should be zero. If it isn’t, something is missing — and that is exactly what you need to know.</p>' +
+      '<div class="row">' +
+      '<label class="fld">Statement closing balance ($)<input class="money-in" inputmode="decimal" data-ch="book-statement" value="' +
+        dollars(bk.statementCents) + '" placeholder="0.00"></label>' +
+      '<label class="fld">Statement date<input type="date" data-ch="book-statement-date" value="' + esc(bk.statementDate) + '"></label>' +
+      '</div>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<div class="stat"><span class="v money">' + fmt(rec.cleared) + '</span><span class="l">Ticked balance</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(rec.statement) + '</span><span class="l">Statement</span></div>' +
+      '<div class="stat"><span class="v money" style="color:' + (agrees ? 'var(--good)' : 'var(--bad)') + '">' +
+        fmt(rec.difference) + '</span><span class="l">Difference</span></div>' +
+      '</div>';
+    if (agrees && rec.ticked) {
+      h += '<p class="small" style="margin:10px 0 0"><span class="pill navy">Agreed</span> The book matches the statement. ' +
+        '<button type="button" class="btn small primary" data-act="ledger-reconcile-lock">Mark reconciled through ' +
+        esc(bk.statementDate ? fmtDate(bk.statementDate) : 'today') + '</button></p>';
+    } else if (rec.difference !== 0 && (rec.statement || rec.ticked)) {
+      h += '<p class="small" style="margin:10px 0 0">Off by <strong class="money">' + fmt(Math.abs(rec.difference)) + '</strong> — ' +
+        (rec.difference > 0
+          ? 'the bank holds more than the ticked entries account for, so an income entry is probably missing.'
+          : 'the ticked entries come to more than the bank holds, so a payment may be recorded that hasn’t cleared, or twice.') + '</p>';
+    }
+    h += '</div>';
+
+    var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk); });
+    h += '<div class="card"><h2 class="section display">Tick against the statement</h2>';
+    if (!pending.length) {
+      h += '<p class="empty">Nothing to reconcile yet.</p></div>';
+      return h;
+    }
+    h += '<div class="row no-print" style="margin:0 0 8px">' +
+      '<button type="button" class="btn small" data-act="ledger-tick-all">Tick all</button>' +
+      '<button type="button" class="btn small" data-act="ledger-untick-all">Clear all ticks</button>' +
+      '<span class="small muted" style="align-self:center">' + rec.ticked + ' ticked · ' + rec.open + ' outstanding</span>' +
+      '</div>';
+    pending.reverse().forEach(function (e) {
+      h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
+        '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> </label>' +
+        '<span class="small muted">' + esc(fmtDate(e.date)) + '</span>' +
+        '<span class="lname small">' + esc(e.description || '(no description)') + '</span>' +
+        (e.ref ? '<span class="small muted">#' + esc(e.ref) + '</span>' : '') +
+        '<span class="money small' + (e.direction === 'in' ? '' : ' muted') + '">' +
+          (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
+        '</div>';
+    });
+    return h + '</div>';
   }
 
   /* ----- Pack tab ----- */
@@ -6095,13 +6661,25 @@
       add('treasurer', 'week', owingScouts.length + ' scout' + (owingScouts.length === 1 ? '' : 's') + ' still owe ' + fmt(owedTotal),
         'Dues and per-scout fees', 'money', 'dues');
     }
-    var unreconciled = state.budget.activities.filter(function (a) {
-      return a.date && a.date < today && (a.estCents || 0) > 0 && !(a.actualCents || 0);
+    // Phase 1 — a past activity that was budgeted for but has nothing posted against it in
+    // the ledger is half a book: the pack knows what it planned and not what it paid.
+    var unposted = state.budget.activities.filter(function (a) {
+      return a.date && a.date < today && (a.estCents || 0) > 0 && !lineEntryCount(a.id);
     });
-    if (unreconciled.length) {
-      add('treasurer', 'week', unreconciled.length + ' past activit' + (unreconciled.length === 1 ? 'y has' : 'ies have') + ' no actual cost',
-        unreconciled.slice(0, 3).map(function (a) { return a.name || 'Untitled'; }).join(', '),
-        'money', 'budget');
+    if (unposted.length) {
+      add('treasurer', 'week', unposted.length + ' past activit' + (unposted.length === 1 ? 'y has' : 'ies have') + ' no spend recorded',
+        unposted.slice(0, 3).map(function (a) { return a.name || 'Untitled'; }).join(', '),
+        'money', 'ledger');
+    }
+    // Phase 0 — reconciling is a real thing now, so the Treasurer's queue can carry it.
+    var ledTot = ledgerTotals(state.ledger, state.book);
+    if (ledTot.unreconciled >= 5) {
+      add('treasurer', 'whenever', ledTot.unreconciled + ' ledger entries not yet reconciled',
+        'Tick them against the bank statement', 'money', 'ledger');
+    }
+    if (ledTot.uncategorised) {
+      add('treasurer', 'whenever', ledTot.uncategorised + ' ledger entr' + (ledTot.uncategorised === 1 ? 'y has' : 'ies have') + ' no budget line',
+        'They don’t count toward any line’s actual cost', 'money', 'ledger');
     }
     var bud = computeBudget();
     if (bud.balance < 0) {
@@ -8515,7 +9093,7 @@
         id: uid(), slot: dateToSlot(evt.date), name: name, date: evt.date,
         time: evt.time || '', endTime: evt.endTime || '',
         location: evt.location || '', note: evt.note || '', sourceUid: evt.uid || '',
-        estCents: 0, actualCents: 0, perScout: false, familyPays: false
+        estCents: 0, perScout: false, familyPays: false
       });
       added++;
     });
@@ -9261,11 +9839,14 @@
       budget: {
         plannedCents: bud.planned, actualCents: bud.actual, startingBalanceCents: bud.startingBalance,
         fundsInCents: bud.fundsIn, balanceCents: bud.balance,
+        // Phase 1 — the archive finally stores REAL actuals (what the ledger says was paid)
+        // instead of estimate × roster. The archived shape is unchanged, so every past
+        // season still reads exactly as it did; only the source of the number is better.
         activities: state.budget.activities.map(function (x) {
-          return { name: x.name || '', slot: x.slot || 0, estCents: x.estCents || 0, actualCents: x.actualCents || 0 };
+          return { name: x.name || '', slot: x.slot || 0, estCents: x.estCents || 0, actualCents: lineActual(x.id) };
         }),
         expenses: state.budget.expenses.map(function (x) {
-          return { name: x.name || '', estCents: x.estCents || 0, actualCents: x.actualCents || 0, perScout: !!x.perScout };
+          return { name: x.name || '', estCents: x.estCents || 0, actualCents: lineActual(x.id), perScout: !!x.perScout };
         })
       },
       events: {
@@ -9313,8 +9894,25 @@
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
   function rolloverYear() {
     var bud = computeBudget(); // BEFORE any mutation — the true ending balance carries over (even a shortfall)
+    // Phase 0/1 — the closing BANK balance, captured before the ledger is cleared. This is
+    // the reconciled cash position, not a projection, and it becomes next year's opening
+    // figure so the new book starts from a number that was checked against a statement.
+    var closingBank = bookBalance();
+    var closingHadLedger = state.ledger.length > 0;
     var b = state.budget;
     var closingYear = b.programYear; // Wave 19(3) — compared against densAdvancedYear below
+    // Phase 1 — next year's estimate seeds from what things ACTUALLY cost, which is what
+    // this rollover always tried to do; it just finally has true numbers to do it with.
+    // Read before programYear moves, because lineActual is keyed on this year's line ids.
+    var seedEst = {};
+    b.activities.concat(b.expenses).forEach(function (x) {
+      var act = lineActual(x.id);
+      // A per-scout line is planned as a RATE, but the ledger holds totals — so divide the
+      // real spend back down by the roster it was spread across. Without this, a $145 camp
+      // fee for 10 scouts would seed next year's plan at $1,450 per scout.
+      if (x.perScout) act = bud.scouts ? Math.round(act / bud.scouts) : 0;
+      seedEst[x.id] = act > 0 ? act : (x.estCents || 0);
+    });
     b.programYear += 1;
     b.startingBalance = bud.balance;
     // Re-seed the plan: same names + months, dates cleared, this year's actuals become next year's estimates.
@@ -9325,12 +9923,23 @@
       return { id: uid(), slot: x.slot || 0, name: x.name || '', date: '',
         time: '', endTime: '', location: x.location || '', note: x.note || '', sourceUid: '',
         perScout: !!x.perScout, familyPays: !!x.familyPays, // Wave 17 — camp-fee shape carries over
-        estCents: (x.actualCents > 0 ? x.actualCents : (x.estCents || 0)), actualCents: 0 };
+        estCents: seedEst[x.id] };
     });
     b.expenses = b.expenses.map(function (x) {
       return { id: uid(), name: x.name || '', perScout: !!x.perScout, familyPays: !!x.familyPays,
-        estCents: (x.actualCents > 0 ? x.actualCents : (x.estCents || 0)), actualCents: 0 };
+        estCents: seedEst[x.id] };
     });
+    // Phase 0 — the ledger belongs to the year it recorded, and it went into the archive
+    // with the rest of the season. Start a clean book, opened at the closing bank balance
+    // on the first day of the new program year. Note the new line ids above mean nothing
+    // could post against them anyway; leaving the old entries would strand every one of
+    // them as uncategorised.
+    state.ledger = [];
+    state.book = freshBook();
+    if (closingHadLedger) {
+      state.book.openingCents = closingBank;
+      state.book.openingDate = programYearStartISO(b.programYear);
+    }
     state.goalCents = 0;      // re-derived from the new plan
     state.cashGoalCents = 0;  // (commissionPct + cashThroughTrailsEnd are KEPT)
     // Everyone moves up a den; Arrow of Light scouts crossed over — archived, name kept
@@ -10020,7 +10629,7 @@
       return;
     }
     if (act === 'add-activity') {
-      state.budget.activities.push({ id: uid(), slot: +el.dataset.slot, name: '', date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push({ id: uid(), slot: +el.dataset.slot, name: '', date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, perScout: false, familyPays: false });
       commit(); return;
     }
     if (act === 'add-storefront-day') {
@@ -10035,7 +10644,7 @@
       commit(); return;
     }
     if (act === 'add-activity-day') {
-      state.budget.activities.push({ id: uid(), slot: dateToSlot(el.dataset.date), name: '', date: el.dataset.date, estCents: 0, actualCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push({ id: uid(), slot: dateToSlot(el.dataset.date), name: '', date: el.dataset.date, estCents: 0, perScout: false, familyPays: false });
       commit(); return;
     }
     if (act === 'clear-activity-dates') {
@@ -10065,6 +10674,82 @@
       });
       return;
     }
+    /* ----- Money · Ledger (Phase 0) ----- */
+    if (act === 'ledger-view') {
+      ui.ledgerView = el.dataset.view === 'reconcile' ? 'reconcile' : 'entries';
+      render(); return;
+    }
+    if (act === 'ledger-filter') { ui.ledgerFilter.dir = el.dataset.f || ''; render(); return; }
+    // Phase 1 — the bridge from a budget line to its money. Opens the ledger with a
+    // transaction already pointed at this line, so recording an actual is one tap from
+    // the plan rather than a hunt through a drop-down.
+    if (act === 'ledger-post') {
+      var plId = el.dataset.line || '';
+      var plLine = getBudgetLine(plId);
+      ui.ledgerDraft = ledgerDraftDefault();
+      ui.ledgerDraft.lineId = plId;
+      if (plLine) {
+        ui.ledgerDraft.description = plLine.name || '';
+        if (plLine.date) ui.ledgerDraft.date = plLine.date;
+      }
+      ui.ledgerView = 'entries';
+      ui.ledgerFilter = { dir: '', lineId: plId, text: '' };
+      gotoNav('money', 'ledger');
+      return;
+    }
+    if (act === 'ledger-toggle') { ui.ledgerOpen[el.dataset.id] = !ui.ledgerOpen[el.dataset.id]; render(); return; }
+    if (act === 'ledger-add') {
+      var dr = ledgerDraft();
+      var amt = toCents(dr.amount);
+      // Both are genuinely required: an entry with no amount records nothing, and one with
+      // no date can't be placed in the running balance or ticked against a statement.
+      if (!amt) { showToast('Enter an amount first.'); return; }
+      if (!dr.date) { showToast('Enter the date it moved.'); return; }
+      state.ledger.push({
+        id: uid(), date: dr.date, description: dr.description.trim(),
+        amountCents: amt, direction: dr.direction === 'in' ? 'in' : 'out',
+        lineId: dr.lineId, method: dr.method, ref: dr.ref.trim(),
+        source: dr.direction === 'in' ? dr.source : '',
+        donor: (dr.direction === 'in' && dr.source === 'donation') ? dr.donor.trim() : '',
+        scoutId: '', reconciled: false
+      });
+      // Keep the date and direction — a treasurer posting a stack of receipts is nearly
+      // always entering several from the same day, the same way.
+      ui.ledgerDraft = ledgerDraftDefault();
+      ui.ledgerDraft.date = dr.date;
+      ui.ledgerDraft.direction = dr.direction;
+      commit(); return;
+    }
+    if (act.indexOf('del-ledger:') === 0) {
+      var dlId = act.split(':')[1];
+      var dlIx = -1;
+      state.ledger.forEach(function (e, i) { if (e.id === dlId) dlIx = i; });
+      if (dlIx === -1) return;
+      var dlGone = state.ledger.splice(dlIx, 1)[0];
+      deleteWithUndo(dlGone.description || 'entry', function () {
+        state.ledger.splice(Math.min(dlIx, state.ledger.length), 0, dlGone);
+      });
+      return;
+    }
+    if (act === 'ledger-use-carryover') {
+      state.book.openingCents = state.budget.startingBalance || 0;
+      state.book.openingDate = programYearStartISO(state.budget.programYear);
+      commit(); return;
+    }
+    if (act === 'ledger-tick-all' || act === 'ledger-untick-all') {
+      var tick = act === 'ledger-tick-all';
+      state.ledger.forEach(function (e) { if (entryAfterOpening(e, state.book)) e.reconciled = tick; });
+      commit(); return;
+    }
+    if (act === 'ledger-reconcile-lock') {
+      state.book.reconciledThrough = state.book.statementDate || todayISO();
+      // The statement is done with — clear the working figures so the next one starts blank
+      // rather than silently reconciling against a month that's already closed.
+      state.book.statementCents = 0;
+      state.book.statementDate = '';
+      showToast('Reconciled through ' + fmtDate(state.book.reconciledThrough) + '.');
+      commit(); return;
+    }
     if (act === 'add-meeting') {
       var newMtgId = uid();
       state.meetings.push({ id: newMtgId, kind: el.dataset.kind === 'pack' ? 'pack' : 'den', den: '', date: el.dataset.date || todayISO(), time: '19:00', note: '', adventure: '' });
@@ -10092,7 +10777,7 @@
       return;
     }
     if (act === 'add-expense') {
-      state.budget.expenses.push({ id: uid(), name: '', estCents: 0, actualCents: 0, perScout: false, familyPays: false });
+      state.budget.expenses.push({ id: uid(), name: '', estCents: 0, perScout: false, familyPays: false });
       commit(); return;
     }
     if (act === 'add-inv-product') {
@@ -10608,15 +11293,62 @@
       return;
     }
     // Wave 17 — the ONE signed money field: a rollover shortfall must be re-enterable.
+    // Phase 0 added a second (book-opening) for the same reason — a pack can open a season
+    // overdrawn, and a ledger that can't say so isn't a record of anything.
     if (ch === 'bud-start') { state.budget.startingBalance = toCentsSigned(el.value); commit(); return; }
-    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-actual' || ch === 'act-date' ||
+
+    /* ----- Money · Ledger (Phase 0) ----- */
+    if (ch === 'book-opening') { state.book.openingCents = toCentsSigned(el.value); commit(); return; }
+    if (ch === 'book-opening-date') { state.book.openingDate = el.value; commit(); return; }
+    if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
+    if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
+    // Filters live in `ui`, so they re-render but never persist.
+    if (ch === 'ledger-search') { ui.ledgerFilter.text = el.value; render(); return; }
+    if (ch === 'ledger-line-filter') { ui.ledgerFilter.lineId = el.value; render(); return; }
+    // New-entry draft. Text fields update `ui` WITHOUT re-rendering (same reasoning as
+    // sf-new-name — a re-render mid-form is how half-typed input gets lost); the two
+    // selects that change which fields are shown do re-render.
+    if (ch.indexOf('ledn-') === 0) {
+      var nd = ledgerDraft();
+      var nk = ch.slice(5);
+      if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; render(); return; }
+      if (nk === 'source') { nd.source = el.value; render(); return; }
+      if (nk === 'date') nd.date = el.value;
+      else if (nk === 'desc') nd.description = el.value;
+      else if (nk === 'amount') nd.amount = el.value;
+      else if (nk === 'line') nd.lineId = el.value;
+      else if (nk === 'method') nd.method = el.value;
+      else if (nk === 'ref') nd.ref = el.value;
+      else if (nk === 'donor') nd.donor = el.value;
+      return;
+    }
+    if (ch.indexOf('led-') === 0) {
+      var led = state.ledger.find(function (e) { return e.id === el.dataset.id; });
+      if (!led) return;
+      var lk = ch.slice(4);
+      if (lk === 'date') led.date = el.value;
+      else if (lk === 'desc') led.description = el.value;
+      else if (lk === 'amount') led.amountCents = Math.abs(toCents(el.value));
+      else if (lk === 'dir') led.direction = el.value === 'in' ? 'in' : 'out';
+      else if (lk === 'line') led.lineId = el.value;
+      else if (lk === 'method') led.method = el.value;
+      else if (lk === 'ref') led.ref = el.value;
+      else if (lk === 'source') led.source = el.value;
+      else if (lk === 'donor') led.donor = el.value;
+      else if (lk === 'rec') led.reconciled = el.checked;
+      // Money-in fields are meaningless on a payment out, so switching direction drops
+      // them rather than leaving a stale donor attached to a cheque to the campground.
+      if (led.direction !== 'in') { led.source = ''; led.donor = ''; }
+      if (led.source !== 'donation') led.donor = '';
+      commit(); return;
+    }
+    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-date' ||
         ch === 'act-perscout' || ch === 'act-familypays' ||
         ch === 'act-time' || ch === 'act-endtime' || ch === 'act-location' || ch === 'act-note') {
       var act = state.budget.activities.find(function (a) { return a.id === el.dataset.id; });
       if (!act) return;
       if (ch === 'act-name') act.name = el.value;
       else if (ch === 'act-est') act.estCents = toCents(el.value);
-      else if (ch === 'act-actual') act.actualCents = toCents(el.value);
       else if (ch === 'act-perscout') act.perScout = el.checked;   // Wave 17
       else if (ch === 'act-familypays') act.familyPays = el.checked; // Wave 17
       else if (ch === 'act-time') act.time = el.value;              // Wave 20
@@ -10636,12 +11368,11 @@
       else mtg.note = el.value;
       commit(); return;
     }
-    if (ch === 'exp-name' || ch === 'exp-est' || ch === 'exp-actual' || ch === 'exp-perscout' || ch === 'exp-familypays') {
+    if (ch === 'exp-name' || ch === 'exp-est' || ch === 'exp-perscout' || ch === 'exp-familypays') {
       var exp = state.budget.expenses.find(function (e) { return e.id === el.dataset.id; });
       if (!exp) return;
       if (ch === 'exp-name') exp.name = el.value;
       else if (ch === 'exp-est') exp.estCents = toCents(el.value);
-      else if (ch === 'exp-actual') exp.actualCents = toCents(el.value);
       else if (ch === 'exp-familypays') exp.familyPays = el.checked; // Wave 17
       else exp.perScout = el.checked;
       commit(); return;
