@@ -1647,6 +1647,30 @@ test('AUDIT: the Budget card and the worksheet cannot disagree about family inco
     'computeBudget computes expected family income its own way');
 });
 
+test('Home answers "what is coming" in exactly one place', () => {
+  // There used to be two: a bare-date stat with no clue what the date belonged to, showing
+  // "—" whenever nothing was scheduled, and a proper card below it. They never appeared
+  // together, so the stat was only ever visible in the state where it said least.
+  const fn = /function renderHome\(\) \{[\s\S]*?\n    h \+= packFlow\(\);/.exec(SCRIPT);
+  ok(fn, 'renderHome() not found');
+  const labels = fn[0].match(/<span class="l">Next up<\/span>/g) || [];
+  eq(labels.length, 0, 'the bare-date "Next up" stat is back');
+  const cards = fn[0].match(/<h2 class="section display">Next up<\/h2>/g) || [];
+  eq(cards.length, 1, 'Home should carry exactly one Next up surface');
+});
+
+test('the Next up card always renders, and says something when it is empty', () => {
+  // An empty calendar is worth saying out loud — it is the state every pack is in each
+  // September, once the rollover has kept the plan and dropped last year's dates.
+  const fn = /\/\/ Next up — the ONE place[\s\S]*?\n    h \+= '<\/div>';/.exec(SCRIPT);
+  ok(fn, 'the Next up card not found');
+  ok(!/if \(nextUp\.length\) \{\s*\n\s*h \+= '<div class="card">/.test(fn[0]),
+    'the card is still gated on there being something to show');
+  ok(/Nothing on the calendar yet/.test(fn[0]), 'no empty state');
+  ok(/no date yet/.test(fn[0]), 'the empty state does not mention activities waiting for dates');
+  ok(/data-tab="program" data-section="calendar"/.test(fn[0]), 'the empty state offers no way to fix it');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

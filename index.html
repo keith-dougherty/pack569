@@ -7726,10 +7726,12 @@
       // The all-clear. Status plus one forward look — never a blank card, never a
       // celebration graphic that would be wrong the second time you saw it.
       var packT = computePackTotals();
-      var nx = nextUpEvents();
+      // "Next up" used to be a third stat here: a bare date, with no clue what it belonged
+      // to, showing "—" whenever nothing was scheduled. The card lower down already does the
+      // job properly — name, date, and a tap through to it — so Home carries one of these
+      // now instead of two that never appeared together.
       h += '<div class="empty" style="margin:0 0 10px">Nothing needs you right now.</div>' +
         '<div class="row">' +
-        '<div class="stat"><span class="v">' + (nx.length ? esc(fmtDate(nx[0].date)) : '—') + '</span><span class="l">Next up</span></div>' +
         '<div class="stat"><span class="v money">' + fmt(bud0().fundsIn) + '</span><span class="l">Funds in</span></div>' +
         '<div class="stat"><span class="v">' + (packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) + '%' : '—') + '</span><span class="l">Of goal</span></div>' +
         '</div>';
@@ -7748,10 +7750,12 @@
       h += '</div>';
     }
 
-    // Next up — the existing predicate, on the page people now land on.
+    // Next up — the ONE place Home answers "what is coming". Always rendered: an empty
+    // calendar is a thing worth saying out loud, and it is the state a pack is in every
+    // September, when the rollover has kept the plan and dropped last year's dates.
     var nextUp = nextUpEvents();
+    h += '<div class="card"><h2 class="section display">Next up</h2>';
     if (nextUp.length) {
-      h += '<div class="card"><h2 class="section display">Next up</h2>';
       nextUp.forEach(function (e) {
         var title = e.type === 'storefront' ? (e.sf.name || 'Storefront') : eventLabel(e.ev);
         h += '<div class="list-row" role="button" tabindex="0" data-act="goto" data-tab="' +
@@ -7760,8 +7764,17 @@
           '<div class="small muted">' + esc(fmtDate(e.date)) + '</div></div>' +
           '<span class="mo-chev" aria-hidden="true">›</span></div>';
       });
-      h += '</div>';
+    } else {
+      var toSchedule = state.events.filter(function (e) { return e.kind === 'activity' && !e.date; }).length;
+      h += '<div class="empty" style="margin:0">Nothing on the calendar yet.</div>' +
+        (toSchedule
+          ? '<p class="small muted" style="margin:8px 0 0">' + toSchedule + ' activit' +
+            (toSchedule === 1 ? 'y is planned but has' : 'ies are planned but have') + ' no date yet.</p>'
+          : '<p class="small muted" style="margin:8px 0 0">Add a den or pack meeting, a storefront, or an activity to a day.</p>') +
+        '<div class="row no-print" style="margin-top:10px">' +
+        '<button type="button" class="btn" data-act="goto" data-tab="program" data-section="calendar">Open the calendar</button></div>';
     }
+    h += '</div>';
 
     h += packFlow();
     return h;
