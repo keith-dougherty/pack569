@@ -1031,10 +1031,13 @@
 <script>
 (function () {
   'use strict';
+  // NOTE: the storage key still says "ledger" and must NEVER be renamed — it addresses
+  // data already saved in every leader's browser. Elsewhere "ledger" now means the
+  // transaction register (state.ledger); the saved document is "the pack record".
   var KEY = 'pack-popcorn-ledger-v1';
 
   // ---------------------------------------------------------------------------
-  // OPTIONAL shared sync — 2–6 leaders share ONE live ledger, no accounts needed.
+  // OPTIONAL shared sync — 2–6 leaders share ONE live pack record, no accounts needed.
   // To enable:
   //   1. console.firebase.google.com → create a (free) project.
   //   2. Build → Authentication → Sign-in method → enable "Anonymous".
@@ -1068,11 +1071,11 @@
   // file then behaves exactly as it did before this constant existed.
   //
   // *** PUBLISH THE PART C SECURITY RULES BEFORE YOU SET THIS. ***
-  // Under the Part B rules the ledger is protected ONLY by the doc id being the
+  // Under the Part B rules the pack record is protected ONLY by the doc id being the
   // unguessable hash of a private passphrase. Baking that id into a public page
   // while Part B is live would hand every visitor read AND write access. So when
   // this is set the app refuses to sync at all until a Google sign-in has resolved
-  // a member role under the strict rules: no anonymous sign-in, no ledger
+  // a member role under the strict rules: no anonymous sign-in, no pack record
   // subscription, no writes — just a full-screen "publish the rules" setup gate.
   // See SETUP.md, and follow its order: Part A → Part C rules → sign in and claim
   // admin → copy the Pack ID → paste it here → redeploy.
@@ -1187,7 +1190,7 @@
   }
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
   // Trail's End lineup (names + containers/case only) is offered as an opt-in template
-  // via the Inventory tab's empty state (TE_LINEUP below). Ledgers that already carry an
+  // via the Inventory tab's empty state (TE_LINEUP below). Pack records that already carry an
   // inventory object are never touched by this — normalizeState only calls it when
   // d.inventory is absent entirely.
   function freshInventory() {
@@ -1295,7 +1298,7 @@
     return true;
   }
   // Single normalization seam — used by load(), the JSON-import path, and sync
-  // adoption. Returns the normalized object, or null if it isn't a v1 ledger.
+  // adoption. Returns the normalized object, or null if it isn't a v1 pack record.
   // New additive fields get defaulted here (NEVER bump the version gate).
   function normalizeState(d) {
     if (!d || typeof d !== 'object' || d.version !== 1 || !Array.isArray(d.scouts)) return null;
@@ -1320,7 +1323,7 @@
     // Wave 21 — additive job structure. `jobs` are ids from JOBS, `dens` scopes a den
     // leader to their den(s), `uid` is an admin-set override linking this leader to a
     // signed-in account (email match is the default — see leaderForUser). The first time
-    // a ledger is normalized these are seeded from the old free-text role, which is left
+    // a pack record is normalized these are seeded from the old free-text role, which is left
     // exactly as it was: this migration only ever adds.
     d.leaders.forEach(function (l) {
       if (!l || typeof l !== 'object') return;
@@ -1357,7 +1360,7 @@
     // Wave 20 — activities carry event detail: a canonical 'HH:MM' start/end (same shape
     // as meetings), a location, free-text notes, and the source calendar's UID so a
     // re-import updates the same row instead of duplicating it. All absent on older
-    // ledgers → '' , which renders exactly as before.
+    // pack records → '' , which renders exactly as before.
     d.budget.activities.forEach(function (a) {
       if (!a || typeof a !== 'object') return;
       a.perScout = a.perScout === true;
@@ -1428,7 +1431,7 @@
         });
       });
     });
-    // Wave 4: other fundraisers — standalone side-ledger, separate from popcorn money.
+    // Wave 4: other fundraisers — standalone side tally, separate from popcorn money.
     // [{ id, name, goalCents, sales: [{ id, scoutId, cents, date?, note? }] }]
     if (!Array.isArray(d.fundraisers)) d.fundraisers = [];
     d.fundraisers = d.fundraisers.filter(function (fr) {
@@ -1505,8 +1508,8 @@
     // Wave 14: Inventory — Trail's End popcorn order (ordered / on-hand / handed out).
     // { commissionPct:string, orderTotalCents:int>=0, products:[{id,name,perCase,cases,loose,unitPriceCents}],
     //   distributions:[{id,productId,target:{kind,id?,den?},containers,date,note}] }.
-    // Absent on older ledgers → a generic blank (Wave 15; the old pre-seeded order is
-    // gone). A ledger that HAS an inventory object goes through the else branch untouched.
+    // Absent on older pack records → a generic blank (Wave 15; the old pre-seeded order is
+    // gone). A pack record that HAS an inventory object goes through the else branch untouched.
     if (!d.inventory || typeof d.inventory !== 'object' || Array.isArray(d.inventory)) {
       d.inventory = freshInventory();
     } else {
@@ -1522,7 +1525,7 @@
         p.cases = (typeof p.cases === 'number' && isFinite(p.cases) && p.cases > 0) ? Math.floor(p.cases) : 0;
         // Wave 20 — loose containers: whole cases can't express a part-case quantity, and
         // the Inventory Transaction Report's transfers rarely land on a case boundary.
-        // Absent on older ledgers → 0, so nothing changes for a hand-entered order.
+        // Absent on older pack records → 0, so nothing changes for a hand-entered order.
         p.loose = (typeof p.loose === 'number' && isFinite(p.loose) && p.loose > 0) ? Math.floor(p.loose) : 0;
         p.unitPriceCents = (typeof p.unitPriceCents === 'number' && isFinite(p.unitPriceCents) && p.unitPriceCents > 0) ? Math.round(p.unitPriceCents) : 0;
         return true;
@@ -1562,7 +1565,7 @@
       });
     }
     // Wave 13 + Wave 7: past-season archives — read-only historical snapshots, disjoint
-    // from all live ledger data. Two kinds: 'trails-end' (Wave 13 sales import) and
+    // from all live pack record data. Two kinds: 'trails-end' (Wave 13 sales import) and
     // 'season' (Wave 7 close-out); both kinds may coexist for the same year. Keep only
     // well-formed entries; each kind is validated to its own shape.
     if (!Array.isArray(d.archives)) d.archives = [];
@@ -1628,7 +1631,7 @@
       var d = null;
       try { d = normalizeState(JSON.parse(raw)); } catch (e2) { /* corrupt JSON */ }
       if (d) return d;
-      // Saved data exists but is unreadable (bad JSON or not a v1 ledger) — keep a copy
+      // Saved data exists but is unreadable (bad JSON or not a v1 pack record) — keep a copy
       // before starting fresh. Written only on a failed read, so the bak is always the
       // NEWEST corrupt copy; healthy loads never touch it.
       try { localStorage.setItem(KEY + '-bak', raw); loadBackupKept = true; } catch (e3) { /* storage blocked/full */ }
@@ -1982,7 +1985,7 @@
     // lowest tier, added as a lump to actual spent because it wasn't tied to a budget line.
     // Wave 21 replaced it with per-tier coverage of REAL budget lines (above), which needs
     // no lump — the cost is already in planned/actual. The old lump is only still applied
-    // while no tier names a line, so an existing ledger is untouched until it's configured.
+    // while no tier names a line, so an existing pack record is untouched until it's configured.
     var reward = rewardTierSummary();
     var rewardDues = tierCoverageConfigured() ? 0 : reward.rewardDues;
     actual += rewardDues;
@@ -2164,7 +2167,7 @@
     });
     return { any: per.length > 0, collected: col, outstanding: out };
   }
-  // Wave 21 — every per-scout charge in the ledger, expenses AND activities. Both render a
+  // Wave 21 — every per-scout charge in the pack record, expenses AND activities. Both render a
   // collect grid in the budget, but this only ever counted expenses, so a scout who hadn't
   // paid for a per-scout ACTIVITY showed as owing nothing.
   //
@@ -2585,7 +2588,7 @@
       (armed ? 'Tap again to add the standard slate' : 'Seed the standard year') + '</button>';
   }
 
-  /* ---------------- Sync (optional shared ledger via Firestore) ---------------- */
+  /* ---------------- Sync (optional shared pack record via Firestore) ---------------- */
   // localStorage stays the always-on cache in EVERY mode; Firestore, when enabled,
   // mirrors the whole state as one JSON string in a single doc (packs/{sha256(pass)}).
   // Whole-state-as-one-string keeps writes atomic and stays far under the 1 MiB cap.
@@ -2608,7 +2611,7 @@
     db: null,
     docRef: null,
     unsub: null,
-    // ---- Accounts (additive, runtime-only — NEVER persisted in the ledger JSON) ----
+    // ---- Accounts (additive, runtime-only — NEVER persisted in the pack-record JSON) ----
     docId: null,               // sha256(passphrase) — the pack's doc id, also members/packmeta path key
     user: null,                // Google identity {uid, displayName, email, photoURL} or null (null = anonymous/legacy)
     members: [],               // live roster from packs/{docId}/members — runtime only, lives in Firestore
@@ -2618,13 +2621,13 @@
     membersUnsub: null,        // second onSnapshot (the members subcollection)
     redirectChecked: false,    // one-time getRedirectResult() guard (mobile Google fallback)
     // ---- Parent phase (runtime-only, like everything above — never persisted) ----
-    feed: null,                // which document this session is subscribed to: 'ledger' | 'parent' | null
+    feed: null,                // which document this session is subscribed to: 'doc' | 'parent' | null
     parentView: null,          // the sanitized packs/{docId}/public/view payload (parents/pending only)
     parentUnsub: null,         // onSnapshot for that derived doc
     invites: [],               // outstanding packs/{docId}/invites/* (admins only)
     invitesUnsub: null,        // onSnapshot for the invites subcollection
     invitesUnavailable: false, // invites read denied (older Part C rules) → hide the invite UI ONLY
-    // ---- Self-serve join link (runtime-only, never persisted in the ledger) ----
+    // ---- Self-serve join link (runtime-only, never persisted in the pack record) ----
     joinCfg: null,             // packs/{docId}/public/join = { open, mode, code, showStandings }
     joinUnsub: null,           // onSnapshot for that config doc (leaders only)
     joinUnavailable: false,    // join-config read denied (older Part C rules) → hide the admin card ONLY
@@ -2659,7 +2662,7 @@
   // Nobody needs the passphrase — it stays a leaders-only secret, and a leader's device
   // ignores a stray ?pack= param entirely (activeJoin()).
   //
-  // The link is remembered in its OWN localStorage key — never in the ledger JSON — so a
+  // The link is remembered in its OWN localStorage key — never in the pack-record JSON — so a
   // refresh or a return visit still works, and the params are scrubbed out of the address
   // bar the moment they're read so the code isn't left sitting in a shared screenshot.
   var JOIN_KEY = 'pack-planner-join';
@@ -2830,7 +2833,7 @@
 
   // ---- SAFETY: the single-pack-mode cloud gate --------------------------------------------
   // The pack id is public the moment it's baked into this page, so in single-pack mode the
-  // ONLY thing standing between a stranger and the ledger is the Part C security rules. This
+  // ONLY thing standing between a stranger and the pack record is the Part C security rules. This
   // device therefore refuses to touch the pack's cloud data until it has PROVEN they're in
   // force — which it can only do by signing in with Google and having the accounts layer
   // resolve a member role without a permission-denied.
@@ -2838,9 +2841,9 @@
   //   sync.user === null          → not signed in (and single-pack mode never signs anyone in
   //                                 anonymously, so this is the only signed-out state)
   //   sync.accountsUnavailable    → packmeta/members reads were denied ⇒ the strict rules are
-  //                                 NOT published ⇒ the ledger is wide open ⇒ stay away
+  //                                 NOT published ⇒ the pack record is wide open ⇒ stay away
   //
-  // Blocked means: no ledger subscription, no parent-view subscription, no push, no writes.
+  // Blocked means: no pack-record subscription, no parent-view subscription, no push, no writes.
   // In passphrase mode (PACK_DOC_ID null) this is always false and nothing changes.
   function fixedSyncBlocked() {
     if (!fixedPackMode()) return false;
@@ -2848,7 +2851,7 @@
   }
   // Additionally: no feed at all until a role actually resolved. (An unresolved role in
   // single-pack mode means the registration path didn't complete — never fall back to
-  // "subscribe the ledger anyway", which is the right default only under passphrase mode.)
+  // "subscribe the pack record anyway", which is the right default only under passphrase mode.)
   function fixedFeedBlocked() {
     return fixedPackMode() && (fixedSyncBlocked() || !sync.myRole);
   }
@@ -2856,7 +2859,7 @@
   // prove the rules are published: drops the doc ref so NOTHING can push, kills any feed,
   // and leaves the setup gate (gateMode() === 'setup') on screen.
   function haltFixedSync() {
-    stopLedgerFeed();
+    stopDocFeed();
     stopParentFeed();
     clearTimeout(sync.pushTimer);
     sync.pushTimer = null;
@@ -2912,7 +2915,7 @@
   }
   function syncFail(err) {
     sync.mode = 'offline';
-    sync.error = err && err.message ? String(err.message) : 'Could not reach the shared ledger.';
+    sync.error = err && err.message ? String(err.message) : 'Could not reach the shared pack record.';
     renderSyncPill();
     if (ui.tab === 'pack') render();
   }
@@ -3007,20 +3010,20 @@
             sync.db = mods.fs.getFirestore(sync.app);
             sync.docRef = mods.fs.doc(sync.db, 'packs', docId);
             if (isGoogleUser(u)) {
-              // Under the Part C rules, READING the ledger requires an existing
+              // Under the Part C rules, READING the pack record requires an existing
               // members/{uid} doc, so a real user must register BEFORE we subscribe —
-              // otherwise a brand-new signer's first ledger read is permission-denied and
+              // otherwise a brand-new signer's first pack-record read is permission-denied and
               // wedges sync "offline" for the whole session (H-1). startAccounts always
               // fires the callback, including on the legacy-rules permission-denied path,
-              // so the ledger still subscribes there (where reads only need auth).
+              // so the pack record still subscribes there (where reads only need auth).
               // Parent phase: the resolved role decides WHICH feed goes up — leaders get the
-              // ledger exactly as before; parents/pending get the sanitized public view.
+              // pack record exactly as before; parents/pending get the sanitized public view.
               startAccounts(mods, u, docId, mine, function (role) {
                 // SAFETY (single-pack mode): a permission-denied on the accounts path means
                 // the Part C rules are NOT published — with a public pack id that makes the
-                // ledger world-writable, so this device stays device-only and shows the setup
+                // pack record world-writable, so this device stays device-only and shows the setup
                 // gate. Same for a role that never resolved: never fall back to "subscribe
-                // the ledger anyway" here, which is only safe behind a secret passphrase.
+                // the pack record anyway" here, which is only safe behind a secret passphrase.
                 if (fixedPackMode() && (sync.accountsUnavailable || !role)) { haltFixedSync(); return; }
                 // A refused self-serve join has NO member doc — subscribing anything would
                 // just be denied. Show the "ask a leader" gate and stop.
@@ -3029,16 +3032,16 @@
                   renderSyncPill(); render();
                   return;
                 }
-                if (!role || sync.accountsUnavailable) { subscribeLedger(mine); return; }
+                if (!role || sync.accountsUnavailable) { subscribeDoc(mine); return; }
                 applyRoleSubscription(role, mine);
               });
             } else {
               // Anonymous session. Unreachable in single-pack mode (rejected above), and
-              // guarded again here because subscribing the ledger anonymously is exactly
+              // guarded again here because subscribing the pack record anonymously is exactly
               // what must never happen once the pack id is public.
               clearAccountsRuntime();
               if (fixedPackMode()) { haltFixedSync(); return; }
-              subscribeLedger(mine);
+              subscribeDoc(mine);
             }
           });
         });
@@ -3047,22 +3050,22 @@
       if (sync.session === mine) syncFail(err);
     });
   }
-  // Subscribe (or re-subscribe) the ledger onSnapshot. Split out of syncStart so the
+  // Subscribe (or re-subscribe) the pack record onSnapshot. Split out of syncStart so the
   // accounts layer can defer it until membership exists (H-1).
-  function subscribeLedger(mine) {
+  function subscribeDoc(mine) {
     if (sync.session !== mine || !sync.docRef || !sync.mods) return;
     if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven — see fixedSyncBlocked
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } }
-    sync.feed = 'ledger';
+    sync.feed = 'doc';
     sync.unsub = sync.mods.fs.onSnapshot(sync.docRef,
       function (snap) { if (sync.session === mine) onRemoteSnap(snap); },
       function (err) { if (sync.session === mine) syncFail(err); });
   }
   // ---- Parent phase: the second, sanitized feed ---------------------------------------
-  // Parents and not-yet-approved users never receive the ledger document (the published
+  // Parents and not-yet-approved users never receive the pack record document (the published
   // rules deny it outright). They subscribe to packs/{docId}/public/view — a derived,
   // leader-generated copy carrying only the schedule, standings, goals and derby results.
-  function stopLedgerFeed() {
+  function stopDocFeed() {
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } sync.unsub = null; }
   }
   function stopParentFeed() {
@@ -3084,17 +3087,17 @@
       render();
     }, function (err) { if (sync.session === mine) syncFail(err); });
   }
-  // Which document a role is allowed to read. EVERY fallback lands on 'ledger' so the
+  // Which document a role is allowed to read. EVERY fallback lands on 'doc' so the
   // legacy paths (no accounts, permission-denied rules, unknown role) behave exactly as
   // they do today — backward compatibility is the default, never an exception.
   function feedForRole(role) {
-    if (sync.accountsUnavailable) return 'ledger';
-    // Join link phase — 'pending' now means WAITING: no ledger, no parent view, no pack
+    if (sync.accountsUnavailable) return 'doc';
+    // Join link phase — 'pending' now means WAITING: no pack record, no parent view, no pack
     // content at all until an admin approves them. That is what makes approval actually
     // gate something (it used to hand pending users the full parent app).
     if (role === 'pending') return 'none';
     if (role === 'parent') return 'parent';
-    return 'ledger';
+    return 'doc';
   }
   // Point this session at the feed its role is allowed to read, tearing the other one down
   // first. Called once when membership resolves and again whenever the members snapshot
@@ -3104,10 +3107,10 @@
     if (!role) return; // unknown / just-removed member — leave the current feed alone
     var want = feedForRole(role);
     if (want === 'none') {
-      // Waiting for approval — subscribe NOTHING and drop this browser's cached ledger,
+      // Waiting for approval — subscribe NOTHING and drop this browser's cached pack record,
       // exactly as the parent branch below does. The waiting screen carries no pack content.
       if (sync.feed !== 'none') {
-        stopLedgerFeed();
+        stopDocFeed();
         stopParentFeed();
         sync.parentView = null;
         sync.feed = 'none';
@@ -3118,16 +3121,16 @@
       render();
       return;
     }
-    if (sync.feed === want && (want === 'ledger' ? sync.unsub : sync.parentUnsub)) return;
-    if (want === 'ledger') {
+    if (sync.feed === want && (want === 'doc' ? sync.unsub : sync.parentUnsub)) return;
+    if (want === 'doc') {
       stopParentFeed();
       sync.parentView = null;
       sync.firstSnap = true;
-      subscribeLedger(mine);
+      subscribeDoc(mine);
     } else {
-      // Demotion to parent: drop the ledger listener BEFORE the parent one goes up.
-      stopLedgerFeed();
-      // ...and drop this browser's cached copy of the ledger. Revoking someone's access
+      // Demotion to parent: drop the pack-record listener BEFORE the parent one goes up.
+      stopDocFeed();
+      // ...and drop this browser's cached copy of the pack record. Revoking someone's access
       // should also take the pack's finances off their device — the rules already deny
       // them a fresh copy, and a later promotion re-adopts the cloud one. Any unsynced
       // local edit of theirs is intentionally discarded.
@@ -3212,14 +3215,14 @@
     if (!accountsInForce()) return true;              // anonymous / legacy / accounts-unavailable → full edit
     return sync.myRole === 'admin' || sync.myRole === 'editor';
   }
-  // Parent phase — this user must NEVER see the ledger. Their whole app (renderParentApp)
+  // Parent phase — this user must NEVER see the pack record. Their whole app (renderParentApp)
   // is built from sync.parentView alone, so nothing in `state` can leak into their screen
   // even if their device still has an old local copy from another mode.
   function parentMode() {
     return accountsInForce() && sync.myRole === 'parent';
   }
   // Join link phase — a not-yet-approved user (leader or parent alike). They see ONLY the
-  // waiting screen: no ledger, no parent view, no pack content of any kind.
+  // waiting screen: no pack record, no parent view, no pack content of any kind.
   function pendingMode() {
     return accountsInForce() && sync.myRole === 'pending';
   }
@@ -3263,7 +3266,7 @@
   // the seam that joins them, and it's what makes "my jobs" mean anything.
   //   1. an explicit l.uid an admin set from the Members card always wins;
   //   2. otherwise the signed-in email matches a leader's email, case-insensitively.
-  // Returns null when signed out, unmatched, or when the ledger has no leaders — every
+  // Returns null when signed out, unmatched, or when the pack record has no leaders — every
   // caller must treat null as "we don't know who this is", never as "no permissions".
   function leaderForUser() {
     if (!sync.user) return null;
@@ -3294,7 +3297,7 @@
   }
   // A permission-denied on any accounts path means the strict rules aren't published yet
   // (legacy rules have no rule for packmeta/members). Degrade to "accounts not set up":
-  // never enforce roles, never let it disturb the ledger sync.
+  // never enforce roles, never let it disturb the pack-record sync.
   function handleAccountsError(err) {
     var code = err && err.code ? String(err.code) : '';
     if (code.indexOf('permission-denied') !== -1) {
@@ -3313,9 +3316,9 @@
     var afterDone = false;
     // Always fire `after` exactly once — a feed must subscribe whether registration
     // succeeded (strict rules, membership now exists) or was denied (legacy rules, where
-    // ledger reads only need auth). Never leaves sync unsubscribed. The resolved role is
-    // handed over so the caller can pick the RIGHT feed (ledger vs parent view); null
-    // means "unknown" and always falls back to the ledger, exactly as before.
+    // pack-record reads only need auth). Never leaves sync unsubscribed. The resolved role is
+    // handed over so the caller can pick the RIGHT feed (pack record vs parent view); null
+    // means "unknown" and always falls back to the pack record, exactly as before.
     function runAfter(role) { if (!afterDone) { afterDone = true; if (after && sync.session === mine) after(role || null); } }
     var metaRef = fs.doc(db, 'packmeta', docId);
     fs.getDoc(metaRef).then(function (snap) {
@@ -3366,7 +3369,7 @@
       }, function (err) { if (sync.session === mine) handleAccountsError(err); });
     }).catch(function (err) {
       if (sync.session === mine) handleAccountsError(err);
-      runAfter(null); // legacy-rules permission-denied still needs the ledger subscribed
+      runAfter(null); // legacy-rules permission-denied still needs the pack record subscribed
     });
   }
   // Roles an admin may hand out through an emailed invite. 'admin' is deliberately absent —
@@ -3374,7 +3377,7 @@
   var INVITE_ROLES = ['editor', 'viewer', 'parent'];
   function inviteEmailKey(email) { return String(email == null ? '' : email).trim().toLowerCase(); }
   // Register the signed-in user in the members subcollection and RESOLVE THE EFFECTIVE ROLE
-  // (returned to the caller, which uses it to pick the ledger vs parent-view feed).
+  // (returned to the caller, which uses it to pick the pack record vs parent-view feed).
   // Owners write themselves an 'admin' doc; an invited email lands directly in the invited
   // role; everyone else lands as 'pending'. NEVER overwrites an existing role (re-signing
   // in as an approved editor must not silently demote you to pending).
@@ -3524,7 +3527,7 @@
       syncStop(); syncStart(); // reconnects anonymously (today's default path)
     }).catch(function () { showToast('Couldn’t sign out — try again.'); });
   }
-  // ---- Member management (admin-only; writes members docs directly, never via the ledger) ----
+  // ---- Member management (admin-only; writes members docs directly, never via the pack record) ----
   function accountsToast(err) {
     var code = err && err.code ? String(err.code) : '';
     if (code.indexOf('permission-denied') !== -1) {
@@ -3628,7 +3631,7 @@
   }
   // ---- Parent phase: the derived, sanitized parent view -------------------------------
   // Firestore rules gate a DOCUMENT, not parts of one, so parents must never receive the
-  // ledger. buildParentView derives a SEPARATE document containing only what a parent may
+  // pack record. buildParentView derives a SEPARATE document containing only what a parent may
   // see. It is an allowlist by construction: every field below is written out explicitly,
   // and nothing else from `state` is ever copied.
   //
@@ -3726,7 +3729,7 @@
       var pack = computePackTotals();
       var totals = computeScoutTotals();
       var ranked = rankBy(visibleScoutRows(totals), function (r) { return r.t.combined; });
-      // Children's LAST names never leave the leaders' ledger. The published copy carries
+      // Children's LAST names never leave the leaders' pack record. The published copy carries
       // first names only — a last initial is added solely to tell two same-named scouts
       // apart, so a parent can still find their own child on the board. Names arriving
       // from a Trail's End import are full names, which is exactly why this happens here,
@@ -3791,7 +3794,7 @@
     parentViewTimer = setTimeout(writeParentView, 1200);
   }
   // Regenerate packs/{docId}/public/view. Every failure is swallowed: the parent view is a
-  // convenience derived from the ledger, and must NEVER disturb ledger sync.
+  // convenience derived from the pack record, and must NEVER disturb pack-record sync.
   function writeParentView() {
     clearTimeout(parentViewTimer);
     parentViewTimer = null;
@@ -3814,7 +3817,7 @@
     try {
       fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'view'), data)
         .catch(function () { parentViewFingerprint = null; /* denied/offline — retry next push */ });
-    } catch (e2) { parentViewFingerprint = null; /* never disturb ledger sync */ }
+    } catch (e2) { parentViewFingerprint = null; /* never disturb pack-record sync */ }
   }
 
   // Debounced push — every commit() lands here; the transaction keeps rev monotonic.
@@ -3857,7 +3860,7 @@
   function syncPush() {
     if (!sync.docRef || !sync.mods) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
-    // Parent phase belt-and-braces: a role that can't edit never writes the ledger, even if
+    // Parent phase belt-and-braces: a role that can't edit never writes the pack record, even if
     // a stale timer fires. (commit() already refuses; the published rules are the backstop.)
     if (accountsInForce() && !canEdit()) return;
     var fs = sync.mods.fs, ref = sync.docRef, mine = sync.session;
@@ -3900,7 +3903,7 @@
       !(s.entries && s.entries.length) && !(s.meetings && s.meetings.length) &&
       !(s.leaders && s.leaders.length);
   }
-  // Compare ledgers ignoring the sync counter itself.
+  // Compare pack records ignoring the sync counter itself.
   function stateFingerprint(s) {
     var c = JSON.parse(JSON.stringify(s));
     delete c.rev;
@@ -4218,7 +4221,7 @@
 
     // Join link phase — a link visitor who hasn't signed in, a refused visitor, or someone
     // waiting on approval gets a single full-screen gate INSTEAD of any app: no tabs, no
-    // ledger, no parent view, no overlays, and nothing read from `state`.
+    // pack record, no parent view, no overlays, and nothing read from `state`.
     var gate = gateMode();
     // Parent phase — parents get a completely separate render path fed by sync.parentView.
     // Nothing below this line reads `state` for them: not the header, not the tabs, not the
@@ -4353,7 +4356,7 @@
     return renderJoinWelcome();
   }
   // SAFETY gate (single-pack mode only). The pack id is baked into this public page, so
-  // until the Part C rules are published the ledger would be readable AND writable by any
+  // until the Part C rules are published the pack record would be readable AND writable by any
   // visitor. The app has already refused to sync — this screen says why, to the one person
   // who can fix it. Deliberately admin-facing wording: nobody else should ever see it.
   function renderJoinSetup() {
@@ -4648,7 +4651,7 @@
   // signed up: a separate roster was data nobody would ever fill in, and a "needs two-deep"
   // warning computed from it would fire on every shift forever.
   // Shifts are now purely "which scouts signed up". blocks[].adults is no longer read or
-  // written; any array left on an existing ledger is simply ignored rather than deleted.
+  // written; any array left on an existing pack record is simply ignored rather than deleted.
 
   function storefrontRow(sf) {
     var t = storefrontTotals(sf);
@@ -4690,7 +4693,7 @@
     evs.sort(function (x, y) { return x.date.localeCompare(y.date); });
     return evs.slice(0, 2);
   }
-  // Wave 19(19) — first-run predicate: the card shows only while the ledger is
+  // Wave 19(19) — first-run predicate: the card shows only while the pack record is
   // effectively empty (no scouts, storefronts, meetings, or leaders) and not dismissed.
   // Pure (takes the state) so the Node harness can exercise it.
   function startHereVisible(s) {
@@ -4858,7 +4861,7 @@
     }
     // Wave 21 — the Start here card moved to Home, which is where a first-run checklist
     // belongs now that there is a Home to put it on. The auto-retire above stays here
-    // because renderCalendarTab is where the ledger stops being empty in practice.
+    // because renderCalendarTab is where the pack record stops being empty in practice.
     // Wave 19(16) — "Next up": the next 1–2 upcoming dated things; hidden when none.
     var nextUp = nextUpEvents();
     if (nextUp.length) {
@@ -5168,7 +5171,7 @@
     // model was always these two buckets (see computePackTotals), only the labels weren't.
     // The Wave 17 "of which card" field is retired: the Trail's End app already accounts
     // for card, so it was reconciling something this pack no longer counts by hand.
-    // b.cardCents is left on existing ledgers, just unread.
+    // b.cardCents is left on existing pack records, just unread.
     h += '<div class="row" style="margin-top:12px">' +
       '<label class="fld">Trail’s End amount ($)<input class="money-in" inputmode="decimal" data-ch="b-sales" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.salesCents) + '" placeholder="0.00"></label>' +
       '<label class="fld">Cash donations ($)<input class="money-in" inputmode="decimal" data-ch="b-don" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.donationsCents) + '" placeholder="0.00"></label>' +
@@ -5475,7 +5478,7 @@
     return out;
   }
   // True once any tier names a budget line. Until then the legacy single "dues amount"
-  // lump (Wave 8) keeps working exactly as it did, so an existing ledger sees no change
+  // lump (Wave 8) keeps working exactly as it did, so an existing pack record sees no change
   // until someone configures coverage.
   function tierCoverageConfigured() {
     return sortedTiers().some(function (t) { return arrOf(t.covers).length > 0; });
@@ -5780,7 +5783,7 @@
         '</strong>. Ask an admin to change it.</p>';
     } else {
       h += '<p class="small muted" style="margin:10px 0 0"><strong>admin</strong> and <strong>editor</strong> can edit everything. ' +
-        '<strong>viewer</strong> sees the whole ledger but can’t change it. <strong>parent</strong> only ever sees the ' +
+        '<strong>viewer</strong> sees the whole pack record but can’t change it. <strong>parent</strong> only ever sees the ' +
         'schedule and standings — never the budget, dues, inventory or leader contact details.</p>';
       h += renderInvitesBlock();
     }
@@ -5819,7 +5822,7 @@
   }
   // ---- Join link phase: the admin "Parent sign-up link" card (Pack tab, below Members) ----
   // Admins only, and only once accounts are actually in force. It writes ONE document,
-  // packs/{docId}/public/join — never the ledger.
+  // packs/{docId}/public/join — never the pack record.
   function renderJoinCard() {
     if (!FIREBASE_CONFIG || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
     var h = '<div class="card"><h2 class="section display">Parent sign-up link</h2>';
@@ -5861,16 +5864,16 @@
     var fixed = fixedPackMode();
     if (sync.mode === 'online') {
       return fixed
-        ? 'Synced — everyone approved for this pack sees the same live ledger.'
-        : 'Synced — everyone using this passphrase sees the same live ledger.';
+        ? 'Synced — everyone approved for this pack sees the same live record.'
+        : 'Synced — everyone using this passphrase sees the same live pack record.';
     }
-    if (sync.mode === 'connecting') return 'Connecting to the shared ledger…';
+    if (sync.mode === 'connecting') return 'Connecting to the shared pack record…';
     if (sync.mode === 'offline') {
       return 'Offline — changes are saved on this device and will sync when the connection returns.' +
         (sync.error ? ' (' + sync.error + ')' : '');
     }
-    if (fixed) return 'Device-only for now — sign in with Google to open your pack’s shared ledger.';
-    return 'Device-only mode — enter a passphrase below to join your pack’s shared ledger.';
+    if (fixed) return 'Device-only for now — sign in with Google to open your pack’s shared record.';
+    return 'Device-only mode — enter a passphrase below to join your pack’s shared record.';
   }
   // Single-pack mode switch-over helper. With PACK_DOC_ID still null this hands the admin —
   // and ONLY the admin, who is the one person whose device can compute it — the pack's doc
@@ -5924,7 +5927,7 @@
     return pills;
   }
   // Wave 21 — what to CALL this leader. Structured jobs win; the old free-text role is the
-  // fallback so a ledger that was never re-edited still reads exactly as it did before.
+  // fallback so a pack record that was never re-edited still reads exactly as it did before.
   // Used by the leader roster, the storefront adult picker, and the season archive.
   function leaderJobLabels(l) {
     var names = arrOf(l && l.jobs).map(jobLabel).filter(Boolean);
@@ -6009,7 +6012,7 @@
       '</div>' +
       '<div class="row" style="align-items:flex-end;margin-top:6px">' +
       // Wave 19(20) — completed-on replaces the free expiry input; expiry is computed
-      // (+1 year), with the legacy stored sytExpiry as fallback for old ledgers.
+      // (+1 year), with the legacy stored sytExpiry as fallback for old pack records.
       '<label class="fld">Safeguarding Youth Training completed<input type="date" data-ch="ldr-sytdone" data-id="' + l.id + '" value="' + esc(l.sytCompleted || '') + '"></label>' +
       (function () {
         var sytExp = sytExpiryOf(l);
@@ -6486,7 +6489,7 @@
         h += '<div class="row">' +
           '<label class="fld">Shared passphrase<input data-ch="sync-pass" value="' + esc(syncPass()) + '" placeholder="e.g. pack569-popcorn" autocomplete="off" style="width:220px"></label>' +
           '</div>' +
-          '<p class="small muted" style="margin:8px 0 0">Every leader types the same passphrase to share one live ledger. ' +
+          '<p class="small muted" style="margin:8px 0 0">Every leader types the same passphrase to share one live pack record. ' +
           'Changing it switches this device to a <strong>different</strong> shared copy — it does not rename or move the current one.</p>';
       }
       // Google identity (optional accounts layer). Without it, the app behaves exactly as
@@ -6508,12 +6511,12 @@
       h += renderPackIdLine();
     } else {
       h += '<p class="small muted" style="margin:8px 0 0">Sharing isn’t set up yet — a leader pastes the pack’s Firebase config into this file (see the SETUP guide) to turn it on. ' +
-        'Until then the ledger lives on this device only; use Share &amp; backup below to move data.</p>';
+        'Until then the pack record lives on this device only; use Share &amp; backup below to move data.</p>';
     }
     h += '<p class="small muted" style="margin:8px 0 0"><strong>Privacy:</strong> use first names only. ' +
       (fixedPackMode()
-        ? 'Everyone an admin approves as editor or viewer can see the whole shared ledger.'
-        : 'Anyone who knows the passphrase can view and edit the shared ledger.') + '</p></div>';
+        ? 'Everyone an admin approves as editor or viewer can see the whole shared pack record.'
+        : 'Anyone who knows the passphrase can view and edit the shared pack record.') + '</p></div>';
 
     // Members card (accounts layer — only renders when signed in with Google).
     h += renderMembersCard();
@@ -6580,7 +6583,7 @@
       '<li><strong>Money · Budget</strong> — the year plan, plus Season setup (commission rate, goals, cash routing) and the funds-in math.</li>' +
       '<li><strong>Popcorn · Inventory</strong> — the popcorn <em>order</em> and its projected earnings; never added to funds-in.</li>' +
       '<li><strong>Dues &amp; fees</strong> — collect grids on Money · Budget; fees marked “families pay” join funds-in as they’re collected.</li>' +
-      '<li><strong>Money · Fundraisers</strong> — the non-popcorn side-ledger; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
+      '<li><strong>Money · Fundraisers</strong> — the non-popcorn side tally; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
       '<li><strong>Past seasons</strong> — read-only archives; never counted.</li>' +
       '</ul></div>';
 
@@ -6600,7 +6603,7 @@
     // Wave 7 — year-end close-out entry point (preview overlay; nothing commits until confirmed)
     var cy = state.budget.programYear;
 
-    // Advance dens + close-out both mutate the roster/ledger — edit-only.
+    // Advance dens + close-out both mutate the roster/pack record — edit-only.
     if (canEdit()) {
     // Wave 19(3) — standalone den advancement: crossover happens in spring, months
     // before the fiscal close-out. Once run, the close-out skips den advancement.
@@ -6632,7 +6635,7 @@
 
   function renderPastSeasons() {
     var h = '<div class="card"><h2 class="section display">Past seasons <span class="pill navy">' + state.archives.length + '</span></h2>' +
-      '<p class="small muted" style="margin:0 0 10px">Read-only records from previous years — Trail’s End sales imports and full season close-outs, for season-over-season comparison. Kept separate from this year’s ledger.</p>';
+      '<p class="small muted" style="margin:0 0 10px">Read-only records from previous years — Trail’s End sales imports and full season close-outs, for season-over-season comparison. Kept separate from this year’s pack record.</p>';
     if (!state.archives.length) {
       h += '<div class="empty" style="margin:0">No past seasons saved yet. Import a Trail’s End Sales Transaction report above, or use <strong>Close out the year</strong> below when the program year wraps up.</div></div>';
       return h;
@@ -6827,7 +6830,7 @@
     return h;
   }
 
-  /* ----- Wave 4: other fundraisers (standalone side-ledger) ----- */
+  /* ----- Wave 4: other fundraisers (standalone side tally) ----- */
   // Total raised across ALL sales, plus per-active-scout credited totals. Sales logged to a
   // now-archived/deleted scout still count in the total but drop out of the standings — the
   // same way pack totals sum source records while standings filter to the roster.
@@ -6844,7 +6847,7 @@
   function renderFundraisers() {
     var roster = activeScouts();
     var h = '<div class="card"><h2 class="section display">Other fundraisers</h2>' +
-      '<p class="small muted" style="margin:0 0 10px">A simple side-ledger for secondary fundraisers (camp cards, wreaths, etc.). ' +
+      '<p class="small muted" style="margin:0 0 10px">A simple side tally for secondary fundraisers (camp cards, wreaths, etc.). ' +
       'Kept separate from the popcorn commission and Trail’s End math above — a fundraiser only joins the Budget’s funds-in when you tick <em>count toward Budget funds-in</em> on its card.</p>' +
       '<form data-form="add-fundraiser" class="row">' +
       '<label class="fld">Fundraiser<input name="name" required placeholder="Camp Cards 2026" style="width:200px"></label>' +
@@ -7009,7 +7012,7 @@
     }
 
     // Legacy Wave 8 lump: a single typed dues figure, still honoured until coverage is
-    // configured so an existing ledger's numbers don't move on their own.
+    // configured so an existing pack record's numbers don't move on their own.
     if (rt.duesCents > 0 && !configured) {
       h += '<div class="warn" style="margin-top:12px"><p class="small" style="margin:0 0 6px">' +
         'This pack still uses the old single dues figure (<strong class="money">' + fmt(rt.duesCents) + '</strong> per scout past the lowest tier), ' +
@@ -7791,7 +7794,7 @@
         '<h2 class="section display">Replace all data?</h2>' +
         '<p>The imported backup has <strong>' + o.data.scouts.length + ' scouts</strong>, <strong>' + o.data.storefronts.length +
         ' storefronts</strong>, and <strong>' + o.data.entries.length + ' wagon/online entries</strong>. ' +
-        'This replaces everything currently in the ledger.</p>' +
+        'This replaces everything currently in the pack record.</p>' +
         '<div class="row"><button type="button" class="btn danger" data-act="confirm-import">Replace my data</button>' +
         '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
         '</div></div></div>';
@@ -7801,8 +7804,8 @@
       try { rc = JSON.parse(typeof o.remote.json === 'string' ? o.remote.json : ''); } catch (e) { /* shown as 0s */ }
       rc = rc || {};
       var cnt = function (arr) { return Array.isArray(arr) ? arr.length : 0; };
-      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Two copies of this ledger"><div class="overlay-inner"><div class="card">' +
-        '<h2 class="section display">Two copies of this ledger</h2>' +
+      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Two copies of this pack record"><div class="overlay-inner"><div class="card">' +
+        '<h2 class="section display">Two copies of this pack record</h2>' +
         '<p>This device and the shared cloud copy for ' + (fixedPackMode() ? 'this pack' : 'this passphrase') +
         ' both have real data, and they don’t match. ' +
         'Pick which one everyone should use — the other copy is overwritten.</p>' +
@@ -8016,7 +8019,7 @@
       g += '<tr><td>' + esc(l.name) + '</td><td class="num">' + l.tx + '</td><td class="num">' + fmt(l.cents) + '</td></tr>';
     });
     g += '</tbody></table></div>' +
-      '<p class="small muted" style="margin:14px 0 0"><strong>Archive</strong> stores this season in Past seasons only — it never changes this year’s ledger, scouts, or storefronts. ' +
+      '<p class="small muted" style="margin:14px 0 0"><strong>Archive</strong> stores this season in Past seasons only — it never changes this year’s pack record, scouts, or storefronts. ' +
       '<strong>Update this season</strong> writes only the online/wagon entries shown above (and any scouts you chose to create).</p>' +
       '</div></div></div>';
     return g;
@@ -8273,7 +8276,7 @@
       var data = null;
       try { data = JSON.parse(String(reader.result)); } catch (e) { /* not JSON */ }
       data = normalizeState(data);
-      if (!data) { showToast('That file isn’t a ledger backup.'); return; }
+      if (!data) { showToast('That file isn’t a pack-record backup.'); return; }
       ui.overlay = { kind: 'import', data: data };
       render();
     };
@@ -9180,7 +9183,7 @@
   /* ---------------- Wave 7: year-end close-out + rollover ---------------- */
   // "Close out the program year": archive a rich season summary (kind:'season'),
   // download a full JSON snapshot of the untouched state, then roll the working
-  // ledger into next year so planning starts from this year's real numbers.
+  // pack record into next year so planning starts from this year's real numbers.
 
   // Top-3 finishers from the derby standings (same sort as renderDerbyResults),
   // or null when no car has a recorded time.
@@ -9778,11 +9781,11 @@
 
   // Parent phase — the parent app only ever emits these four actions. Anything else that
   // somehow reaches the handler in that mode is ignored, so no code path can mutate the
-  // ledger or read `state` on a parent's device.
+  // pack record or read `state` on a parent's device.
   var PARENT_ACTS = ['parent-tab', 'parent-earlier', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
-  // the ledger on a link visitor's / not-yet-approved user's device.
+  // the pack record on a link visitor's / not-yet-approved user's device.
   var GATE_ACTS = ['sign-in-google', 'sign-out-google', 'join-forget', 'toast-action'];
   function handleAction(act, el) {
     var gm = gateMode();
@@ -10553,7 +10556,7 @@
     // Accounts: admin changes a member's role (writes directly to the members doc, NOT via commit()).
     if (ch === 'member-role') { setMemberRole(el.dataset.uid, el.value); return; }
     // Wave 21 — link an account to a leader record. Unlike member-role (which writes the
-    // members doc directly), this is an ordinary LEDGER edit, so it goes through commit().
+    // members doc directly), this is an ordinary PACK RECORD edit, so it goes through commit().
     // A uid can only be on one leader at a time, so claiming it clears it everywhere else;
     // choosing the blank option just unlinks and lets the email match take over again.
     if (ch === 'member-leader') {
@@ -10565,7 +10568,7 @@
       }
       commit(); return;
     }
-    // Join link phase — the self-serve config doc (admin-only; never touches the ledger).
+    // Join link phase — the self-serve config doc (admin-only; never touches the pack record).
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
@@ -10733,7 +10736,7 @@
     if (parentMode() || gateMode()) return; // Parent phase / join gates — neither renders a form
     var kind = f.dataset.form;
     var fd = new FormData(f);
-    // Parent phase — admin invites someone by email (accounts layer; never touches the ledger).
+    // Parent phase — admin invites someone by email (accounts layer; never touches the pack record).
     if (kind === 'invite-member') {
       createInvite(String(fd.get('email') || ''), String(fd.get('role') || ''));
       return;
