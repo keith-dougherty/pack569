@@ -219,7 +219,10 @@
   }
   button.btn.ghost { border-color: transparent; background: transparent; }
   button.btn.small { padding: 5px 10px; min-height: 32px; font-size: 0.85rem; }
-  input, select {
+  /* Wave 20 — textarea joins the shared field styling. Without it a <textarea> renders
+     as a raw browser control (white box, mono font) in the middle of dark inputs.
+     textarea.export-box overrides font/size below and still wins by source order. */
+  input, select, textarea {
     font: inherit;
     color: var(--ink);
     background: var(--surface);
@@ -233,6 +236,8 @@
   input.weight-in { width: 74px; text-align: center; font-variant-numeric: tabular-nums; }
   input.time-in { width: 128px; color-scheme: light dark; }
   label.fld { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; font-weight: 600; color: var(--ink-soft); }
+  /* Multi-line notes field: full width, comfortable leading, vertical resize only. */
+  textarea.notes-in { width: 100%; min-height: 68px; line-height: 1.45; resize: vertical; }
 
   /* ---------- Tables ---------- */
   .tbl-wrap { overflow-x: auto; }
@@ -4403,14 +4408,17 @@
               tinyDangerBtn('del-activity:' + e.a.id, 'Remove activity') +
               '</div>' +
               // Wave 20 — event detail: start/end time, location, notes. Imported from a
-              // BAND (or Google/Apple) calendar, and editable by hand either way.
-              '<div class="arow">' +
-              '<label class="fld small">Starts<input type="time" class="time-in" data-ch="act-time" data-id="' + e.a.id + '" value="' + esc(e.a.time || '') + '" aria-label="Start time"></label>' +
-              '<label class="fld small">Ends<input type="time" class="time-in" data-ch="act-endtime" data-id="' + e.a.id + '" value="' + esc(e.a.endTime || '') + '" aria-label="End time"></label>' +
+              // BAND (or Google/Apple) calendar, and editable by hand either way. Laid out
+              // like renderMeetingRow: inline time inputs with aria-labels (no stacked
+              // captions), then full-width location and notes.
+              '<div class="row" style="gap:6px;margin-top:6px">' +
+              '<input type="time" class="time-in" data-ch="act-time" data-id="' + e.a.id + '" value="' + esc(e.a.time || '') + '" aria-label="Start time">' +
+              '<span class="small muted">to</span>' +
+              '<input type="time" class="time-in" data-ch="act-endtime" data-id="' + e.a.id + '" value="' + esc(e.a.endTime || '') + '" aria-label="End time">' +
               '</div>' +
-              '<input data-ch="act-location" data-id="' + e.a.id + '" value="' + esc(e.a.location || '') + '" placeholder="Location (optional)" style="width:100%;margin-top:6px">' +
-              '<textarea data-ch="act-note" data-id="' + e.a.id + '" rows="2" placeholder="Details / notes (optional)" style="width:100%;margin-top:6px">' + esc(e.a.note || '') + '</textarea>' +
-              renderRsvpBlock('act:' + e.a.id) + '</div>';
+              '<input data-ch="act-location" data-id="' + e.a.id + '" value="' + esc(e.a.location || '') + '" placeholder="Location (optional)" aria-label="Location" style="width:100%;margin-top:6px">' +
+              '<textarea class="notes-in" data-ch="act-note" data-id="' + e.a.id + '" rows="3" placeholder="Details / notes (optional)" aria-label="Details or notes" style="margin-top:6px">' + esc(e.a.note || '') + '</textarea>' +
+              '<div style="margin-top:8px">' + renderRsvpBlock('act:' + e.a.id) + '</div></div>';
           } else h += renderMeetingRow(e.m);
         });
       } else {
