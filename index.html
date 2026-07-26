@@ -5293,21 +5293,32 @@
       '<label class="fld" style="flex:1 1 200px">Note<input data-ch="scout-note" data-id="' + s.id + '" value="' + esc(s.note || '') + '" placeholder="e.g. application turned in 9/12"></label>' +
       '</div>';
 
-    // Wagon / online entry form
+    // Wagon / online entry form.
+    // Wave 21 — wagon and online sales are Trail's End money too, exactly like a storefront
+    // shift; the difference is only that 100% of it is credited to this one scout instead of
+    // being split across everyone on the shift. So the first field is the same Trail's End
+    // amount it is everywhere else.
+    // The second field genuinely depends on the type, and the math has always known this:
+    // an ONLINE donation runs through Trail's End (commissionable, counts to the goal),
+    // while a WAGON donation is cash the pack keeps. One neutral label plus a note beats a
+    // label that re-renders on a select, and it can't be wrong for either type.
     h += '<p class="eyebrow">Add wagon or online sales</p>' +
-      '<form data-form="add-entry" data-scout="' + s.id + '" class="row" style="margin-bottom:10px">' +
+      '<form data-form="add-entry" data-scout="' + s.id + '" class="row" style="margin-bottom:6px">' +
       '<label class="fld">Type<select name="kind"><option value="wagon">Wagon</option><option value="online">Online</option></select></label>' +
       '<label class="fld">Date<input type="date" name="date"></label>' +
-      '<label class="fld">Sales ($)<input class="money-in" inputmode="decimal" name="sales" placeholder="0.00"></label>' +
+      '<label class="fld">Trail’s End amount ($)<input class="money-in" inputmode="decimal" name="sales" placeholder="0.00"></label>' +
       '<label class="fld">Donations ($)<input class="money-in" inputmode="decimal" name="donations" placeholder="0.00"></label>' +
       '<button class="btn primary small" type="submit" style="align-self:flex-end">Add</button>' +
-      '</form>';
+      '</form>' +
+      '<p class="small muted" style="margin:0 0 10px">All of it is credited to ' + esc(s.name || 'this scout') + '. ' +
+      'An <strong>online</strong> donation goes through Trail’s End and earns commission; a <strong>wagon</strong> donation is cash the pack keeps' +
+      (state.cashThroughTrailsEnd ? ' — though cash is being entered as Heroes &amp; Helpers right now, so it earns commission too.' : '.') + '</p>';
 
     // Entry log
     var entries = state.entries.filter(function (e) { return e.scoutId === s.id; })
       .sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
     if (entries.length) {
-      h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col" class="num">Sales</th><th scope="col" class="num">Donations</th><th scope="col"></th></tr></thead><tbody>';
+      h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col" class="num">Trail’s End</th><th scope="col" class="num">Donations</th><th scope="col"></th></tr></thead><tbody>';
       entries.forEach(function (e) {
         h += '<tr><td>' + esc(fmtDate(e.date) || '—') + '</td><td>' + (e.kind === 'wagon' ? 'Wagon' : 'Online') +
           // Imported rows are replaced wholesale on the next Trail's End import — deleting one here won't stick.
