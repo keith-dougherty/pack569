@@ -4061,6 +4061,7 @@
     { id: 'popcorn', label: 'Popcorn', sections: [
       { id: 'storefronts', label: 'Storefronts' },
       { id: 'totals', label: 'Standings' }, // Wave 17 renamed the label; the id stays 'totals'
+      { id: 'rewards', label: 'Rewards' },
       { id: 'inventory', label: 'Inventory' }
     ] },
     { id: 'money', label: 'Money', sections: [
@@ -4273,6 +4274,7 @@
     else if (sec === 'advancement') v.innerHTML = renderAdvancement();
     else if (sec === 'budget') v.innerHTML = renderBudget();
     else if (sec === 'dues') v.innerHTML = renderDues();
+    else if (sec === 'rewards') v.innerHTML = renderRewardTiers();
     else if (sec === 'inventory') v.innerHTML = renderInventory();
     else if (sec === 'sharing') v.innerHTML = renderPackSharing();
     else if (sec === 'people') v.innerHTML = renderPackPeople();
@@ -5343,9 +5345,25 @@
 
   /* ----- Standings tab (internal id 'totals') ----- */
   function visibleScoutRows(totals) {
+    // Wave 21 — carries the scout id so a row can be matched against per-scout reward
+    // coverage; nothing else reads it.
     return state.scouts.map(function (s) {
-      return { name: s.name, den: s.den, archived: s.archived, t: totals[s.id] };
+      return { id: s.id, name: s.name, den: s.den, archived: s.archived, t: totals[s.id] };
     }).filter(function (r) { return !r.archived || r.t.combined > 0 || r.t.blocks > 0; });
+  }
+  // Wave 21 — how much the pack is picking up for each scout, as { scoutId: cents }.
+  // Computed once per render and handed to the badge helper, rather than rebuilding the
+  // whole coverage map per row.
+  function packCoverageByScout() {
+    var out = {};
+    if (!tierCoverageConfigured()) return out;
+    var cov = packCoverage();
+    perScoutCharges().forEach(function (c) {
+      Object.keys(cov[c.key] || {}).forEach(function (sid) {
+        out[sid] = (out[sid] || 0) + (c.item.estCents || 0);
+      });
+    });
+    return out;
   }
   function rankBy(rows, val) {
     return rows.slice().sort(function (a, b) { return val(b) - val(a) || a.name.localeCompare(b.name); });
@@ -5432,13 +5450,18 @@
     return sortedTiers().some(function (t) { return arrOf(t.covers).length > 0; });
   }
   // Standings badges for one row: earned-tier name (navy) + gold "dues covered" marker.
-  function tierBadgesFor(r, tiers, duesTier) {
+  // Wave 21 — the gold badge used to be a hardcoded "Dues covered", shown to anyone past
+  // the LOWEST tier. That was the old model, where one typed dues figure was the only thing
+  // a tier could pay for. Now a tier covers whatever it's pointed at, so the badge reports
+  // the real amount — and reads "Dues covered / Dues covered" no more.
+  // coveredCents comes from packCoverageByScout(); pass {} to show tier names only.
+  function tierBadgesFor(r, tiers, coveredCents) {
     if (!tiers.length || r.archived) return '';
-    var base = goalBaseOf(r);
-    var et = earnedTier(base, tiers);
+    var et = earnedTier(goalBaseOf(r), tiers);
     if (!et) return '';
     var html = ' <span class="pill navy">' + esc(et.name || 'Tier') + '</span>';
-    if (duesTier && base >= duesTier.thresholdCents) html += ' <span class="pill">🎟 Dues covered</span>';
+    var cov = (coveredCents || {})[r.id] || 0;
+    if (cov > 0) html += ' <span class="pill">pack covers ' + fmt(cov) + '</span>';
     return html;
   }
 
@@ -6623,13 +6646,22 @@
       '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
       (pack.viaTE ? '' :
         '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Cash donations</span></div>') +
-      '<div class="stat"><span class="v money" style="color:var(--accent-text)">' + (pack.commission == null ? '—' : fmt(pack.commission)) + '</span>' +
+      '<div class="stat"><span class="v money">' + (pack.commission == null ? '—' : fmt(pack.commission)) + '</span>' +
       '<span class="l">Pack commission</span></div>' +
+      // Wave 21 — what the pack actually ends up with. Sales themselves belong to Trail's
+      // End; only the commission comes back. Cash donations the pack keeps are already
+      // whole. cashKept is 0 when cash is routed through Trail's End, so the same
+      // expression gives commission alone in that mode.
+      '<div class="stat"><span class="v money" style="color:var(--accent-text)">' +
+      (pack.commission == null ? '—' : fmt(pack.cashKept + pack.commission)) + '</span>' +
+      '<span class="l">Total to the pack</span></div>' +
       '</div>' +
       '<p class="small muted" style="margin:8px 0 0">Trail’s End is sales plus donations entered in the app' +
       (pack.viaTE
-        ? ', including cash donations — they’re being entered as Heroes &amp; Helpers, so everything here earns commission.'
-        : ' — it earns commission. Cash donations are kept in full and earn none.') + '</p>';
+        ? ', including cash donations — they’re being entered as Heroes &amp; Helpers, so everything here earns commission. ' +
+          '<strong>Total to the pack</strong> is the commission, since that’s all that comes back.'
+        : ' — it earns commission. Cash donations are kept in full and earn none. ' +
+          '<strong>Total to the pack</strong> is commission plus those cash donations.') + '</p>';
 
     // Trail's End goal progress
     if (pack.teGoal > 0) {
@@ -6691,48 +6723,71 @@
       h += '</tbody></table></div></div>';
     }
 
-    // Standings board 1 — sales + online donations (goal/commission base)
+    // Wave 21 — three boards, in the order the money makes sense: what went through
+    // Trail's End, what came in as cash, and the two added up.
+    // Sales and online donations used to be separate columns, but they're the same thing to
+    // Trail's End — both commissionable, both counting toward the goal — so splitting them
+    // was a distinction with no consequence. One Trail's End column now.
+    // The cash and combined boards are hidden entirely when cash runs through Trail's End:
+    // in that mode cash IS Trail's End money, so a cash board would be empty and a combined
+    // board would just repeat the first one.
     var showGoal = pack.target != null;
     var tierSorted = sortedTiers();                                 // Wave 8 — earned-tier badges
-    var tierDues = tierSorted.length ? tierSorted[0] : null;
-    h += '<div class="card"><h2 class="section display">Standings — sales + online donations</h2>';
+    var tierCovered = packCoverageByScout();                        // Wave 21 — what the pack picks up
+    // Per-scout Trail's End total. goalBaseOf already folds cash in when it's routed
+    // through Trail's End, so this matches the pack-level teEligible in both modes.
+    var teOf = goalBaseOf;
+
+    h += '<div class="card"><h2 class="section display">Trail’s End standings</h2>';
     if (!rows.length) h += '<p class="small muted">Add scouts and record some sales to see standings.</p>';
     else {
-      h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Standings — sales and online donations</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Sales</th><th scope="col" class="num">Online don.</th><th scope="col" class="num">Total</th>' +
+      h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Trail’s End standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Trail’s End</th>' +
         (showGoal ? '<th scope="col" class="num">Goal</th>' : '') + '</tr></thead><tbody>';
-      rankBy(rows, eligibleOf).forEach(function (r, i) {
+      rankBy(rows, teOf).forEach(function (r, i) {
         var goalCell = '';
         if (showGoal) {
           if (r.archived) goalCell = '<td class="num muted">—</td>';
           else {
-            var gp = Math.round(goalBaseOf(r) / pack.target * 100);
+            var gp = Math.round(teOf(r) / pack.target * 100);
             goalCell = '<td class="num' + (gp >= 100 ? '" style="color:var(--good);font-weight:650' : '') + '">' + gp + '%</td>';
           }
         }
         h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + (r.archived ? ' <span class="pill navy">archived</span>' : '') +
-          tierBadgesFor(r, tierSorted, tierDues) + '</td>' +
-          '<td class="num">' + fmt(r.t.sales) + '</td><td class="num">' + fmt(r.t.onD) + '</td>' +
-          '<td class="num" style="font-weight:650">' + fmt(eligibleOf(r)) + '</td>' + goalCell + '</tr>';
+          tierBadgesFor(r, tierSorted, tierCovered) + '</td>' +
+          '<td class="num" style="font-weight:650">' + fmt(teOf(r)) + '</td>' + goalCell + '</tr>';
       });
-      h += '</tbody></table></div>';
-      if (showGoal) h += '<p class="small muted" style="margin:8px 0 0">Goal % = each scout’s Trail’s End total (sales + online donations' + (pack.viaTE ? ' + cash donations' : '') + ') ÷ per-scout target of ' + fmt(pack.teTarget) + '.</p>';
+      h += '</tbody></table></div>' +
+        '<p class="small muted" style="margin:8px 0 0">Sales and donations entered in the Trail’s End app' +
+        (pack.viaTE ? ', including cash donations entered as Heroes &amp; Helpers' : '') + ' — all of it commissionable.' +
+        (showGoal ? ' Goal % is against the per-scout target of ' + fmt(pack.teTarget) + '.' : '') + '</p>';
     }
     h += '</div>';
 
-    // Wave 8: reward tiers — dues paid by the pack + bonus reward labels.
-    h += renderRewardTiers();
-
-    // Standings board 2 — cash donations (storefront split + wagon scout-level)
-    if (rows.length) {
-      h += '<div class="card"><h2 class="section display">Standings — cash donations</h2>' +
-        '<div class="tbl-wrap"><table><caption class="visually-hidden">Standings — cash donations</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront</th><th scope="col" class="num">Wagon</th><th scope="col" class="num">Total cash</th></tr></thead><tbody>';
+    // Cash board — only meaningful while the pack keeps the cash.
+    if (rows.length && !pack.viaTE) {
+      h += '<div class="card"><h2 class="section display">Cash donation standings</h2>' +
+        '<div class="tbl-wrap"><table><caption class="visually-hidden">Cash donation standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront</th><th scope="col" class="num">Wagon</th><th scope="col" class="num">Total cash</th></tr></thead><tbody>';
       rankBy(rows, cashDonOf).forEach(function (r, i) {
         h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + (r.archived ? ' <span class="pill navy">archived</span>' : '') + '</td>' +
           '<td class="num">' + fmt(r.t.storeD) + '</td><td class="num">' + fmt(r.t.wagonD) + '</td>' +
           '<td class="num" style="font-weight:650">' + fmt(cashDonOf(r)) + '</td></tr>';
       });
       h += '</tbody></table></div>' +
-        '<p class="small muted" style="margin:8px 0 0">Cash donations credited to each scout — their split of storefront-table donations plus wagon donations logged to them (wagon isn’t split).</p></div>';
+        '<p class="small muted" style="margin:8px 0 0">Cash credited to each scout — their split of storefront-table donations plus wagon donations logged to them (wagon isn’t split). The pack keeps all of it.</p></div>';
+    }
+
+    // Combined board — Trail's End plus cash. Same reason to hide it: with cash routed
+    // through Trail's End this is identical to the first board.
+    if (rows.length && !pack.viaTE) {
+      h += '<div class="card"><h2 class="section display">Combined standings</h2>' +
+        '<div class="tbl-wrap"><table><caption class="visually-hidden">Combined standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Trail’s End</th><th scope="col" class="num">Cash</th><th scope="col" class="num">Combined</th></tr></thead><tbody>';
+      rankBy(rows, function (r) { return r.t.combined; }).forEach(function (r, i) {
+        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + (r.archived ? ' <span class="pill navy">archived</span>' : '') + '</td>' +
+          '<td class="num">' + fmt(teOf(r)) + '</td><td class="num">' + fmt(cashDonOf(r)) + '</td>' +
+          '<td class="num" style="font-weight:650">' + fmt(r.t.combined) + '</td></tr>';
+      });
+      h += '</tbody></table></div>' +
+        '<p class="small muted" style="margin:8px 0 0">Everything a scout brought in, however it was paid. Reward tiers are earned on the Trail’s End figure, not this one.</p></div>';
     }
 
     // Wave 4: other fundraisers — a standalone side-ledger below the popcorn content.
