@@ -134,46 +134,67 @@ and the heads are not all the same kind or price.
   siblingRateCents,              // per sibling — often a child rate, sometimes 0
   flatCents,                     // used when basis === 'flat'
   eventId,                       // optional link to an Event
-  fundedBy: 'pack'|'families'|'council' }
+  fundedBy: 'pack'|'families',   // whose money it is in the end
+  paidDirectTo }                 // '' = money flows through the pack
+                                 // a name = families pay THEM directly, e.g. 'Council'
 ```
 
-#### `fundedBy` — who the cost lands on in the end
+#### Two questions, two fields
 
-This replaces the old `familyPays` boolean. It answers **"when the dust settles, whose money paid
-for this?"** — *not* "who wrote the first cheque", which is a different question and the reason an
-earlier draft of this called the field `payer` and confused everybody, including me.
+The old `familyPays` boolean could not express a council camp at all. The obvious fix — a third
+value, `'council'` — reads backwards: it sounds like the council is *paying for* the camp, when in
+fact the council is the one *being paid*. That was a symptom, not a wording problem. **One field
+was being asked two independent questions**, which is the same mistake this whole document is
+about:
 
-**In two of the three cases the pack writes the first cheque anyway.** Here is the money actually
-moving:
+1. **Whose money is it, in the end?** → `fundedBy`
+2. **Does it pass through the pack's bank account?** → `paidDirectTo`
+
+Separated, both read correctly and three real arrangements fall out:
 
 ```
-fundedBy: 'pack'        vendor  ←──────────  PACK
-                        one ledger entry: OUT. Nobody is billed.
-                        This is what fundraising exists to cover.
+fundedBy: 'pack'         paidDirectTo: ''
+    vendor  ←──────────  PACK
+    One ledger entry, OUT. Nobody is billed.
+    This is what fundraising exists to cover.
 
-fundedBy: 'families'    vendor  ←──────────  PACK  ←────────  families
-                        ledger OUT to the vendor, then ledger IN per family.
-                        The pack fronts the money and is made whole.
-                        Net cost to the pack ≈ 0, except what it waives or forgives.
+fundedBy: 'families'     paidDirectTo: ''
+    vendor  ←──────────  PACK  ←────────  families
+    Ledger OUT to the vendor, then ledger IN per family.
+    The pack fronts the money and is made whole. Net cost ≈ 0,
+    except what it waives or forgives.
 
-fundedBy: 'council'     council ←────────────────────────────  families
-                        NO ledger entries. The pack is not in this transaction.
+fundedBy: 'families'     paidDirectTo: 'Council'
+    Council  ←─────────────────────────  families
+    NO ledger entries. The pack is not in this transaction at all.
 ```
 
-| `fundedBy` | Pack fronts it? | Families billed? | Touches the pack's balance? | Example |
+| | Pack fronts it? | Families billed by us? | Touches our balance? | Example |
 |---|---|---|---|---|
-| `pack` | yes | no | yes — an expense | charter fee, awards, program materials |
-| `families` | yes | yes | yes — out, then back in | Blue & Gold, pack campout, dues |
-| `council` | **no** | no *(they pay council direct)* | **no** | day camp, resident camp |
+| pack | yes | no | yes — an expense | charter fee, awards, program materials |
+| families, through us | yes | yes | yes — out, then back in | Blue & Gold, campout, dues |
+| families, direct | **no** | **no** | **no** | day camp, resident camp |
 
-The useful way to read it: **`pack` is what popcorn has to cover.** `families` passes through.
-`council` isn't ours at all.
+The useful reading: **`fundedBy: 'pack'` is what popcorn has to cover.** Anything `families` is
+theirs either way — `paidDirectTo` only says whether we are the ones handling it.
 
-`council` lines exist so the committee can see the true cost of a year to a family, and so the
-event still appears on the calendar — but a council camp fee is not the pack's money and must
-never move the pack's balance. Today's model cannot express that, so those costs either sit in
-the budget and overstate what the pack spends, or get left out and understate what Scouting costs
-a family.
+**`paidDirectTo` holds a name, not a flag**, which makes it both clearer and more general. Council
+camps are the common case, but so are uniforms: 510-278 budgets *"every Cub Scout in full
+uniform"*, and most packs have families buy those from the Scout Shop themselves. Same
+arrangement, different payee, no new concept:
+
+```
+Cub day camp      fundedBy: families   paidDirectTo: 'Council'
+Full uniforms     fundedBy: families   paidDirectTo: 'Scout Shop'
+```
+
+These lines exist so the committee can see the true cost of a year to a family, and so the event
+still appears on the calendar — but that money is never the pack's and must never move the pack's
+balance. Today's model cannot say this, so those costs either sit in the budget and overstate what
+the pack spends, or get dropped and understate what Scouting costs a family.
+
+`fundedBy: 'pack'` with a `paidDirectTo` is meaningless — if the pack is paying, it goes through
+the pack's account — and the UI should not offer the combination.
 
 #### Planning assumes; reality is entered afterwards
 
@@ -353,7 +374,7 @@ scout's to earn.
 - Family balance = `Σ unwaived charges − Σ payments`.
 
 Attendance now lands cleanly: it decides **which charges are raised**, not what the pack spent —
-because what the pack spent is whatever the ledger says. And `council` lines raise no charges at
+because what the pack spent is whatever the ledger says. And lines with a `paidDirectTo` raise no charges at
 all, since that money never passes through the pack.
 
 #### Worked example
@@ -469,14 +490,14 @@ Charter fee            flat    $100      fundedBy: pack
 Awards & badges        flat    $350      fundedBy: pack
 Fall campout           per-head  scout $40 · adult $40 · sibling $20   fundedBy: families  → Event
 Blue & Gold            per-head  scout $15 · adult $15 · sibling $8    fundedBy: families  → Event
-Cub day camp           per-head  scout $145                            fundedBy: council → Event
+Cub day camp           per-head  scout $145        fundedBy: families  paidDirectTo: Council  → Event
 Pack dues              per-head  scout $80                             fundedBy: families
 ```
 
 Planned totals use the roster assumption — every active scout, one adult each. Ten scouts:
 
 ```
-A) Budgeted expenses        $3,150      (council lines excluded — not the pack's money)
+A) Budgeted expenses        $3,150      (paid-direct lines excluded — not the pack's money)
 B) Income                     $420      carryover
 C) Fundraising need         $2,730   ÷ 32% commission = $8,531 pack popcorn goal
                                                        ÷ 10  =   $853 per scout
@@ -562,7 +583,8 @@ At the committee meeting, budget-vs-actual by category, with variance, straight 
 
 ### March — day camp, which is not the pack's money
 
-Day camp is on the calendar. Families pay council **directly**, $145 a scout.
+Day camp is on the calendar. Families pay the council **directly**, $145 a scout —
+`fundedBy: 'families'`, `paidDirectTo: 'Council'`.
 
 - It appears in Program like any other event.
 - It appears in the true-cost-to-a-family view: *"this year costs your family about $X."*
@@ -570,6 +592,9 @@ Day camp is on the calendar. Families pay council **directly**, $145 a scout.
 
 Today there is no way to say that. Either the fee sits in the budget and overstates what the pack
 spends, or it is left out and the pack understates what Scouting costs a family.
+
+Uniforms work the same way — `paidDirectTo: 'Scout Shop'` — so 510-278's *"every Cub Scout in full
+uniform"* line can finally be budgeted honestly without pretending the pack buys them.
 
 ### June — closing the year
 
@@ -604,8 +629,8 @@ Close-out works as it does now, with better inputs:
 | `activity.actualCents × roster` | Σ ledger entries on that line |
 | `collected[key][scoutId] = true` | a charge + a payment ledger entry |
 | reward tier `covers[]` | tier threshold waives `who: 'scout'` charges |
-| `familyPays` boolean | `fundedBy: 'pack'\|'families'\|'council'` |
-| camp fees in the pack budget | `fundedBy: 'council'` — visible, outside the books |
+| `familyPays` boolean | `fundedBy: 'pack'\|'families'` + `paidDirectTo` |
+| camp fees in the pack budget | `paidDirectTo: 'Council'` — visible, outside the books |
 | `computeBudget().commission` | an income ledger entry, posted when it lands |
 | `meetings[]` + `attendance[]` | Events + attendance keyed on `event.id` |
 | storefront `salesCents`/`donationsCents` | unchanged — popcorn keeps its own subsystem |
@@ -645,8 +670,8 @@ Add the post-event entry grid. Useful on its own even before charges exist — t
 knows how many people actually came to Blue & Gold.
 
 **Phase 3 — fundedBy, charges and family accounts.** Introduce `fundedBy`, migrating
-`familyPays: true` → `'families'` and `false` → `'pack'` (nothing becomes `'council'` automatically — that is a
-judgement call per line, prompted once). Add the three rates and `adultsPerScout`. Generate
+`familyPays: true` → `'families'` and `false` → `'pack'` (no line gets a `paidDirectTo`
+automatically — that is a judgement call per line, prompted once). Add the three rates and `adultsPerScout`. Generate
 charges from recorded attendance, waiving `who: 'scout'` where a tier applies. Backfill history
 from `collected[]`. Rework Dues & fees onto charges.
 
@@ -679,7 +704,8 @@ and are worth doing even if the rest waits.
 2. **Families are billed per event, per head** — scout and accompanying parent both.
 3. **A fundraising tier waives the scout's share only.** The adult share always stands.
 4. **Council events are paid by families directly to council** and never enter the pack's books —
-   `fundedBy: 'council'`, on the calendar, costed for families, invisible to the balance.
+   `fundedBy: 'families'` with `paidDirectTo: 'Council'`. On the calendar, counted in what the
+   year costs a family, invisible to the pack's balance.
 
 5. **Plan from an assumption; charge from recorded attendance.** Parents will not be RSVPing here,
    so the plan assumes every active scout plus one adult. After the event the Treasurer enters the
