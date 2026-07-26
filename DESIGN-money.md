@@ -1,7 +1,8 @@
 # Design — separating the plan, the money, and the calendar
 
-**Status:** Written 2026-07-26. **Phases 0 and 1 are built** (2026-07-26) — the ledger,
-bank reconciliation, and `actual = Σ ledger`. Phases 2–4 remain proposal.
+**Status:** Written 2026-07-26. **Phases 0, 1 and 2 are built** (2026-07-26) — the ledger,
+bank reconciliation, `actual = Σ ledger`, and the calendar split out into `state.events[]`.
+Phase 2b (attendance head counts) and Phases 3–4 remain proposal.
 **Problem:** budgeting and spending are the same record, so neither can be done properly.
 
 > **Naming note.** `state.ledger` is the transaction register described in §3.3. The word
@@ -691,14 +692,41 @@ real spend back down by the roster before seeding next year's estimate; and the 
 divergence merge** unions `state.ledger`, so two leaders posting receipts from two devices
 cannot lose each other's transactions.
 
-**Phase 2 — split events out.** Create `state.events[]` from `meetings[]` + the calendar half of
-`budget.activities[]`. Repoint the seven calendar readers. Budget lines keep `eventId`. Delete the
-calendar fields from budget lines.
+**Phase 2 — split events out. ✅ BUILT.** `state.events[]` now holds every meeting and the
+calendar half of every activity; `meetings[]` is emptied (not deleted — an older build reading the
+record finds an empty calendar rather than a missing key). Budget lines keep their own id, because
+the ledger's `lineId` points at it, and gain an `eventId`. The calendar fields are gone from the
+budget line entirely.
 
-**Phase 2b — attendance head counts.** Widen `attendance[eventId][scoutId]` from `true` to
-`{ scout, adults, siblings }`, migrating existing marks to `{ scout: 1, adults: 0, siblings: 0 }`.
+**The first symptom in §1 is fixed:** importing a BAND calendar creates *events only*. No budget
+rows, no money, no per-scout flags. Budgeting an imported event is a deliberate act — a
+"+ Budget this" button on the day detail — and an unbudgeted event reads "not budgeted" rather than
+silently implying a cost.
+
+Decisions made while building it:
+
+- **Event ids are fresh, and the migration repoints attendance and RSVPs onto them.** Reusing the
+  meeting's id would have kept `attendance[meetingId]` working untouched, but left
+  `event.id === budgetLine.id` for every migrated activity — two record types aliased in one
+  namespace for the life of the app. The repointing is ten lines and is tested directly.
+- **RSVP and attendance now key off one id.** `rsvps['mtg:'+id]` and `rsvps['act:'+id]` collapse to
+  the bare `event.id`, which is the single mechanism §3.1 asks for. Storefronts are not events, so
+  `'sf:'` keys stay prefixed.
+- **A budget line's month comes from its event.** `slot` lives on the event, so the Budget's
+  month grouping is derived rather than stored twice. Lines whose event was deleted group under
+  **"Not on the calendar"** — a state that could not exist before the split, because the date and
+  the money were the same row.
+- **Deleting a calendar event never deletes the budget line under it.** The ledger posts against
+  that line; removing it to service a calendar edit would orphan real transactions. The event goes,
+  the money stands, and the Budget says where it went.
+- **`meetings[]` is emptied rather than deleted**, and a budget line pointing at a vanished event is
+  unlinked rather than left dangling.
+
+**Phase 2b — attendance head counts.** *(Next.)* Widen `attendance[eventId][scoutId]` from `true`
+to `{ scout, adults, siblings }`, migrating existing marks to `{ scout: 1, adults: 0, siblings: 0 }`.
 Add the post-event entry grid. Useful on its own even before charges exist — the pack finally
-knows how many people actually came to Blue & Gold.
+knows how many people actually came to Blue & Gold. Phase 2 already did the hard half: attendance
+is keyed on `event.id`, so this is a value-shape change on a key that no longer has to move.
 
 **Phase 3 — fundedBy, charges and family accounts.** Introduce `fundedBy`, migrating
 `familyPays: true` → `'families'` and `false` → `'pack'` (no line gets a `paidDirectTo`

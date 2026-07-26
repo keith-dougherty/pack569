@@ -1208,6 +1208,34 @@
   function programYearStartISO(py) { return py + '-09-01'; }
   function programYearEndISO(py) { return (py + 1) + '-08-31'; }
   // ---------------------------------------------------------------------------
+  // MONEY REDESIGN, Phase 2 — events split out of the budget (DESIGN-money.md §3.1).
+  //
+  // `state.budget.activities` used to be two records sharing a row: a calendar event AND a
+  // budget line. Seven calendar functions read it, which is the whole design problem — and
+  // the most visible symptom was that importing a BAND calendar silently wrote BUDGET ROWS.
+  //
+  // state.events[] is now the pure calendar record. A budget line points at one with
+  // `eventId`; an event needs no budget line at all, which is what lets an imported
+  // calendar be just a calendar.
+  //
+  // Meetings live here too, so RSVP and attendance key off ONE id (`event.id`) instead of
+  // today's split between attendance[meetingId] and rsvps['act:'+id].
+  // ---------------------------------------------------------------------------
+  var EVENT_KINDS = ['pack', 'den', 'activity'];
+  function freshEvent(patch) {
+    var e = {
+      id: uid(), kind: 'activity',
+      den: '',            // kind 'den' only
+      name: '',           // kind 'activity' only — meetings derive their label
+      date: '', time: '', endTime: '', location: '', note: '',
+      slot: 0,            // program month; for a dated event, derived from the date
+      sourceUid: '',      // round-trips ICS so a re-import updates rather than duplicates
+      adventure: ''       // kind 'den' only — drives the advancement mark-off
+    };
+    if (patch) Object.keys(patch).forEach(function (k) { e[k] = patch[k]; });
+    return e;
+  }
+  // ---------------------------------------------------------------------------
   // MONEY REDESIGN, Phase 0 — the ledger (DESIGN-money.md §3.3).
   //
   // Until now the pack's "balance" was a MODEL OUTPUT: computeBudget derived it from the
@@ -1270,6 +1298,7 @@
       version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
+      events: [],                      // Phase 2 — the calendar record; meetings[] is legacy
       ledger: [], book: freshBook(),   // Phase 0 — what actually moved, and where it starts
       rsvps: {}, attendance: {},
       collected: {}, advancement: {},
@@ -1512,6 +1541,112 @@
     }
     d.budget.activities.forEach(function (a) { if (a && typeof a === 'object') migrateLineActual(a, 'Activity'); });
     d.budget.expenses.forEach(function (e) { if (e && typeof e === 'object') migrateLineActual(e, 'Expense'); });
+    // -----------------------------------------------------------------------
+    // MONEY REDESIGN, Phase 2 — split the calendar out (DESIGN-money.md §3.1, §5).
+    //
+    // Every meeting, and the calendar half of every activity, becomes an Event. The budget
+    // line survives with its OWN id (the ledger's `lineId` points at it, so that id is load
+    // bearing and must not move) and gains an `eventId`.
+    //
+    // Events get FRESH ids and the migration repoints attendance and RSVPs onto them. The
+    // cheaper trick — reuse the meeting's id so attendance keys keep working untouched —
+    // would have left `event.id === budgetLine.id` for every migrated activity, aliasing
+    // two record types in one namespace for the life of the app. Ten lines of repointing
+    // here is the better trade, and it is tested.
+    // -----------------------------------------------------------------------
+    // These two are normalized properly further down, but this migration REPOINTS both, so
+    // they have to be objects before it runs. Idempotent — the real normalizers still run.
+    if (!d.rsvps || typeof d.rsvps !== 'object' || Array.isArray(d.rsvps)) d.rsvps = {};
+    if (!d.attendance || typeof d.attendance !== 'object' || Array.isArray(d.attendance)) d.attendance = {};
+    if (!Array.isArray(d.events)) d.events = [];
+    d.events = d.events.filter(function (e) { return e && typeof e === 'object' && !Array.isArray(e); });
+    var evByMeeting = {}, evByActivity = {};
+    if (Array.isArray(d.meetings) && d.meetings.length) {
+      d.meetings.forEach(function (m) {
+        if (!m || typeof m !== 'object') return;
+        var id = uid();
+        evByMeeting[m.id] = id;
+        d.events.push(freshEvent({
+          id: id, kind: m.kind === 'pack' ? 'pack' : 'den',
+          den: typeof m.den === 'string' ? m.den : '',
+          date: typeof m.date === 'string' ? m.date : '',
+          time: parseLegacyTime(m.time),
+          note: typeof m.note === 'string' ? m.note : '',
+          slot: dateToSlot(m.date),
+          adventure: typeof m.adventure === 'string' ? m.adventure : ''
+        }));
+      });
+      // meetings[] is emptied, not deleted — an older build reading this record finds an
+      // empty calendar rather than a missing key it would crash on.
+      d.meetings = [];
+    }
+    d.budget.activities.forEach(function (a) {
+      if (!a || typeof a !== 'object') return;
+      if (typeof a.eventId === 'string' && a.eventId) return; // already split
+      var id = uid();
+      evByActivity[a.id] = id;
+      d.events.push(freshEvent({
+        id: id, kind: 'activity',
+        name: typeof a.name === 'string' ? a.name : '',
+        date: typeof a.date === 'string' ? a.date : '',
+        time: parseLegacyTime(a.time), endTime: parseLegacyTime(a.endTime),
+        location: typeof a.location === 'string' ? a.location : '',
+        note: typeof a.note === 'string' ? a.note : '',
+        // A dated activity's month comes from its date; an undated one keeps its planning slot.
+        slot: a.date ? dateToSlot(a.date) : (typeof a.slot === 'number' ? a.slot : 0),
+        sourceUid: typeof a.sourceUid === 'string' ? a.sourceUid : ''
+      }));
+      a.eventId = id;
+      // The calendar fields are gone from the budget line. This is the actual split.
+      delete a.date; delete a.time; delete a.endTime;
+      delete a.location; delete a.note; delete a.sourceUid; delete a.slot;
+    });
+    // Repoint attendance — keyed by meeting id, now by event id.
+    if (Object.keys(evByMeeting).length) {
+      var attNext = {};
+      Object.keys(d.attendance).forEach(function (k) {
+        attNext[evByMeeting[k] || k] = d.attendance[k];
+      });
+      d.attendance = attNext;
+    }
+    // Repoint RSVPs — 'mtg:'+id and 'act:'+id collapse onto the bare event id, which is the
+    // one mechanism §3.1 asks for. Storefronts are not events, so 'sf:' keys stay prefixed.
+    if (Object.keys(evByMeeting).length || Object.keys(evByActivity).length) {
+      var rsvpNext = {};
+      Object.keys(d.rsvps).forEach(function (k) {
+        var to = k;
+        if (k.indexOf('mtg:') === 0 && evByMeeting[k.slice(4)]) to = evByMeeting[k.slice(4)];
+        else if (k.indexOf('act:') === 0 && evByActivity[k.slice(4)]) to = evByActivity[k.slice(4)];
+        rsvpNext[to] = d.rsvps[k];
+      });
+      d.rsvps = rsvpNext;
+    }
+    // Coerce every event, migrated or already stored.
+    d.events.forEach(function (e) {
+      if (typeof e.id !== 'string' || !e.id) e.id = uid();
+      if (EVENT_KINDS.indexOf(e.kind) === -1) e.kind = 'activity';
+      e.den = typeof e.den === 'string' ? e.den : '';
+      e.name = typeof e.name === 'string' ? e.name : '';
+      e.date = typeof e.date === 'string' ? e.date : '';
+      e.time = parseLegacyTime(e.time);
+      e.endTime = parseLegacyTime(e.endTime);
+      e.location = typeof e.location === 'string' ? e.location : '';
+      e.note = typeof e.note === 'string' ? e.note : '';
+      e.slot = (typeof e.slot === 'number' && isFinite(e.slot)) ? Math.min(11, Math.max(0, Math.floor(e.slot))) : 0;
+      if (e.date) e.slot = dateToSlot(e.date);   // a date always wins over a stored slot
+      e.sourceUid = typeof e.sourceUid === 'string' ? e.sourceUid : '';
+      e.adventure = typeof e.adventure === 'string' ? e.adventure : '';
+      if (e.kind !== 'den') { e.den = ''; e.adventure = ''; }
+      // Wave 15 — handbook renames apply to the free-text adventure field (exact match).
+      if (e.adventure && ADV_RENAMES[e.adventure]) e.adventure = ADV_RENAMES[e.adventure];
+    });
+    // A budget line whose event was deleted is unlinked rather than left dangling — it
+    // still holds its money, it just has no place on the calendar.
+    var evIds = {};
+    d.events.forEach(function (e) { evIds[e.id] = true; });
+    d.budget.activities.forEach(function (a) {
+      if (typeof a.eventId !== 'string' || !evIds[a.eventId]) a.eventId = '';
+    });
     // Wave 2: RSVPs — { 'sf:'|'mtg:'|'act:'+id: { scoutId: { s:'yes'|'no'|'maybe', adults:int } } }
     if (!d.rsvps || typeof d.rsvps !== 'object' || Array.isArray(d.rsvps)) d.rsvps = {};
     Object.keys(d.rsvps).forEach(function (k) {
@@ -1963,7 +2098,31 @@
 
   function getScout(id) { return state.scouts.find(function (s) { return s.id === id; }); }
   function getStorefront(id) { return state.storefronts.find(function (s) { return s.id === id; }); }
-  function getMeeting(id) { return state.meetings.find(function (m) { return m.id === id; }); }
+  // Phase 2 — meetings[] is gone; everything on the calendar is an Event.
+  function getEvent(id) { return state.events.find(function (e) { return e.id === id; }); }
+  function eventIsMeeting(ev) { return !!ev && (ev.kind === 'pack' || ev.kind === 'den'); }
+  // A meeting's label is DERIVED, not stored — "Pack meeting" is not a name somebody typed,
+  // and storing it would let it drift from the kind it describes.
+  function eventLabel(ev) {
+    if (!ev) return '';
+    if (ev.kind === 'pack') return 'Pack meeting';
+    if (ev.kind === 'den') return 'Den meeting' + (ev.den ? ' · ' + ev.den : '');
+    return ev.name || 'Activity';
+  }
+  // The two directions across the split. Either side may be absent, and both absences are
+  // meaningful: an imported calendar event nobody has budgeted for, and a budget line whose
+  // event was deleted but whose money still stands.
+  function lineForEvent(evId) {
+    if (!evId) return null;
+    return state.budget.activities.find(function (a) { return a.eventId === evId; }) || null;
+  }
+  function eventForLine(a) { return (a && a.eventId) ? (getEvent(a.eventId) || null) : null; }
+  // A budget line's planning month now comes from its event. A line with no event has no
+  // month, and the Budget groups those separately rather than silently filing them in September.
+  function lineSlot(a) {
+    var ev = eventForLine(a);
+    return ev ? ev.slot : -1;
+  }
   function getFundraiser(id) { return state.fundraisers.find(function (f) { return f.id === id; }); }
   function activeScouts() { return state.scouts.filter(function (s) { return !s.archived; }); }
 
@@ -1972,8 +2131,9 @@
     var map = {};
     function push(iso, ev) { var day = +iso.split('-')[2]; (map[day] = map[day] || []).push(ev); }
     state.storefronts.forEach(function (sf) { if (monthKey(sf.date) === mk) push(sf.date, { type: 'storefront', sf: sf }); });
-    state.budget.activities.forEach(function (a) { if (a.date && monthKey(a.date) === mk) push(a.date, { type: 'activity', a: a }); });
-    state.meetings.forEach(function (m) { if (monthKey(m.date) === mk) push(m.date, { type: 'meeting', m: m }); });
+    // Phase 2 — one pass over events[] replaces the old meetings[] + activities[] pair.
+    // Consumers switch on ev.kind rather than on which array the row came out of.
+    state.events.forEach(function (ev) { if (ev.date && monthKey(ev.date) === mk) push(ev.date, { type: 'event', ev: ev }); });
     return map;
   }
 
@@ -2167,8 +2327,13 @@
       pct: pct, salesGoal: salesGoal, perScoutGoal: perScoutGoal
     };
   }
+  // Phase 2 — a budget line's month is its event's month. Lines with no event (their event
+  // was deleted, or they were never scheduled) come back from unscheduledActivities().
   function activitiesInSlot(slot) {
-    return state.budget.activities.filter(function (a) { return a.slot === slot; });
+    return state.budget.activities.filter(function (a) { return lineSlot(a) === slot; });
+  }
+  function unscheduledActivities() {
+    return state.budget.activities.filter(function (a) { return lineSlot(a) === -1; });
   }
 
   /* ---------------- Ledger (Phase 0) ---------------- */
@@ -2288,7 +2453,8 @@
   }
 
   /* ---------------- Wave 2: RSVP / headcounts ---------------- */
-  // Event keys: 'sf:'+storefrontId, 'mtg:'+meetingId, 'act:'+activityId.
+  // Event keys: 'sf:'+storefrontId for a storefront; Phase 2 — every calendar event
+  // (meeting or activity) is keyed by its bare event id.
   function rsvpSummary(evKey) {
     var map = state.rsvps[evKey] || {};
     var roster = activeScouts();
@@ -2362,7 +2528,7 @@
   /* ---------------- Wave 2: attendance check-off ---------------- */
   function renderAttendanceBlock(m) {
     var open = !!ui.attOpen[m.id];
-    var marked = state.attendance[m.id] || {};
+    var marked = state.attendance[m.id] || {};   // Phase 2 — keyed by event id
     var denFiltered = m.kind === 'den' && !!m.den;
     // Den meetings show that den's active scouts; anyone already marked stays visible.
     var roster = state.scouts.filter(function (s) {
@@ -2624,8 +2790,8 @@
       // planned and nobody credited for it.
       (function () {
         var t = todayISO();
-        var uncredited = state.meetings.filter(function (m) {
-          if (!m.adventure || !m.date || m.date >= t) return false;
+        var uncredited = state.events.filter(function (m) {
+          if (m.kind !== 'den' || !m.adventure || !m.date || m.date >= t) return false;
           return !activeScouts().some(function (s) { return advStatus(s.id, 'req', m.adventure) || advStatus(s.id, 'elect', m.adventure); });
         });
         if (!uncredited.length) return '';
@@ -2807,11 +2973,15 @@
   ];
   function seedStandardYear() {
     var existing = {};
-    state.budget.activities.forEach(function (a) { existing[(a.name || '').trim().toLowerCase()] = 1; });
+    // Phase 2 — the seed makes a calendar entry AND the budget line that pays for it, since
+    // "the traditional slate" is a plan for both. Idempotence keys off the EVENT name.
+    state.events.forEach(function (e) { if (e.kind === 'activity') existing[(e.name || '').trim().toLowerCase()] = 1; });
     var added = 0;
     SEED_ACTIVITIES.forEach(function (t) {
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot
-      state.budget.activities.push({ id: uid(), slot: t.slot, name: t.name, date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, perScout: false, familyPays: false });
+      var seedEv = freshEvent({ kind: 'activity', slot: t.slot, name: t.name });
+      state.events.push(seedEv);
+      state.budget.activities.push({ id: uid(), name: t.name, eventId: seedEv.id, estCents: 0, perScout: false, familyPays: false });
       added += 1;
     });
     if (added) {
@@ -3941,17 +4111,18 @@
         if (times.length) ev.times = times;   // shift windows only — never the money on a block
         events.push(ev);
       });
-      state.meetings.forEach(function (m) {
-        if (!inYear(m.date)) return;
-        var title = m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (m.den ? ' (' + m.den + ')' : ''));
-        var ev = { kind: 'meeting', date: m.date, title: title, detail: String(m.note || '') };
-        var clock = fmtClock(m.time);
-        if (clock) ev.times = [clock];
-        events.push(ev);
-      });
-      state.budget.activities.forEach(function (a) {
-        if (!inYear(a.date)) return;         // undated planning rows never surface
-        events.push({ kind: 'activity', date: a.date, title: String(a.name || 'Activity'), detail: '' });
+      // Phase 2 — one pass over events[]. Parents get the calendar and nothing else: no
+      // budget line is consulted here, so no cost can leak into the published view.
+      state.events.forEach(function (e) {
+        if (!inYear(e.date)) return;         // undated planning rows never surface
+        if (eventIsMeeting(e)) {
+          var mv = { kind: 'meeting', date: e.date, title: eventLabel(e).replace(' · ', ' — '), detail: String(e.note || '') };
+          var clock = fmtClock(e.time);
+          if (clock) mv.times = [clock];
+          events.push(mv);
+          return;
+        }
+        events.push({ kind: 'activity', date: e.date, title: eventLabel(e), detail: '' });
       });
       events.sort(function (a, b) {
         return String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title));
@@ -4144,7 +4315,7 @@
   }
   function isStateEmpty(s) {
     return !(s.scouts && s.scouts.length) && !(s.storefronts && s.storefronts.length) &&
-      !(s.entries && s.entries.length) && !(s.meetings && s.meetings.length) &&
+      !(s.entries && s.entries.length) && !(s.events && s.events.length) &&
       // Phase 0 — a treasurer may well open the ledger before anyone has typed a roster.
       // Without this, that work reads as "empty" and can be adopted away by a remote copy.
       !(s.ledger && s.ledger.length) &&
@@ -4928,8 +5099,9 @@
   }
   // Meetings split by kind: den = blue, pack = purple.
   function dotClass(e) {
-    if (e.type === 'meeting') return e.m.kind === 'pack' ? 'dot-pack' : 'dot-mtg';
     if (e.type === 'storefront') return storefrontCoverage(e.sf).full ? 'dot-store' : 'dot-store-open';
+    if (e.ev.kind === 'pack') return 'dot-pack';
+    if (e.ev.kind === 'den') return 'dot-mtg';
     return 'dot-act';
   }
 
@@ -4939,8 +5111,7 @@
     var today = todayISO();
     var evs = [];
     state.storefronts.forEach(function (sf) { if ((sf.date || '') >= today) evs.push({ type: 'storefront', date: sf.date, sf: sf }); });
-    state.meetings.forEach(function (m) { if ((m.date || '') >= today) evs.push({ type: 'meeting', date: m.date, m: m }); });
-    state.budget.activities.forEach(function (a) { if (a.date && a.date >= today) evs.push({ type: 'activity', date: a.date, a: a }); });
+    state.events.forEach(function (ev) { if (ev.date && ev.date >= today) evs.push({ type: 'event', date: ev.date, ev: ev }); });
     evs.sort(function (x, y) { return x.date.localeCompare(y.date); });
     return evs.slice(0, 2);
   }
@@ -4949,7 +5120,7 @@
   // Pure (takes the state) so the Node harness can exercise it.
   function startHereVisible(s) {
     if (s.startHereDismissed) return false;
-    return !s.scouts.length && !s.storefronts.length && !s.meetings.length && !s.leaders.length;
+    return !s.scouts.length && !s.storefronts.length && !(s.events || []).length && !s.leaders.length;
   }
 
   // Wave 20 — the inline panel an expanded month-agenda row shows. READ-ONLY detail plus
@@ -4985,40 +5156,46 @@
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="open-storefront" data-id="' + sf.id + '">Open storefront</button>' +
         '<button type="button" class="btn small" data-act="cal-jump-day" data-date="' + iso + '">Show this day</button></div>';
-    } else if (e.type === 'meeting') {
-      var m = e.m;
-      var mKey = 'mtg:' + m.id;
+    } else if (eventIsMeeting(e.ev)) {
+      var m = e.ev;
       h += line('When', esc(fmtDate(m.date)) + (fmtClock(m.time) ? ' · ' + esc(fmtClock(m.time)) : ' <span class="muted">· no time set</span>'));
       h += line('Who', m.kind === 'pack' ? 'Whole pack' : (m.den ? esc(m.den) + ' den' : 'All dens'));
       if (m.adventure) h += line('Adventure', esc(m.adventure));
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
-      h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(mKey))));
+      h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(m.id))));
       var marked = state.attendance[m.id] || {};
       var attN = Object.keys(marked).filter(function (k) { return marked[k]; }).length;
       if (attN) h += line('Attendance', attN + ' checked in');
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this meeting</button></div>';
     } else {
-      var a = e.a;
-      var aWhen = fmtTimeRange(a.time, a.endTime);
-      h += line('When', esc(fmtDate(a.date)) + (aWhen ? ' · ' + esc(aWhen) : '') +
-        ' <span class="muted">· ' + esc(slotLabel(a.slot)) + ' in the program year</span>');
-      if (a.location) h += line('Where', esc(a.location).replace(/\n/g, '<br>'));
-      if (a.note) h += line('Details', esc(a.note).replace(/\n/g, '<br>'));
-      if (a.estCents) {
-        h += line('Estimated', '<span class="money">' + fmt(a.estCents) + '</span>' +
-          (a.perScout ? ' per scout' + (a.familyPays ? ' — families pay' : '') : ' total'));
+      var ev = e.ev;
+      // Phase 2 — the event carries the schedule; the budget line (if any) carries the money.
+      var aLine = lineForEvent(ev.id);
+      var aWhen = fmtTimeRange(ev.time, ev.endTime);
+      h += line('When', esc(fmtDate(ev.date)) + (aWhen ? ' · ' + esc(aWhen) : '') +
+        ' <span class="muted">· ' + esc(slotLabel(ev.slot)) + ' in the program year</span>');
+      if (ev.location) h += line('Where', esc(ev.location).replace(/\n/g, '<br>'));
+      if (ev.note) h += line('Details', esc(ev.note).replace(/\n/g, '<br>'));
+      if (!aLine) {
+        // The case that could not exist before Phase 2: something on the calendar that
+        // nobody has budgeted for. An imported BAND calendar is now full of these, and
+        // that is the fix — importing a calendar no longer writes budget rows.
+        h += line('Budget', '<span class="muted">not budgeted</span>');
+      } else if (aLine.estCents) {
+        h += line('Estimated', '<span class="money">' + fmt(aLine.estCents) + '</span>' +
+          (aLine.perScout ? ' per scout' + (aLine.familyPays ? ' — families pay' : '') : ' total'));
       } else {
         h += line('Estimated', '<span class="muted">no cost entered</span>');
       }
-      // Phase 1 — actual is what the ledger says was paid against this line, in total.
+      // Phase 1 — actual is what the ledger says was paid against the line, in total.
       // It is deliberately NOT labelled "per scout": a transaction is never a rate.
-      var aActual = lineActual(a.id);
+      var aActual = aLine ? lineActual(aLine.id) : 0;
       if (aActual) h += line('Actual', '<span class="money">' + fmt(aActual) + '</span> <span class="muted">recorded in the ledger</span>');
-      h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary('act:' + a.id))));
+      h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(ev.id))));
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this activity</button>' +
-        '<button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>';
+        (aLine ? '<button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button>' : '') + '</div>';
     }
     return h + '</div>';
   }
@@ -5031,7 +5208,7 @@
     var days = Object.keys(byDay).map(Number).sort(function (a, b) { return a - b; });
     var evCount = days.reduce(function (n, d) { return n + byDay[d].length; }, 0);
     // Undated activities whose program slot lands in this month — same filter the digest uses.
-    var tbd = state.budget.activities.filter(function (a) { return !a.date && slotMonthKey(a.slot) === mk; });
+    var tbd = state.events.filter(function (ev) { return !ev.date && slotMonthKey(ev.slot) === mk; });
 
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">' + esc(monthLabel(mk)) + '</h2>' +
@@ -5054,21 +5231,18 @@
           meta.push(e.sf.blocks.length + ' shift' + (e.sf.blocks.length === 1 ? '' : 's'));
           if (cov.total) meta.push(cov.covered + ' of ' + cov.total + ' covered');
           evKey = 'sf:' + e.sf.id;
-        } else if (e.type === 'meeting') {
-          label = e.m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (e.m.den ? ' · ' + e.m.den : ''));
-          var mtgTime = fmtClock(e.m.time);
-          if (mtgTime) meta.push(mtgTime);
-          if (e.m.adventure) meta.push(e.m.adventure);
-          if (e.m.note) meta.push(e.m.note);
-          evKey = 'mtg:' + e.m.id;
         } else {
-          label = e.a.name || 'Activity';
-          // Wave 20 — imported/entered event detail leads the meta line; cost trails it.
-          var actWhen = fmtTimeRange(e.a.time, e.a.endTime);
-          if (actWhen) meta.push(actWhen);
-          if (e.a.location) meta.push(firstLine(e.a.location));
-          if (e.a.estCents) meta.push(fmt(e.a.estCents) + (e.a.perScout ? ' / scout' : ''));
-          evKey = 'act:' + e.a.id;
+          label = eventLabel(e.ev);
+          evKey = e.ev.id;
+          var evWhen = fmtTimeRange(e.ev.time, e.ev.endTime);
+          if (evWhen) meta.push(evWhen);
+          if (e.ev.location) meta.push(firstLine(e.ev.location));
+          if (e.ev.adventure) meta.push(e.ev.adventure);
+          if (e.ev.note) meta.push(firstLine(e.ev.note));
+          // Phase 2 — cost is the linked BUDGET LINE's, not the event's. An event with no
+          // line shows no money, which is exactly right for an imported calendar entry.
+          var agLine = lineForEvent(e.ev.id);
+          if (agLine && agLine.estCents) meta.push(fmt(agLine.estCents) + (agLine.perScout ? ' / scout' : ''));
         }
         var pill = rsvpPill(evKey);
         var open = !!ui.agendaOpen[evKey];
@@ -5090,7 +5264,7 @@
       tbd.forEach(function (a) {
         h += '<div class="list-row" style="cursor:default">' +
           '<div style="min-width:0"><div class="lr-name" style="display:flex;align-items:center;gap:7px">' +
-          '<span class="cal-dot2 dot-act"></span><span>' + esc(a.name || 'Activity') + '</span></div>' +
+          '<span class="cal-dot2 dot-act"></span><span>' + esc(eventLabel(a)) + '</span></div>' +
           '<div class="small muted">Planned this month — set a date below to place it on the calendar</div>' +
           '</div></div>';
       });
@@ -5109,7 +5283,7 @@
 
     var h = '';
     // Wave 19(19) — auto-retire the Start-here card permanently once real data exists.
-    if (!state.startHereDismissed && state.scouts.length && (state.storefronts.length || state.meetings.length)) {
+    if (!state.startHereDismissed && state.scouts.length && (state.storefronts.length || state.events.length)) {
       state.startHereDismissed = true;
       save();
     }
@@ -5122,19 +5296,10 @@
       h += '<div class="card"><p class="eyebrow">Next up</p>';
       nextUp.forEach(function (e) {
         if (e.type === 'storefront') { h += storefrontRow(e.sf); return; }
-        var nuLabel, nuKey;
-        if (e.type === 'meeting') {
-          nuLabel = e.m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (e.m.den ? ' (' + e.m.den + ')' : ''));
-          var nuTime = fmtClock(e.m.time);
-          if (nuTime) nuLabel += ' · ' + nuTime;
-          nuKey = 'mtg:' + e.m.id;
-        } else {
-          nuLabel = e.a.name || 'Activity';
-          var nuActTime = fmtClock(e.a.time);
-          if (nuActTime) nuLabel += ' · ' + nuActTime;
-          nuKey = 'act:' + e.a.id;
-        }
-        var nuPill = rsvpPill(nuKey);
+        var nuLabel = eventLabel(e.ev);
+        var nuTime = fmtClock(e.ev.time);
+        if (nuTime) nuLabel += ' · ' + nuTime;
+        var nuPill = rsvpPill(e.ev.id);
         h += '<div class="list-row" data-act="nextup-day" data-date="' + e.date + '" role="button" tabindex="0">' +
           '<div><div class="lr-name">' + esc(nuLabel) + (nuPill ? ' ' + nuPill : '') + '</div>' +
           '<div class="small muted">' + esc(fmtDate(e.date)) + '</div></div>' +
@@ -5209,30 +5374,37 @@
       h += '<h2 class="section display" style="margin-bottom:8px">' + esc(fmtDate(ui.calSelectedDate)) + '</h2>';
       if (onThisMonth && selDay) {
         selDay.forEach(function (e) {
-          if (e.type === 'storefront') h += storefrontRow(e.sf);
-          else if (e.type === 'activity') {
-            var actPill = rsvpPill('act:' + e.a.id);
-            h += '<div class="ev"><div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">' +
-              '<span class="ev-badge badge-act">Activity</span>' + (actPill ? ' ' + actPill : '') + '</div>' +
-              '<div class="arow" style="margin-top:6px">' +
-              '<input class="aname" data-ch="act-name" data-id="' + e.a.id + '" value="' + esc(e.a.name) + '" placeholder="Activity name">' +
-              '<input type="date" class="adate" data-ch="act-date" data-id="' + e.a.id + '" value="' + esc(e.a.date || '') + '" aria-label="Date (optional)">' +
-              '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + e.a.id + '" value="' + dollars(e.a.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
-              tinyDangerBtn('del-activity:' + e.a.id, 'Remove activity') +
-              '</div>' +
-              // Wave 20 — event detail: start/end time, location, notes. Imported from a
-              // BAND (or Google/Apple) calendar, and editable by hand either way. Laid out
-              // like renderMeetingRow: inline time inputs with aria-labels (no stacked
-              // captions), then full-width location and notes.
-              '<div class="row" style="gap:6px;margin-top:6px">' +
-              '<input type="time" class="time-in" data-ch="act-time" data-id="' + e.a.id + '" value="' + esc(e.a.time || '') + '" aria-label="Start time">' +
-              '<span class="small muted">to</span>' +
-              '<input type="time" class="time-in" data-ch="act-endtime" data-id="' + e.a.id + '" value="' + esc(e.a.endTime || '') + '" aria-label="End time">' +
-              '</div>' +
-              '<input data-ch="act-location" data-id="' + e.a.id + '" value="' + esc(e.a.location || '') + '" placeholder="Location (optional)" aria-label="Location" style="width:100%;margin-top:6px">' +
-              '<textarea class="notes-in" data-ch="act-note" data-id="' + e.a.id + '" rows="3" placeholder="Details / notes (optional)" aria-label="Details or notes" style="margin-top:6px">' + esc(e.a.note || '') + '</textarea>' +
-              '<div style="margin-top:8px">' + renderRsvpBlock('act:' + e.a.id) + '</div></div>';
-          } else h += renderMeetingRow(e.m);
+          if (e.type === 'storefront') { h += storefrontRow(e.sf); return; }
+          if (eventIsMeeting(e.ev)) { h += renderMeetingRow(e.ev); return; }
+          // Phase 2 — an activity Event. The schedule fields below edit the EVENT; the one
+          // money field edits its budget line, and an event with no line offers to create
+          // one rather than pretending every calendar entry costs the pack something.
+          var ev = e.ev;
+          var evLine = lineForEvent(ev.id);
+          var actPill = rsvpPill(ev.id);
+          h += '<div class="ev"><div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">' +
+            '<span class="ev-badge badge-act">Activity</span>' + (actPill ? ' ' + actPill : '') +
+            (evLine ? '' : '<span class="pill navy">not budgeted</span>') + '</div>' +
+            '<div class="arow" style="margin-top:6px">' +
+            '<input class="aname" data-ch="ev-name" data-id="' + ev.id + '" value="' + esc(ev.name) + '" placeholder="Activity name">' +
+            '<input type="date" class="adate" data-ch="ev-date" data-id="' + ev.id + '" value="' + esc(ev.date || '') + '" aria-label="Date (optional)">' +
+            (evLine
+              ? '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + evLine.id + '" value="' + dollars(evLine.estCents) + '" placeholder="Est." aria-label="Estimated cost">'
+              : '<button type="button" class="btn small ghost" data-act="budget-this-event" data-id="' + ev.id + '">+ Budget this</button>') +
+            tinyDangerBtn('del-event:' + ev.id, 'Remove activity') +
+            '</div>' +
+            // Wave 20 — event detail: start/end time, location, notes. Imported from a
+            // BAND (or Google/Apple) calendar, and editable by hand either way. Laid out
+            // like renderMeetingRow: inline time inputs with aria-labels (no stacked
+            // captions), then full-width location and notes.
+            '<div class="row" style="gap:6px;margin-top:6px">' +
+            '<input type="time" class="time-in" data-ch="ev-time" data-id="' + ev.id + '" value="' + esc(ev.time || '') + '" aria-label="Start time">' +
+            '<span class="small muted">to</span>' +
+            '<input type="time" class="time-in" data-ch="ev-endtime" data-id="' + ev.id + '" value="' + esc(ev.endTime || '') + '" aria-label="End time">' +
+            '</div>' +
+            '<input data-ch="ev-location" data-id="' + ev.id + '" value="' + esc(ev.location || '') + '" placeholder="Location (optional)" aria-label="Location" style="width:100%;margin-top:6px">' +
+            '<textarea class="notes-in" data-ch="ev-note" data-id="' + ev.id + '" rows="3" placeholder="Details / notes (optional)" aria-label="Details or notes" style="margin-top:6px">' + esc(ev.note || '') + '</textarea>' +
+            '<div style="margin-top:8px">' + renderRsvpBlock(ev.id) + '</div></div>';
         });
       } else {
         h += '<p class="small muted">Nothing scheduled yet.</p>';
@@ -5253,21 +5425,21 @@
     h += bandCard;
 
     // Any activities without a date yet — shown regardless of the viewed month.
-    var undated = state.budget.activities.filter(function (a) { return !a.date; })
+    var undated = state.events.filter(function (ev) { return !ev.date && ev.kind === 'activity'; })
       .sort(function (a, b) { return a.slot - b.slot; });
     if (undated.length) {
       h += '<div class="card"><h2 class="section display">Activities to schedule</h2>' +
         '<p class="small muted" style="margin:0 0 8px">Seeded and planned activities without a date yet — pick a date to place them on the calendar.</p>';
       var undSlot = -1;
-      undated.forEach(function (a) {
-        if (a.slot !== undSlot) {
-          undSlot = a.slot;
-          h += '<div class="small muted" style="margin:8px 0 2px;font-weight:650">' + esc(slotLabel(a.slot)) + '</div>';
+      undated.forEach(function (ev) {
+        if (ev.slot !== undSlot) {
+          undSlot = ev.slot;
+          h += '<div class="small muted" style="margin:8px 0 2px;font-weight:650">' + esc(slotLabel(ev.slot)) + '</div>';
         }
         h += '<div class="arow">' +
-          '<input class="aname" data-ch="act-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
-          '<input type="date" class="adate" data-ch="act-date" data-id="' + a.id + '" value="" aria-label="Pick a date">' +
-          tinyDangerBtn('del-activity:' + a.id, 'Remove activity') +
+          '<input class="aname" data-ch="ev-name" data-id="' + ev.id + '" value="' + esc(ev.name) + '" placeholder="Activity name">' +
+          '<input type="date" class="adate" data-ch="ev-date" data-id="' + ev.id + '" value="" aria-label="Pick a date">' +
+          tinyDangerBtn('del-event:' + ev.id, 'Remove activity') +
           '</div>';
       });
       h += '</div>';
@@ -5290,6 +5462,8 @@
     return names;
   }
 
+  // Phase 2 — one meeting Event. RSVP and attendance both key off ev.id now, so the old
+  // 'mtg:' prefix is gone and there is a single id per event instead of two schemes.
   function renderMeetingRow(m) {
     // Wave 19(23): the den select below is RANK-based (DENS) on purpose — a scout's
     // free-text denLabel is display-only; meetings, advancement grouping, and the
@@ -5297,11 +5471,11 @@
     return '<div class="ev ev-meeting">' +
       '<div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">' +
       '<span class="ev-badge ' + (m.kind === 'pack' ? 'badge-pack' : 'badge-den') + '">' + (m.kind === 'pack' ? 'Pack' : 'Den') + '</span>' +
-      rsvpPill('mtg:' + m.id) +
+      rsvpPill(m.id) +
       '<select data-ch="mtg-kind" data-id="' + m.id + '"><option value="den"' + (m.kind === 'den' ? ' selected' : '') + '>Den meeting</option><option value="pack"' + (m.kind === 'pack' ? ' selected' : '') + '>Pack meeting</option></select>' +
       (m.kind === 'den' ? '<select data-ch="mtg-den" data-id="' + m.id + '"><option value="">All dens</option>' + DENS.map(function (d) { return '<option value="' + d + '"' + (m.den === d ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select>' : '') +
       '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time">' +
-      tinyDangerBtn('del-meeting:' + m.id, 'Remove meeting') +
+      tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
       '</div>' +
       (m.kind === 'den'
         ? '<input data-ch="mtg-adv" data-id="' + m.id + '" list="advOpts-' + m.id + '" value="' + esc(m.adventure || '') + '" placeholder="Adventure planned (optional)" style="width:100%;margin-top:6px">' +
@@ -5309,7 +5483,7 @@
         : '') +
       '<input data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') + '" placeholder="Location / notes (optional)" style="width:100%;margin-top:6px">' +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +
-      renderRsvpBlock('mtg:' + m.id) + renderAttendanceBlock(m) +
+      renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
       '</div>' +
       renderMeetingAdvMark(m) +
       // Wave 19(22) — one-time weekly-repeat offer, only on the just-added meeting.
@@ -5811,6 +5985,30 @@
       'title="' + (n ? 'Recorded in the ledger — tap to add another' : 'Record what this actually cost') + '">' +
       (n ? '<span class="money">' + fmt(v) + '</span> actual · ' + n : 'Record actual') + '</button>';
   }
+  // Phase 2 — one activity budget line. The DATE is not here any more: it belongs to the
+  // linked event, and is shown read-only with a way to go and change it where it lives.
+  // Two fields editing one date from two screens is how they drift.
+  function activityLineRow(a, scoutN) {
+    var ev = eventForLine(a);
+    var when = ev
+      ? (ev.date
+        ? '<button type="button" class="btn small ghost" data-act="cal-jump-day" data-date="' + esc(ev.date) + '" title="Show this day on the calendar">' + esc(fmtDate(ev.date)) + '</button>'
+        : '<span class="small muted">' + esc(slotLabel(ev.slot)) + ' · no date yet</span>')
+      : '<span class="small muted">not scheduled</span>';
+    // Wave 17 — per-scout activities (camp fees) mirror the expense row: per-scout ×
+    // roster line, a families-pay flag, and the shared collect grid ('act:'-prefixed key).
+    return '<div class="arow">' +
+      '<input class="aname" data-ch="act-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
+      when +
+      '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + a.id + '" value="' + dollars(a.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
+      actualBtn(a.id) +
+      '<label class="perscout"><input type="checkbox" data-ch="act-perscout" data-id="' + a.id + '"' + (a.perScout ? ' checked' : '') + '> per scout</label>' +
+      (a.perScout ? '<label class="perscout"><input type="checkbox" data-ch="act-familypays" data-id="' + a.id + '"' + (a.familyPays ? ' checked' : '') + '> families pay</label>' : '') +
+      (a.perScout ? '<span class="small muted money">= ' + fmt((a.estCents || 0) * scoutN) + '</span>' : '') +
+      tinyDangerBtn('del-activity:' + a.id, 'Remove activity') +
+      (a.perScout ? renderCollectBlock(a, 'act:' + a.id) : '') +
+      '</div>';
+  }
   function renderBudget() {
     var b = state.budget;
     var bud = computeBudget();
@@ -5907,7 +6105,7 @@
       'it is whatever the ledger says was paid against the line, so tap it to record a transaction. ' +
       'Tick <em>per scout</em> for a cost paid for each scout (camp fees) — it multiplies by the ' + bud.scouts + ' active scouts, ' +
       'and <em>families pay</em> adds a collect grid and counts collected fees as funds-in, like dues.</p>';
-    if (state.budget.activities.some(function (a) { return a.date; })) {
+    if (state.events.some(function (ev) { return ev.kind === 'activity' && ev.date; })) {
       var clrArmed = ui.armed === 'clear-act-dates';
       h += '<div class="row no-print" style="margin:0 0 4px">' +
         '<button type="button" class="btn small' + (clrArmed ? ' danger armed' : '') + '" data-act="clear-activity-dates">' +
@@ -5926,22 +6124,20 @@
       h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
         '<strong>' + esc(slotLabel(slot)) + '</strong>' +
         '<span class="small muted money">' + (acts.length ? 'planned ' + fmt(mp) + ' · actual ' + fmt(ma) : '') + '</span></div>';
-      acts.forEach(function (a) {
-        // Wave 17 — per-scout activities (camp fees) mirror the expense row: per-scout ×
-        // roster line, a families-pay flag, and the shared collect grid ('act:'-prefixed key).
-        h += '<div class="arow">' +
-          '<input class="aname" data-ch="act-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
-          '<input type="date" class="adate" data-ch="act-date" data-id="' + a.id + '" value="' + esc(a.date || '') + '" aria-label="Date (optional)">' +
-          '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + a.id + '" value="' + dollars(a.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
-          actualBtn(a.id) +
-          '<label class="perscout"><input type="checkbox" data-ch="act-perscout" data-id="' + a.id + '"' + (a.perScout ? ' checked' : '') + '> per scout</label>' +
-          (a.perScout ? '<label class="perscout"><input type="checkbox" data-ch="act-familypays" data-id="' + a.id + '"' + (a.familyPays ? ' checked' : '') + '> families pay</label>' : '') +
-          (a.perScout ? '<span class="small muted money">= ' + fmt((a.estCents || 0) * bud.scouts) + '</span>' : '') +
-          tinyDangerBtn('del-activity:' + a.id, 'Remove activity') +
-          (a.perScout ? renderCollectBlock(a, 'act:' + a.id) : '') +
-          '</div>';
-      });
+      acts.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
       h += '<button type="button" class="btn small ghost" data-act="add-activity" data-slot="' + slot + '">+ Add activity</button></div>';
+    }
+    // Phase 2 — lines whose event was deleted (or that were never scheduled). Before the
+    // split these could not exist: the date and the money were the same row, so losing one
+    // lost the other. Now the money stands on its own and says so.
+    var loose = unscheduledActivities();
+    if (loose.length) {
+      h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
+        '<strong>Not on the calendar</strong>' +
+        '<span class="small muted">no event linked</span></div>' +
+        '<p class="small muted" style="margin:0 0 6px">These still count in the plan. Add them to a day on Program · Calendar to give them a date.</p>';
+      loose.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
+      h += '</div>';
     }
     h += '</div>';
 
@@ -6664,7 +6860,8 @@
     // Phase 1 — a past activity that was budgeted for but has nothing posted against it in
     // the ledger is half a book: the pack knows what it planned and not what it paid.
     var unposted = state.budget.activities.filter(function (a) {
-      return a.date && a.date < today && (a.estCents || 0) > 0 && !lineEntryCount(a.id);
+      var pEv = eventForLine(a);
+      return pEv && pEv.date && pEv.date < today && (a.estCents || 0) > 0 && !lineEntryCount(a.id);
     });
     if (unposted.length) {
       add('treasurer', 'week', unposted.length + ' past activit' + (unposted.length === 1 ? 'y has' : 'ies have') + ' no spend recorded',
@@ -6707,14 +6904,15 @@
     }
 
     /* ----- Cubmaster / Activities ----- */
-    var upcomingMeetings = state.meetings.filter(function (m) { return m.date && m.date >= today; })
+    var upcomingMeetings = state.events.filter(function (m) { return eventIsMeeting(m) && m.date && m.date >= today; })
       .sort(function (a, b) { return a.date.localeCompare(b.date); });
     var nextPack = upcomingMeetings.find(function (m) { return m.kind === 'pack'; });
     if (nextPack && !nextPack.note) {
       add('cubmaster', 'week', 'The next pack meeting has no plan yet',
         fmtDate(nextPack.date) + (fmtClock(nextPack.time) ? ' · ' + fmtClock(nextPack.time) : ''), 'program', 'calendar');
     }
-    var vagueActivities = state.budget.activities.filter(function (a) {
+    var vagueActivities = state.events.filter(function (a) {
+      if (a.kind !== 'activity') return false;
       var d = daysUntil(a.date);
       return d != null && d >= 0 && d <= 45 && (!a.time || !a.location);
     });
@@ -6886,9 +7084,7 @@
     if (nextUp.length) {
       h += '<div class="card"><h2 class="section display">Next up</h2>';
       nextUp.forEach(function (e) {
-        var title = e.type === 'storefront' ? (e.sf.name || 'Storefront')
-          : e.type === 'meeting' ? (e.m.kind === 'pack' ? 'Pack meeting' : ((e.m.den ? e.m.den + ' den' : 'Den') + ' meeting'))
-            : (e.a.name || 'Activity');
+        var title = e.type === 'storefront' ? (e.sf.name || 'Storefront') : eventLabel(e.ev);
         h += '<div class="list-row" role="button" tabindex="0" data-act="goto" data-tab="' +
           (e.type === 'storefront' ? 'popcorn" data-section="storefronts' : 'program" data-section="calendar') + '">' +
           '<div style="min-width:0"><div class="lr-name">' + esc(title) + '</div>' +
@@ -6917,7 +7113,7 @@
     var bud = computeBudget();
     var mineJobs = {};
     myJobs().forEach(function (j) { mineJobs[j] = true; });
-    var events = state.meetings.length + state.budget.activities.filter(function (a) { return a.date; }).length;
+    var events = state.events.length;
     var marked = 0;
     Object.keys(state.advancement).forEach(function (sid) {
       var a = state.advancement[sid] || {};
@@ -8151,18 +8347,17 @@
       byDay[day].forEach(function (e) {
         if (e.type === 'storefront') {
           evLines.push('- ' + when + ': Storefront at ' + (e.sf.name || 'TBD') + goingNote('sf:' + e.sf.id));
-        } else if (e.type === 'meeting') {
-          var label = e.m.kind === 'pack' ? 'Pack meeting' : ('Den meeting' + (e.m.den ? ' (' + e.m.den + ')' : ''));
-          var mtgTime = fmtClock(e.m.time);
-          var extra = (mtgTime ? ' at ' + mtgTime : '') + (e.m.note ? ' — ' + e.m.note : '');
-          evLines.push('- ' + when + ': ' + label + extra + goingNote('mtg:' + e.m.id));
-        } else if (e.type === 'activity') {
+        } else if (eventIsMeeting(e.ev)) {
+          var mtgTime = fmtClock(e.ev.time);
+          var extra = (mtgTime ? ' at ' + mtgTime : '') + (e.ev.note ? ' — ' + e.ev.note : '');
+          evLines.push('- ' + when + ': ' + eventLabel(e.ev).replace(' · ', ' — ') + extra + goingNote(e.ev.id));
+        } else {
           // Wave 20 — a parent email is exactly where the time and place matter most.
-          var actWhen = fmtTimeRange(e.a.time, e.a.endTime);
-          evLines.push('- ' + when + ': ' + (e.a.name || 'Activity') +
+          var actWhen = fmtTimeRange(e.ev.time, e.ev.endTime);
+          evLines.push('- ' + when + ': ' + eventLabel(e.ev) +
             (actWhen ? ' at ' + actWhen : '') +
-            (e.a.location ? ' — ' + firstLine(e.a.location) : '') +
-            goingNote('act:' + e.a.id));
+            (e.ev.location ? ' — ' + firstLine(e.ev.location) : '') +
+            goingNote(e.ev.id));
         }
       });
     });
@@ -8173,10 +8368,10 @@
     }
 
     // 2. Undated activities planned for this month (same filter the tab uses).
-    var undated = state.budget.activities.filter(function (a) { return !a.date && slotMonthKey(a.slot) === mk; });
+    var undated = state.events.filter(function (ev) { return !ev.date && slotMonthKey(ev.slot) === mk; });
     if (undated.length) {
       lines.push('ALSO PLANNED THIS MONTH (date TBD)');
-      undated.forEach(function (a) { lines.push('- ' + (a.name || 'Activity')); });
+      undated.forEach(function (ev) { lines.push('- ' + eventLabel(ev)); });
       lines.push('');
     }
 
@@ -8903,7 +9098,7 @@
     var stamp = icsStamp();
     var lines = ['BEGIN:VCALENDAR', 'VERSION:2.0',
       'PRODID:-//Ideal Year of Scouting//Pack Planner//EN', 'CALSCALE:GREGORIAN'];
-    function ev(props) {
+    function ev2(props) {
       lines.push('BEGIN:VEVENT');
       for (var i = 0; i < props.length; i++) lines.push(props[i]);
       lines.push('END:VEVENT');
@@ -8926,43 +9121,44 @@
       }
       props.push('SUMMARY:' + icsEscape('Popcorn — ' + (sf.name || 'Storefront')));
       props.push('LOCATION:' + icsEscape(sf.name || ''));
-      ev(props);
+      ev2(props);
     });
-    // Meetings — always timed, default 1-hour duration.
-    state.meetings.forEach(function (m) {
-      if (!m.date) return;
-      var t = m.time || '19:00';
-      var summary = m.kind === 'pack' ? 'Pack meeting' : (m.den ? m.den + ' den meeting' : 'Den meeting');
-      var props = ['UID:mtg-' + m.id + '@ideal-year-of-scouting', 'DTSTAMP:' + stamp,
-        'DTSTART:' + icsDate(m.date) + 'T' + icsTime(t) + '00',
-        'DTEND:' + icsDate(m.date) + 'T' + icsEndPlusHour(t) + '00',
-        'SUMMARY:' + icsEscape(summary)];
-      if (m.note) props.push('DESCRIPTION:' + icsEscape(m.note));
-      ev(props);
-    });
-    // Dated activities. Wave 20 — timed when a start time is known (end time, or +1h),
-    // all-day end-exclusive otherwise. Undated activities are skipped.
-    state.budget.activities.forEach(function (a) {
-      if (!a.date) return;
+    // Phase 2 — one pass over events[]. Meetings are always timed (default 1 hour);
+    // activities are timed when a start time is known and all-day otherwise.
+    state.events.forEach(function (ev) {
+      if (!ev.date) return;   // undated planning rows never export
+      if (eventIsMeeting(ev)) {
+        var t = ev.time || '19:00';
+        var props = ['UID:mtg-' + ev.id + '@ideal-year-of-scouting', 'DTSTAMP:' + stamp,
+          'DTSTART:' + icsDate(ev.date) + 'T' + icsTime(t) + '00',
+          'DTEND:' + icsDate(ev.date) + 'T' + icsEndPlusHour(t) + '00',
+          'SUMMARY:' + icsEscape(eventLabel(ev).replace(' · ', ' — '))];
+        if (ev.note) props.push('DESCRIPTION:' + icsEscape(ev.note));
+        ev2(props);
+        return;
+      }
       // Round-trip the source UID so re-importing our own export lands on the same rows in
       // BAND (and re-importing BAND's export lands on the same rows here).
-      var props = ['UID:' + (a.sourceUid || ('act-' + a.id + '@ideal-year-of-scouting')), 'DTSTAMP:' + stamp];
-      if (a.time) {
+      var props = ['UID:' + (ev.sourceUid || ('act-' + ev.id + '@ideal-year-of-scouting')), 'DTSTAMP:' + stamp];
+      if (ev.time) {
         // Explicit end time when we have one, otherwise +1 hour (same rule as meetings).
-        props.push('DTSTART:' + icsDate(a.date) + 'T' + icsTime(a.time) + '00');
-        props.push('DTEND:' + icsDate(a.date) + 'T' +
-          (a.endTime ? icsTime(a.endTime) : icsEndPlusHour(a.time)) + '00');
+        props.push('DTSTART:' + icsDate(ev.date) + 'T' + icsTime(ev.time) + '00');
+        props.push('DTEND:' + icsDate(ev.date) + 'T' +
+          (ev.endTime ? icsTime(ev.endTime) : icsEndPlusHour(ev.time)) + '00');
       } else {
-        props.push('DTSTART;VALUE=DATE:' + icsDate(a.date));
-        props.push('DTEND;VALUE=DATE:' + icsNextDay(a.date));
+        props.push('DTSTART;VALUE=DATE:' + icsDate(ev.date));
+        props.push('DTEND;VALUE=DATE:' + icsNextDay(ev.date));
       }
-      props.push('SUMMARY:' + icsEscape(a.name || 'Activity'));
-      if (a.location) props.push('LOCATION:' + icsEscape(a.location));
+      props.push('SUMMARY:' + icsEscape(eventLabel(ev)));
+      if (ev.location) props.push('LOCATION:' + icsEscape(ev.location));
       var desc = [];
-      if (a.note) desc.push(a.note);
-      if (a.estCents) desc.push('Estimated ' + fmt(a.estCents) + (a.perScout ? ' per scout' : ''));
+      if (ev.note) desc.push(ev.note);
+      // Phase 2 — the estimate belongs to the budget line, not the event. An unbudgeted
+      // event simply exports without a cost line.
+      var icsLine = lineForEvent(ev.id);
+      if (icsLine && icsLine.estCents) desc.push('Estimated ' + fmt(icsLine.estCents) + (icsLine.perScout ? ' per scout' : ''));
       if (desc.length) props.push('DESCRIPTION:' + icsEscape(desc.join('\n\n')));
-      ev(props);
+      ev2(props);
     });
     lines.push('END:VCALENDAR');
     return lines.map(icsFold).join('\r\n') + '\r\n';
@@ -9064,21 +9260,26 @@
     function bareName(s) {
       return String(s || '').replace(/\s*\((?:1[0-2]|0?[1-9]):[0-5]\d\s*[AaPp]\.?[Mm]\.?\)\s*$/, '').trim().toLowerCase();
     }
+    // Phase 2 — matches an EVENT, not a budget row. This function is the reason
+    // DESIGN-money.md's very first symptom existed: "importing a BAND calendar writes
+    // budget rows". It no longer does.
     function findExisting(evt) {
-      var byUid = evt.uid ? state.budget.activities.filter(function (a) { return a.sourceUid && a.sourceUid === evt.uid; })[0] : null;
+      var byUid = evt.uid ? state.events.filter(function (e) { return e.sourceUid && e.sourceUid === evt.uid; })[0] : null;
       if (byUid) return byUid;
       var target = bareName(evt.name);
-      return state.budget.activities.filter(function (a) {
-        return a.date === evt.date && bareName(a.name) === target;
+      return state.events.filter(function (e) {
+        return e.date === evt.date && bareName(eventLabel(e)) === target;
       })[0] || null;
     }
     events.forEach(function (evt) {
       var name = evt.name || 'Event';
       var found = findExisting(evt);
       if (found) {
-        // Refresh from the calendar (it's the source of record for these fields) but never
-        // touch the money or per-scout flags a leader set here.
-        found.name = name;
+        // Refresh from the calendar (it's the source of record for these fields). A meeting
+        // matched by UID keeps its kind, den and adventure — those are ours, not BAND's —
+        // and any budget line attached to this event is untouched, because the calendar has
+        // never had an opinion about what the pack spends.
+        if (!eventIsMeeting(found)) found.name = name;
         found.date = evt.date;
         found.slot = dateToSlot(evt.date);
         found.time = evt.time || '';
@@ -9089,12 +9290,14 @@
         updated++;
         return;
       }
-      state.budget.activities.push({
-        id: uid(), slot: dateToSlot(evt.date), name: name, date: evt.date,
+      // An imported event is JUST an event. No budget row, no money, no per-scout flag —
+      // if the pack wants to budget for it, that is a deliberate act on the calendar or in
+      // Money · Budget.
+      state.events.push(freshEvent({
+        kind: 'activity', slot: dateToSlot(evt.date), name: name, date: evt.date,
         time: evt.time || '', endTime: evt.endTime || '',
-        location: evt.location || '', note: evt.note || '', sourceUid: evt.uid || '',
-        estCents: 0, perScout: false, familyPays: false
-      });
+        location: evt.location || '', note: evt.note || '', sourceUid: evt.uid || ''
+      }));
       added++;
     });
     var bits = [];
@@ -9799,11 +10002,12 @@
       return { name: l.name, events: l.events, salesCents: l.sales, donCents: l.don };
     });
     var denMeetings = 0, packMeetings = 0;
-    state.meetings.forEach(function (m) { if (m.kind === 'pack') packMeetings += 1; else denMeetings += 1; });
+    state.events.forEach(function (e) { if (e.kind === 'pack') packMeetings += 1; else if (e.kind === 'den') denMeetings += 1; });
     // Average attendance across meetings that have ANY marks: marked ÷ active roster at close time.
     var rosterN = activeScouts().length;
     var attSum = 0, attN = 0;
-    state.meetings.forEach(function (m) {
+    state.events.forEach(function (m) {
+      if (!eventIsMeeting(m)) return;
       var marked = state.attendance[m.id];
       var n = marked ? Object.keys(marked).length : 0;
       if (n > 0 && rosterN > 0) { attSum += Math.min(100, Math.round(n / rosterN * 100)); attN += 1; }
@@ -9851,7 +10055,7 @@
       },
       events: {
         storefronts: state.storefronts.length, denMeetings: denMeetings, packMeetings: packMeetings,
-        datedActivities: state.budget.activities.filter(function (x) { return !!x.date; }).length,
+        datedActivities: state.events.filter(function (x) { return x.kind === 'activity' && !!x.date; }).length,
         attendanceAvgPct: attN ? Math.round(attSum / attN) : null
       },
       dues: { collectedCents: fees.collected, outstandingCents: fees.outstanding },
@@ -9949,7 +10153,7 @@
     state.densAdvancedYear = 0; // fresh year — the advanced roster hasn't been advanced AGAIN
     state.storefronts = [];
     state.entries = [];
-    state.meetings = [];
+    state.events = [];   // Phase 2 — the calendar is the year's, like storefronts and sales
     state.rsvps = {};
     state.attendance = {};
     state.collected = {};
@@ -10628,8 +10832,12 @@
       if (sf) { sf.blocks.push(newBlock(sf.blocks.length + 1)); commit(); }
       return;
     }
+    // Phase 2 — planning an activity in the Budget creates the calendar entry too: "we are
+    // doing this, and here is what we think it costs" is one intent, expressed as two records.
     if (act === 'add-activity') {
-      state.budget.activities.push({ id: uid(), slot: +el.dataset.slot, name: '', date: '', time: '', endTime: '', location: '', note: '', sourceUid: '', estCents: 0, perScout: false, familyPays: false });
+      var addEv = freshEvent({ kind: 'activity', slot: +el.dataset.slot });
+      state.events.push(addEv);
+      state.budget.activities.push({ id: uid(), name: '', eventId: addEv.id, estCents: 0, perScout: false, familyPays: false });
       commit(); return;
     }
     if (act === 'add-storefront-day') {
@@ -10644,12 +10852,23 @@
       commit(); return;
     }
     if (act === 'add-activity-day') {
-      state.budget.activities.push({ id: uid(), slot: dateToSlot(el.dataset.date), name: '', date: el.dataset.date, estCents: 0, perScout: false, familyPays: false });
+      var dayEv = freshEvent({ kind: 'activity', date: el.dataset.date, slot: dateToSlot(el.dataset.date) });
+      state.events.push(dayEv);
+      state.budget.activities.push({ id: uid(), name: '', eventId: dayEv.id, estCents: 0, perScout: false, familyPays: false });
+      commit(); return;
+    }
+    // Phase 2 — give an existing (probably imported) event a budget line. The other half of
+    // "an event needs no budget line": you can add one deliberately when you want one.
+    if (act === 'budget-this-event') {
+      var btEv = getEvent(el.dataset.id);
+      if (!btEv || lineForEvent(btEv.id)) return;
+      state.budget.activities.push({ id: uid(), name: btEv.name || '', eventId: btEv.id, estCents: 0, perScout: false, familyPays: false });
+      showToast('Added a budget line for “' + (btEv.name || 'Activity') + '”.');
       commit(); return;
     }
     if (act === 'clear-activity-dates') {
       arm('clear-act-dates', function () {
-        state.budget.activities.forEach(function (a) { a.date = ''; });
+        state.events.forEach(function (ev) { if (ev.kind === 'activity') ev.date = ''; });
         commit();
         showToast('Cleared dates from all activities');
       });
@@ -10751,27 +10970,40 @@
       commit(); return;
     }
     if (act === 'add-meeting') {
-      var newMtgId = uid();
-      state.meetings.push({ id: newMtgId, kind: el.dataset.kind === 'pack' ? 'pack' : 'den', den: '', date: el.dataset.date || todayISO(), time: '19:00', note: '', adventure: '' });
-      ui.repeatOffer = newMtgId; // Wave 19(22) — offer the one-time weekly-repeat form on the new row
+      var newMtg = freshEvent({
+        kind: el.dataset.kind === 'pack' ? 'pack' : 'den',
+        date: el.dataset.date || todayISO(), time: '19:00'
+      });
+      newMtg.slot = dateToSlot(newMtg.date);
+      state.events.push(newMtg);
+      ui.repeatOffer = newMtg.id; // Wave 19(22) — offer the one-time weekly-repeat form on the new row
       commit(); return;
     }
     if (act === 'mtg-repeat-dismiss') { ui.repeatOffer = null; render(); return; } // Wave 19(22)
-    if (act.indexOf('del-meeting:') === 0) {
+    // Phase 2 — one delete for every calendar row, meeting or activity.
+    //
+    // It removes the EVENT and its RSVP/attendance, and deliberately leaves any budget line
+    // standing: the ledger posts against that line, so deleting it here would orphan real
+    // transactions to make a calendar edit. The line shows up under "Not on the calendar"
+    // in the Budget until it is either rescheduled or removed there on purpose.
+    if (act.indexOf('del-event:') === 0) {
       // Wave 18(21) — low-stakes: single tap + Undo toast (was two-tap armed).
-      // RSVP + attendance cascades are captured before removal and restored on Undo.
       var dmId = act.split(':')[1];
       var dmIx = -1;
-      state.meetings.forEach(function (m, i) { if (m.id === dmId) dmIx = i; });
+      state.events.forEach(function (m, i) { if (m.id === dmId) dmIx = i; });
       if (dmIx === -1) return;
-      var dmGone = state.meetings.splice(dmIx, 1)[0];
-      var dmRsvps = state.rsvps['mtg:' + dmId];
+      var dmGone = state.events.splice(dmIx, 1)[0];
+      var dmRsvps = state.rsvps[dmId];
       var dmAtt = state.attendance[dmId];
-      delete state.rsvps['mtg:' + dmId];
+      delete state.rsvps[dmId];
       delete state.attendance[dmId];
-      deleteWithUndo(dmGone.kind === 'pack' ? 'pack meeting' : 'den meeting', function () {
-        state.meetings.splice(Math.min(dmIx, state.meetings.length), 0, dmGone);
-        if (dmRsvps) state.rsvps['mtg:' + dmId] = dmRsvps;
+      var dmLabel = dmGone.kind === 'pack' ? 'pack meeting' : (dmGone.kind === 'den' ? 'den meeting' : (dmGone.name || 'activity'));
+      if (dmGone.kind === 'activity' && lineForEvent(dmId)) {
+        showToast('Removed “' + (dmGone.name || 'Activity') + '” from the calendar — its budget line is still in Money · Budget.');
+      }
+      deleteWithUndo(dmLabel, function () {
+        state.events.splice(Math.min(dmIx, state.events.length), 0, dmGone);
+        if (dmRsvps) state.rsvps[dmId] = dmRsvps;
         if (dmAtt) state.attendance[dmId] = dmAtt;
       });
       return;
@@ -10922,7 +11154,7 @@
     }
     // Wave 16 — mark the den meeting's planned adventure done for everyone checked in.
     if (act === 'mtg-adv-mark') {
-      var mam = getMeeting(el.dataset.id);
+      var mam = getEvent(el.dataset.id);
       if (!mam || mam.kind !== 'den') return;
       var mamAdv = String(mam.adventure || '').trim();
       if (!mamAdv) return;
@@ -11342,24 +11574,39 @@
       if (led.source !== 'donation') led.donor = '';
       commit(); return;
     }
-    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-date' ||
-        ch === 'act-perscout' || ch === 'act-familypays' ||
-        ch === 'act-time' || ch === 'act-endtime' || ch === 'act-location' || ch === 'act-note') {
+    // Phase 2 — act-* now addresses a BUDGET LINE only. Everything that was a calendar
+    // field moved to ev-* below, which is the split made visible in the handler table.
+    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-perscout' || ch === 'act-familypays') {
       var act = state.budget.activities.find(function (a) { return a.id === el.dataset.id; });
       if (!act) return;
-      if (ch === 'act-name') act.name = el.value;
-      else if (ch === 'act-est') act.estCents = toCents(el.value);
-      else if (ch === 'act-perscout') act.perScout = el.checked;   // Wave 17
-      else if (ch === 'act-familypays') act.familyPays = el.checked; // Wave 17
-      else if (ch === 'act-time') act.time = el.value;              // Wave 20
-      else if (ch === 'act-endtime') act.endTime = el.value;        // Wave 20
-      else if (ch === 'act-location') act.location = el.value;      // Wave 20
-      else if (ch === 'act-note') act.note = el.value;              // Wave 20
-      else act.date = el.value;
+      if (ch === 'act-name') {
+        act.name = el.value;
+        // Keep the calendar entry's name in step while they still agree. Once somebody has
+        // deliberately named them differently, this stops touching the event — a budget
+        // line called "Camp deposit" against an event called "Fall campout" is legitimate.
+        var actEv = eventForLine(act);
+        if (actEv && actEv.kind === 'activity') actEv.name = el.value;
+      } else if (ch === 'act-est') act.estCents = toCents(el.value);
+      else if (ch === 'act-perscout') act.perScout = el.checked;    // Wave 17
+      else act.familyPays = el.checked;                             // Wave 17
+      commit(); return;
+    }
+    // The calendar record. One handler for every event field, meeting or activity.
+    if (ch.indexOf('ev-') === 0) {
+      var evr = getEvent(el.dataset.id);
+      if (!evr) return;
+      var evk = ch.slice(3);
+      if (evk === 'name') evr.name = el.value;
+      else if (evk === 'date') { evr.date = el.value; evr.slot = evr.date ? dateToSlot(evr.date) : evr.slot; }
+      else if (evk === 'time') evr.time = el.value;
+      else if (evk === 'endtime') evr.endTime = el.value;
+      else if (evk === 'location') evr.location = el.value;
+      else if (evk === 'note') evr.note = el.value;
+      else return;
       commit(); return;
     }
     if (ch === 'mtg-kind' || ch === 'mtg-den' || ch === 'mtg-time' || ch === 'mtg-note' || ch === 'mtg-adv') {
-      var mtg = getMeeting(el.dataset.id);
+      var mtg = getEvent(el.dataset.id);   // Phase 2 — a meeting is an Event
       if (!mtg) return;
       if (ch === 'mtg-kind') { mtg.kind = el.value; if (mtg.kind === 'pack') { mtg.den = ''; mtg.adventure = ''; } }
       else if (ch === 'mtg-den') mtg.den = el.value;
@@ -11596,7 +11843,7 @@
       // Wave 19(22) — bulk-create N more meetings on subsequent same-weekday dates.
       // Copies kind/den/time/note only — NOT the adventure (each week differs).
       // DST-safe: Date(y, m, d + 7i) local date math, same as the storefront Add weekly.
-      var rMtg = getMeeting(f.dataset.id);
+      var rMtg = getEvent(f.dataset.id);
       ui.repeatOffer = null;
       if (!rMtg || !rMtg.date) { render(); return; }
       var rN = parseInt(String(fd.get('weeks') || ''), 10);
@@ -11608,7 +11855,7 @@
       for (var ri = 1; ri <= rN; ri++) {
         var rd = new Date(rBase.getFullYear(), rBase.getMonth(), rBase.getDate() + ri * 7);
         var rIso = rd.getFullYear() + '-' + pad2(rd.getMonth() + 1) + '-' + pad2(rd.getDate());
-        state.meetings.push({ id: uid(), kind: rMtg.kind, den: rMtg.den || '', date: rIso, time: rMtg.time || '', note: rMtg.note || '', adventure: '' });
+        state.events.push(freshEvent({ kind: rMtg.kind, den: rMtg.den || '', date: rIso, slot: dateToSlot(rIso), time: rMtg.time || '', note: rMtg.note || '' }));
       }
       commit();
       showToast('Added ' + rN + ' more weekly ' + (rMtg.kind === 'pack' ? 'pack' : 'den') + ' meeting' + (rN === 1 ? '' : 's'));

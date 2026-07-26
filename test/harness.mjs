@@ -801,7 +801,8 @@ test('reconciling compares the TICKED entries to the statement', () => {
 // normalizeState is the single migration seam, so the migration is tested through it
 // rather than through a reimplementation of it.
 const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO',
-  'programYearEndISO', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
+  'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
+  'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'normalizeState', 'lineActualCents', 'entrySignedCents'];
@@ -963,6 +964,162 @@ test('the parent view never carries the ledger', () => {
   ok(fn, 'buildParentView() not found');
   ok(!/ledger/i.test(fn[0]), 'buildParentView references the ledger');
   ok(!/\bbook\b/.test(fn[0]), 'buildParentView references the book (opening/statement balances)');
+});
+
+/* ================================================================
+   Money redesign — Phase 2: events split out of the budget (DESIGN-money.md 3.1).
+   ================================================================ */
+
+function preSplitState() {
+  return {
+    version: 1, packName: 'Pack 569',
+    scouts: [{ id: 's1', name: 'Ben' }, { id: 's2', name: 'Ivy' }],
+    meetings: [
+      { id: 'm1', kind: 'den', den: 'Wolf', date: '2025-09-10', time: '19:00', note: 'Library', adventure: 'Call of the Wild' },
+      { id: 'm2', kind: 'pack', den: '', date: '2025-09-24', time: '18:30', note: '' }
+    ],
+    attendance: { m1: { s1: true, s2: true } },
+    rsvps: {
+      'mtg:m2': { s1: { s: 'yes', adults: 2 } },
+      'act:a1': { s2: { s: 'maybe', adults: 0 } },
+      'sf:sf1': { s1: { s: 'yes', adults: 1 } }
+    },
+    budget: {
+      programYear: 2025, startingBalance: 0,
+      activities: [
+        { id: 'a1', slot: 1, name: 'Fall campout', date: '2025-10-18', time: '09:00', endTime: '15:00',
+          location: 'Camp Rainey', note: 'Bring boots', sourceUid: 'band-77', estCents: 80000,
+          actualCents: 0, perScout: false, familyPays: false },
+        { id: 'a2', slot: 5, name: 'Blue & Gold', date: '', estCents: 30000, actualCents: 0, perScout: false, familyPays: false }
+      ],
+      expenses: []
+    }
+  };
+}
+
+test('Phase 2: every meeting and activity becomes an event', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  eq(after.events.length, 4, 'event count');
+  eq(after.meetings.length, 0, 'meetings[] is emptied');
+  ok(Array.isArray(after.meetings), 'meetings[] was deleted rather than emptied — an older build would crash');
+  const kinds = after.events.map(e => e.kind).sort();
+  eq(kinds, ['activity', 'activity', 'den', 'pack'], 'kinds');
+});
+
+test('Phase 2: the calendar fields leave the budget line, the money stays', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  const line = after.budget.activities.find(a => a.id === 'a1');
+  ok(line, 'the budget line kept its own id — the ledger posts against it');
+  eq(line.estCents, 80000, 'the money stayed on the line');
+  ['date', 'time', 'endTime', 'location', 'note', 'sourceUid', 'slot'].forEach(f => {
+    ok(!(f in line), `calendar field "${f}" is still on the budget line`);
+  });
+  const ev = after.events.find(e => e.id === line.eventId);
+  ok(ev, 'the line does not point at an event');
+  eq(ev.date, '2025-10-18', 'event date');
+  eq(ev.location, 'Camp Rainey', 'event location');
+  eq(ev.sourceUid, 'band-77', 'ICS round-trip uid moved to the event');
+  ok(!('estCents' in ev), 'the event carries money');
+});
+
+test('Phase 2: event ids are fresh, and never alias a budget line id', () => {
+  // Reusing the old ids would have been cheaper but would leave event.id === line.id for
+  // every migrated activity, aliasing two record types in one namespace forever.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  const lineIds = new Set(after.budget.activities.map(a => a.id));
+  after.events.forEach(e => ok(!lineIds.has(e.id), `event ${e.id} reuses a budget line id`));
+  ok(!after.events.some(e => e.id === 'm1' || e.id === 'm2'), 'a meeting id was reused as an event id');
+});
+
+test('Phase 2: attendance is repointed onto the event, not lost', () => {
+  // The single most destructive thing this migration could get wrong.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  const den = after.events.find(e => e.kind === 'den');
+  eq(after.attendance[den.id], { s1: true, s2: true }, 'attendance followed the meeting');
+  eq(Object.keys(after.attendance).length, 1, 'a stale meeting-keyed entry was left behind');
+});
+
+test('Phase 2: RSVPs collapse onto the bare event id, storefronts keep their prefix', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  const pack = after.events.find(e => e.kind === 'pack');
+  const campout = after.events.find(e => e.name === 'Fall campout');
+  eq(after.rsvps[pack.id], { s1: { s: 'yes', adults: 2 } }, 'meeting RSVP');
+  eq(after.rsvps[campout.id], { s2: { s: 'maybe', adults: 0 } }, 'activity RSVP');
+  eq(after.rsvps['sf:sf1'], { s1: { s: 'yes', adults: 1 } }, 'storefronts are not events and keep sf:');
+  ok(!after.rsvps['mtg:m2'] && !after.rsvps['act:a1'], 'a prefixed key survived the migration');
+});
+
+test('Phase 2: a meeting keeps its den, adventure and note', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  const den = after.events.find(e => e.kind === 'den');
+  eq(den.den, 'Wolf', 'den');
+  eq(den.adventure, 'Call of the Wild', 'adventure drives the advancement mark-off');
+  eq(den.note, 'Library', 'note');
+  const pack = after.events.find(e => e.kind === 'pack');
+  eq(pack.den, '', 'a pack meeting has no den');
+  eq(pack.adventure, '', 'a pack meeting has no adventure');
+});
+
+test('Phase 2: a dated event takes its month from the date, an undated one keeps its slot', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(preSplitState());
+  eq(after.events.find(e => e.name === 'Fall campout').slot, 1, 'October is slot 1');
+  eq(after.events.find(e => e.name === 'Blue & Gold').slot, 5, 'undated keeps its planning slot');
+});
+
+test('Phase 2: migration runs once', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const once = ctx.normalizeState(preSplitState());
+  const twice = ctx.normalizeState(JSON.parse(JSON.stringify(once)));
+  eq(twice.events.length, once.events.length, 'events grew on a second normalize');
+  eq(Object.keys(twice.attendance).length, 1, 'attendance was repointed twice');
+});
+
+test('Phase 2: a budget line whose event vanished is unlinked, not left dangling', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState(preSplitState());
+  const line = d.budget.activities.find(a => a.id === 'a1');
+  d.events = d.events.filter(e => e.id !== line.eventId);   // the event was deleted
+  const after = ctx.normalizeState(JSON.parse(JSON.stringify(d)));
+  eq(after.budget.activities.find(a => a.id === 'a1').eventId, '', 'the stale link survived');
+  eq(after.budget.activities.find(a => a.id === 'a1').estCents, 80000, 'the money was lost with the event');
+});
+
+test('importing a calendar no longer writes budget rows', () => {
+  // DESIGN-money.md's very first listed symptom. The import path must touch state.events
+  // and never state.budget.
+  const fn = /function findExisting\(evt\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(fn, 'findExisting() not found');
+  ok(/state\.events/.test(fn[0]) && !/state\.budget/.test(fn[0]),
+    'the ICS importer still matches against budget rows');
+  const commit = /events\.forEach\(function \(evt\) \{[\s\S]*?\n    \}\);/.exec(SCRIPT);
+  ok(commit, 'the ICS commit loop not found');
+  ok(/state\.events\.push/.test(commit[0]), 'the importer does not create events');
+  ok(!/state\.budget\.activities\.push/.test(commit[0]),
+    'importing a calendar still creates budget rows — this is the bug Phase 2 exists to fix');
+});
+
+test('deleting a calendar event never deletes the budget line under it', () => {
+  // The ledger posts against the line. Removing it to service a calendar edit would orphan
+  // real transactions.
+  const fn = /if \(act\.indexOf\('del-event:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(fn, 'the del-event handler not found');
+  ok(/state\.events\.splice/.test(fn[0]), 'del-event does not remove the event');
+  ok(!/budget\.activities\.splice/.test(fn[0]), 'del-event also deletes the budget line');
+});
+
+test('the parent view publishes the calendar and no money', () => {
+  const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'buildParentView() not found');
+  ok(/state\.events\.forEach/.test(fn[0]), 'the parent view does not read events[]');
+  ok(!/estCents|lineForEvent|budget\.activities/.test(fn[0]),
+    'the parent view reads budget data — cost could leak into the published copy');
 });
 
 /* ---------------- report ---------------- */
