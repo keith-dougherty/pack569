@@ -5098,8 +5098,9 @@
       '<label class="fld">Date<input type="date" data-ch="sf-date" data-id="' + sf.id + '" value="' + esc(sf.date) + '"></label>' +
       '</div>' + dangerBtn('del-sf:' + sf.id, 'Delete storefront') + '</div>' +
       '<div class="row" style="margin-top:10px">' +
-      '<div class="stat"><span class="v money">' + fmt(t.sales) + '</span><span class="l">Sales</span></div>' +
-      '<div class="stat"><span class="v money">' + fmt(t.don) + '</span><span class="l">Donations</span></div>' +
+      // Wave 21 — a storefront's money is exactly the two figures entered per shift.
+      '<div class="stat"><span class="v money">' + fmt(t.sales) + '</span><span class="l">Trail’s End</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(t.don) + '</span><span class="l">Cash donations</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(t.combined) + '</span><span class="l">Combined</span></div>' +
       '</div></div>';
 
@@ -5151,26 +5152,32 @@
     // Wave 21 — the "Adults on this block" roster (Wave 16) is gone: a parent comes with
     // each scout, so signing up a scout IS signing up an adult.
 
-    // Money entry (Wave 17 — "of which card" is a cash-box reconciliation aid only;
-    // no other math consumes it)
+    // Wave 21 — two figures at the end of a shift, which is all this pack records:
+    //   Trail's End amount — everything rung through the Trail's End app at the table
+    //     (product sales AND any donation taken online). Commissionable, counts to the goal.
+    //   Cash donations — physical cash. The pack keeps 100% of it, unless "run cash through
+    //     Trail's End" is on, in which case it's entered as Heroes & Helpers later and
+    //     becomes commissionable too.
+    // These map onto the existing salesCents / donationsCents fields unchanged — the data
+    // model was always these two buckets (see computePackTotals), only the labels weren't.
+    // The Wave 17 "of which card" field is retired: the Trail's End app already accounts
+    // for card, so it was reconciling something this pack no longer counts by hand.
+    // b.cardCents is left on existing ledgers, just unread.
     h += '<div class="row" style="margin-top:12px">' +
-      '<label class="fld">Total sales ($)<input class="money-in" inputmode="decimal" data-ch="b-sales" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.salesCents) + '" placeholder="0.00"></label>' +
-      '<label class="fld">Total donations ($)<input class="money-in" inputmode="decimal" data-ch="b-don" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.donationsCents) + '" placeholder="0.00"></label>' +
-      '<label class="fld">Of which card ($)<input class="money-in" inputmode="decimal" data-ch="b-card" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.cardCents) + '" placeholder="0.00"></label>' +
-      '</div>';
-    if (b.cardCents > 0) {
-      var blockTotal = (b.salesCents || 0) + (b.donationsCents || 0);
-      h += b.cardCents > blockTotal
-        ? '<p class="small" style="margin:6px 0 0;color:var(--bad)">card exceeds this block’s total — check amounts</p>'
-        : '<p class="small muted money" style="margin:6px 0 0">cash ≈ ' + fmt(blockTotal - b.cardCents) + '</p>';
-    }
+      '<label class="fld">Trail’s End amount ($)<input class="money-in" inputmode="decimal" data-ch="b-sales" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.salesCents) + '" placeholder="0.00"></label>' +
+      '<label class="fld">Cash donations ($)<input class="money-in" inputmode="decimal" data-ch="b-don" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + dollars(b.donationsCents) + '" placeholder="0.00"></label>' +
+      '</div>' +
+      '<p class="small muted" style="margin:6px 0 0">Trail’s End covers sales <em>and</em> any donation entered in the app — it all earns commission. ' +
+      (state.cashThroughTrailsEnd
+        ? 'Cash donations are being entered as Heroes &amp; Helpers, so they earn commission too.'
+        : 'The pack keeps cash donations in full.') + '</p>';
 
     if (hasMoney && !b.assignments.length) {
       h += '<p class="warn" style="margin:10px 0 0">Money is entered but no scouts are assigned — nobody is getting credit for this block yet.</p>';
     }
     if (shares.length && hasMoney) {
       h += '<div class="tbl-wrap" style="margin-top:10px"><table>' +
-        '<thead><tr><th scope="col">Scout</th><th scope="col" class="num">Weight</th><th scope="col" class="num">Sales share</th><th scope="col" class="num">Donation share</th></tr></thead><tbody>';
+        '<thead><tr><th scope="col">Scout</th><th scope="col" class="num">Weight</th><th scope="col" class="num">Trail’s End</th><th scope="col" class="num">Cash donations</th></tr></thead><tbody>';
       shares.forEach(function (sh) {
         var s = getScout(sh.scoutId);
         h += '<tr><td>' + esc(s ? s.name : '?') + '</td><td class="num">' + sh.weight + '</td>' +
@@ -6596,13 +6603,22 @@
     var rows = visibleScoutRows(totals);
 
     var h = '<div class="card"><h2 class="section display">Pack season totals</h2>' +
+      // Wave 21 — the two buckets this pack actually tracks, matching the goal bars below.
+      // The old Sales / Donations / Combined row quietly mixed ONLINE donations (which run
+      // through Trail's End and earn commission) with CASH donations (which the pack keeps),
+      // so "Donations" was two different kinds of money added together.
+      // With cash routed through Trail's End there is only one bucket, so only one shows.
       '<div class="row">' +
-      '<div class="stat"><span class="v money">' + fmt(pack.sales) + '</span><span class="l">Sales</span></div>' +
-      '<div class="stat"><span class="v money">' + fmt(pack.don) + '</span><span class="l">Donations</span></div>' +
-      '<div class="stat"><span class="v money">' + fmt(pack.combined) + '</span><span class="l">Combined</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
+      (pack.viaTE ? '' :
+        '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Cash donations</span></div>') +
       '<div class="stat"><span class="v money" style="color:var(--accent-text)">' + (pack.commission == null ? '—' : fmt(pack.commission)) + '</span>' +
       '<span class="l">Pack commission</span></div>' +
-      '</div>';
+      '</div>' +
+      '<p class="small muted" style="margin:8px 0 0">Trail’s End is sales plus donations entered in the app' +
+      (pack.viaTE
+        ? ', including cash donations — they’re being entered as Heroes &amp; Helpers, so everything here earns commission.'
+        : ' — it earns commission. Cash donations are kept in full and earn none.') + '</p>';
 
     // Trail's End goal progress
     if (pack.teGoal > 0) {
@@ -6638,7 +6654,7 @@
     // Per-storefront subtotals
     if (state.storefronts.length) {
       h += '<div class="card"><h2 class="section display">By storefront</h2><div class="tbl-wrap"><table>' +
-        '<thead><tr><th scope="col">Storefront</th><th scope="col">Date</th><th scope="col" class="num">Sales</th><th scope="col" class="num">Donations</th><th scope="col" class="num">Combined</th></tr></thead><tbody>';
+        '<thead><tr><th scope="col">Storefront</th><th scope="col">Date</th><th scope="col" class="num">Trail’s End</th><th scope="col" class="num">Cash</th><th scope="col" class="num">Combined</th></tr></thead><tbody>';
       state.storefronts.forEach(function (sf) {
         var t = storefrontTotals(sf);
         h += '<tr><td>' + esc(sf.name) + '</td><td>' + esc(fmtDate(sf.date)) + '</td>' +
@@ -6653,7 +6669,7 @@
       h += '<div class="card"><h2 class="section display">Location comparison</h2>' +
         '<p class="small muted" style="margin:0 0 8px">How each store performs across the season.</p>' +
         '<div class="tbl-wrap"><table><caption class="visually-hidden">Location comparison across the season</caption>' +
-        '<thead><tr><th scope="col">Location</th><th scope="col" class="num">Events</th><th scope="col" class="num">Sales</th><th scope="col" class="num">Donations</th><th scope="col" class="num">Combined</th><th scope="col" class="num">Avg / event</th></tr></thead><tbody>';
+        '<thead><tr><th scope="col">Location</th><th scope="col" class="num">Events</th><th scope="col" class="num">Trail’s End</th><th scope="col" class="num">Cash</th><th scope="col" class="num">Combined</th><th scope="col" class="num">Avg / event</th></tr></thead><tbody>';
       locs.forEach(function (m) {
         var combined = m.sales + m.don;
         h += '<tr><td>' + esc(m.name) + '</td><td class="num">' + m.events + '</td>' +
@@ -7579,9 +7595,11 @@
         '<p class="muted small" style="margin:0 0 14px">Standings as of ' +
         new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + '</p>' +
         '<div class="row" style="margin-bottom:14px">' +
-        '<div class="stat"><span class="v money">' + fmt(pack.sales) + '</span><span class="l">Sales</span></div>' +
-        '<div class="stat"><span class="v money">' + fmt(pack.don) + '</span><span class="l">Donations</span></div>' +
-        '<div class="stat"><span class="v money">' + fmt(pack.combined) + '</span><span class="l">Combined</span></div>' +
+        // Wave 21 — same two buckets as the Standings card, so the shared sheet and the
+        // screen can't tell different stories.
+        '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
+        (pack.viaTE ? '' :
+          '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Cash donations</span></div>') +
         (pack.commission != null ? '<div class="stat"><span class="v money">' + fmt(pack.commission) + '</span><span class="l">Commission (' + pack.pct + '%)</span></div>' : '') +
         '</div>' +
         (pack.teGoal > 0 ? (function () {
@@ -7969,7 +7987,7 @@
       lines.push('  Scouts: ' + (dsScouts.length ? dsScouts.join(', ') : '—'));
       lines.push('  (each scout is accompanied by their parent)');
       lines.push('  Walk-ups: ______________  ______________  ______________');
-      lines.push('  Sales $ ______  Donations $ ______  Card $ ______');
+      lines.push('  Trail’s End $ ______   Cash donations $ ______');
     });
     lines.push('');
     lines.push('Two-deep leadership required at all times.');
@@ -7995,7 +8013,7 @@
         '<p class="small" style="margin:0 0 4px"><strong>Scouts:</strong> ' + (dsScouts.length ? esc(dsScouts.join(', ')) : '<span class="muted">none assigned</span>') + '</p>' +
         '<p class="small" style="margin:0 0 2px"><strong>Walk-ups:</strong></p>' +
         '<div class="ruled-line"></div><div class="ruled-line"></div><div class="ruled-line"></div>' +
-        '<p class="small money" style="margin:12px 0 0">Sales $ ________&nbsp;&nbsp;&nbsp;Donations $ ________&nbsp;&nbsp;&nbsp;Card $ ________</p>' +
+        '<p class="small money" style="margin:12px 0 0">Trail’s End $ ________&nbsp;&nbsp;&nbsp;Cash donations $ ________</p>' +
         '</div>';
     });
     h += '<p class="small" style="margin:6px 0 0"><strong>Two-deep leadership required at all times.</strong></p>' +
@@ -10594,7 +10612,6 @@
     if (ch === 'b-end') { b.end = el.value.trim(); commit(); return; }
     if (ch === 'b-sales') { b.salesCents = toCents(el.value); commit(); return; }
     if (ch === 'b-don') { b.donationsCents = toCents(el.value); commit(); return; }
-    if (ch === 'b-card') { b.cardCents = toCents(el.value); commit(); return; } // Wave 17
     if (ch === 'weight') {
       var a = b.assignments.find(function (x) { return x.scoutId === el.dataset.scout; });
       if (a) {
