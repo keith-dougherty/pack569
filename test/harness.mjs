@@ -771,6 +771,7 @@ const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS', 'HEAD_KINDS',
+  'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'LINE_CATEGORY_LABELS', 'CHARGE_WHO',
   'linePlannedHeads', 'linePlannedCents',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
@@ -1503,6 +1504,90 @@ test('charges are reconciled on the one seam every mutation goes through', () =>
   const fn = /function commit\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'commit() not found');
   ok(/syncCharges\(\);/.test(fn[0]), 'charges are not reconciled on commit');
+});
+
+/* ================================================================
+   Money redesign — Phase 4: categories and the funding summary (2, 3.2).
+   ================================================================ */
+
+test('Phase 4: existing lines default to "other" rather than being guessed at', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    budget: { programYear: 2025, activities: [], expenses: [
+      { id: 'e1', name: 'Charter fee', estCents: 10000, perScout: false },
+      { id: 'e2', name: 'Nonsense', category: 'not-a-category', basis: 'flat', flatCents: 1 }
+    ] }
+  });
+  eq(d.budget.expenses[0].category, 'other', 'a name is not a category');
+  eq(d.budget.expenses[1].category, 'other', 'an unknown category is not kept');
+});
+
+test('Phase 4: the 510-278 category list is adopted whole', () => {
+  const { LINE_CATEGORY_KEYS } = sandbox(['LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'LINE_CATEGORY_LABELS']);
+  ['registration', 'charter', 'advancement', 'recognition', 'events', 'activities',
+    'camp', 'materials', 'training', 'uniforms', 'reserve', 'other', 'income']
+    .forEach(k => ok(LINE_CATEGORY_KEYS.indexOf(k) !== -1, `category "${k}" is missing`));
+});
+
+test('Phase 4: the goal derives from the plan, and the hand-typed one is gone', () => {
+  // "That last figure is currently typed in by hand. After this it is derived from the
+  // plan, which is the entire point of the 510-278 worksheet."
+  ok(!/data-act="use-budget-goal"/.test(SCRIPT), 'the manual "use this as the goal" button survived');
+  ok(!/act === 'use-budget-goal'/.test(SCRIPT), 'the manual goal-sync handler survived');
+  const fn = /function packGoalCents\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'packGoalCents() not found');
+  ok(/state\.goalIsDerived/.test(fn[0]), 'the goal does not honour the derived flag');
+  ok(/fundingSummary\(\)\.salesGoal/.test(fn[0]), 'the derived goal does not come from the plan');
+  const totals = /function computePackTotals\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/teGoal: teGoalNow/.test(totals[0]), 'computePackTotals still reports the raw stored goal');
+});
+
+test('Phase 4: a pack that already typed a goal keeps it', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const typed = ctx.normalizeState({ version: 1, scouts: [], goalCents: 500000, budget: { programYear: 2025, activities: [], expenses: [] } });
+  eq(typed.goalIsDerived, false, 'a typed goal was silently replaced by a derived one');
+  const fresh = ctx.normalizeState({ version: 1, scouts: [], budget: { programYear: 2025, activities: [], expenses: [] } });
+  eq(fresh.goalIsDerived, true, 'a pack with no goal did not get the derived one');
+});
+
+test('Phase 4: the funding summary never depends on what has been sold', () => {
+  // The goal feeds computePackTotals' teGoal, so if the summary read sales back it would be
+  // circular — and the goal would move every time somebody recorded a storefront.
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'fundingSummary() not found');
+  ok(!/computePackTotals/.test(fn[0]), 'fundingSummary reads sales totals — that is circular');
+  ok(/Math\.max\(0, expenses - income\)/.test(fn[0]), 'C is not A - B, floored at zero');
+});
+
+test('Phase 4: paid-direct money is in neither A nor B', () => {
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/if \(!lineThroughPack\(l\)\) \{ familyDirect \+= planned; return; \}/.test(fn[0]),
+    'council money is being counted as a pack expense or as pack income');
+});
+
+test('Phase 4: an income-category line adds to B instead of A', () => {
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/if \(l\.category === 'income'\) incomeLines \+= planned;\s*\n\s*else expenses \+= planned;/.test(fn[0]),
+    'an income line is being budgeted as an expense');
+});
+
+test('Phase 4: a family-funded event counts as income before anyone has attended', () => {
+  // Reading only charges would count a family-funded campout as pure cost until the day it
+  // happens, inflating the popcorn goal by the whole of it — the pack would be told to
+  // raise money it was never going to spend.
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'fundingSummary() not found');
+  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : linePlannedCents\(l, scouts\)/.test(fn[0]),
+    'a family-funded line with no charges yet contributes nothing to income');
+});
+
+test('Phase 4: the Budget card and the goal share one arithmetic', () => {
+  // Repeating the A-B=C sum in computeBudget is how the card and the goal would drift.
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/var fund = fundingSummary\(\);/.test(fn[0]), 'computeBudget does not use fundingSummary');
+  ok(/var teNeed = fund\.C;/.test(fn[0]), 'computeBudget recomputes the fundraising need');
+  ok(/var salesGoal = fund\.salesGoal;/.test(fn[0]), 'computeBudget recomputes the sales goal');
 });
 
 /* ---------------- report ---------------- */

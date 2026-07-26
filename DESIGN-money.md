@@ -1,9 +1,10 @@
 # Design — separating the plan, the money, and the calendar
 
-**Status:** Written 2026-07-26. **Phases 0 through 3b are built** (2026-07-26) — the ledger,
-bank reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`, attendance
-as a head count, per-head pricing with `fundedBy`/`paidDirectTo`, and charges with all four
-settlement paths. Only **Phase 4** (510-278 categories and the derived funding summary) remains.
+**Status:** Written 2026-07-26. **Every phase is built** (2026-07-26) — the ledger, bank
+reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`, attendance as a
+head count, per-head pricing with `fundedBy`/`paidDirectTo`, charges with all four settlement
+paths, and the 510-278 categories with a derived funding summary. What remains is the open
+decisions in §7 (9, 11) and whatever the pack learns from a season of using it.
 **Problem:** budgeting and spending are the same record, so neither can be done properly.
 
 > **Naming note.** `state.ledger` is the transaction register described in §3.3. The word
@@ -796,9 +797,28 @@ with no head counts recorded — which needed `fundedBy` to know which lines car
 The worked example in §3.4 reproduces exactly: 8 scouts, 13 adults and 5 siblings raise 26 charges
 totalling **$355.00**.
 
-**Phase 4 — categories and the funding summary.** Adopt the 510-278 category list, defaulting
-existing lines to `other`. Add the `A − B = C` fundraising-need summary and the derived per-scout
-popcorn goal — replacing today's hand-entered Trail's End goal with one computed from the plan.
+**Phase 4 — categories and the funding summary. ✅ BUILT.** The 510-278 category list is adopted
+whole; existing lines default to `other`, because guessing a category from a free-text name would
+be wrong often enough to be worse than asking. Expenses group by category with subtotals, which is
+how the worksheet reads and how a committee talks about a budget.
+
+The Budget now shows `A − B = C` as the form actually states it, and **the Trail's End goal is
+derived from the plan**. That figure used to be typed in by hand — deriving it is the entire point
+of the worksheet. A pack that had already typed a goal keeps it and can switch; the old
+"use this as the goal" button, which copied a figure once and then silently went stale, is gone.
+
+- **The summary never reads sales.** The goal feeds `computePackTotals`' `teGoal`, so depending on
+  what has been sold would be circular — and the goal would move every time somebody recorded a
+  storefront.
+- **`computeBudget` and the goal share one arithmetic**, in `fundingSummary()`. Repeating the sum
+  is how the Budget card and the goal would drift apart.
+- **A family-funded event counts as income before anyone has attended.** Reading only charges would
+  treat a family-funded campout as pure cost until the day it happens and inflate the popcorn goal
+  by the whole of it — telling the pack to raise money it was never going to spend. Where charges
+  exist they are the answer; where they do not, the line falls back to its planning figure. This is
+  "plan from an assumption; charge from recorded attendance" applied to the worksheet.
+- **Paid-direct money is in neither A nor B**, and an `income`-category line adds to B rather than
+  A.
 
 Each phase is shippable and reversible on its own. **Phases 0 and 1 alone make the balance real**
 and are worth doing even if the rest waits.

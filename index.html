@@ -607,6 +607,12 @@
   .lrates .att-mini input:not(.money-in) { width: 74px; }
   .lrates .att-mini > input[data-ch="line-direct"] { width: 200px; max-width: 100%; text-align: left; }
   .lrate-note { flex: 1 1 100%; }
+  /* Phase 4 — the 510-278 A/B/C worksheet. */
+  .fund-tbl { width: 100%; margin: 4px 0 0; font-size: 0.86rem; }
+  .fund-tbl td { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .fund-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .fund-tbl .fund-sub { padding-left: 18px; color: var(--ink-soft); }
+  .fund-tbl .fund-c td { border-bottom: none; border-top: 2px solid var(--line); padding-top: 7px; }
 
   /* ---------- Wave 3: dues collection, advancement, Scout Shop list ---------- */
   /* No new tokens — done/awarded fills reuse --accent/--good with the same dark-ink
@@ -1281,7 +1287,7 @@
     var l = {
       id: uid(), name: '', basis: 'flat',
       scoutRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
-      adultsPerScout: 1, fundedBy: 'pack', paidDirectTo: ''
+      adultsPerScout: 1, fundedBy: 'pack', paidDirectTo: '', category: 'other'
     };
     if (patch) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
     return l;
@@ -1309,6 +1315,42 @@
   // auditor can read a marked charge, whereas a missing one tells them nothing.
   // ---------------------------------------------------------------------------
   var CHARGE_WHO = ['scout', 'adult', 'sibling'];
+  // ---------------------------------------------------------------------------
+  // MONEY REDESIGN, Phase 4 — categories and the funding summary (DESIGN-money.md §2, §3.2).
+  //
+  // The Pack Operating Budget (510-278) is every line as `cost per person × number of
+  // people = total`, in fixed categories, totalling to:
+  //
+  //   A) Total budgeted program expenses
+  //   B) Income subtotal (annual dues · prior-year surplus · other parent payments)
+  //   C) Total fundraising need = A − B  →  C ÷ commission% = pack popcorn goal
+  //                                      →  pack goal ÷ scouts = per-scout goal
+  //
+  // That last figure used to be typed in by hand. Deriving it from the plan is the entire
+  // point of the worksheet.
+  //
+  // Decision 10 in the design ("adopt 510-278's list verbatim, or a shorter pack-specific
+  // one?") is answered by adoption: the full list is here, and trimming it later is an edit
+  // to this array plus a migration mapping the removed keys onto 'other'.
+  // ---------------------------------------------------------------------------
+  var LINE_CATEGORIES = [
+    ['registration', 'Registration & fees'],
+    ['charter', 'Charter fee'],
+    ['advancement', 'Advancement'],
+    ['recognition', 'Recognition & awards'],
+    ['events', 'Pack events'],
+    ['activities', 'Activities & outings'],
+    ['camp', 'Camp'],
+    ['materials', 'Program materials'],
+    ['training', 'Leader training'],
+    ['uniforms', 'Uniforms'],
+    ['reserve', 'Reserve fund'],
+    ['other', 'Other'],
+    ['income', 'Income']
+  ];
+  var LINE_CATEGORY_KEYS = LINE_CATEGORIES.map(function (c) { return c[0]; });
+  var LINE_CATEGORY_LABELS = {};
+  LINE_CATEGORIES.forEach(function (c) { LINE_CATEGORY_LABELS[c[0]] = c[1]; });
   var LINE_BASES = ['flat', 'per-head'];
   var LINE_FUNDERS = ['pack', 'families'];
   // A pack event is priced per head, and the heads are not all the same kind or price.
@@ -1417,7 +1459,7 @@
   ];
   function freshState() {
     return {
-      version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, cashGoalCents: 0,
+      version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, goalIsDerived: true, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
       events: [],                      // Phase 2 — the calendar record; meetings[] is legacy
@@ -1555,6 +1597,9 @@
     d.movedNoticeDismissed = d.movedNoticeDismissed === true;
     if (typeof d.rev !== 'number') d.rev = 0;
     if (typeof d.goalCents !== 'number') d.goalCents = 0;
+    // Phase 4 — the Trail's End goal now comes from the plan. A pack that had already typed
+    // one keeps it (and can switch); a pack that never did gets the derived figure.
+    if (typeof d.goalIsDerived !== 'boolean') d.goalIsDerived = !(d.goalCents > 0);
     if (typeof d.cashGoalCents !== 'number') d.cashGoalCents = 0;
     if (typeof d.cashThroughTrailsEnd !== 'boolean') {
       // Migrate the older twin flags: cash counted anywhere ⇒ ran through Trail's End.
@@ -1611,6 +1656,9 @@
         l.paidDirectTo = '';
       }
       if (LINE_FUNDERS.indexOf(l.fundedBy) === -1) l.fundedBy = 'pack';
+      // Phase 4 — 510-278 categories. Existing lines default to 'other': guessing a
+      // category from a free-text name would be wrong often enough to be worse than asking.
+      if (LINE_CATEGORY_KEYS.indexOf(l.category) === -1) l.category = 'other';
       l.scoutRateCents = centsOf(l.scoutRateCents);
       l.adultRateCents = centsOf(l.adultRateCents);
       l.siblingRateCents = centsOf(l.siblingRateCents);
@@ -2439,12 +2487,13 @@
     var pct = parseFloat(state.commissionPct);
     var commission = isFinite(pct) ? Math.round(teEligible * pct / 100) : null;
     var activeCount = activeScouts().length;
-    var teTarget = state.goalCents > 0 && activeCount > 0 ? Math.round(state.goalCents / activeCount) : null;
+    var teGoalNow = packGoalCents();   // Phase 4 — from the plan unless overridden
+    var teTarget = teGoalNow > 0 && activeCount > 0 ? Math.round(teGoalNow / activeCount) : null;
     return {
       sales: sales, don: don, combined: sales + don, commission: commission, pct: pct,
       onlineDon: onlineDon, cashDon: cashDon, eligible: teEligible, teEligible: teEligible,
       cashKept: cashKept, retainedCash: cashKept, viaTE: viaTE,
-      teGoal: state.goalCents, goal: state.goalCents, target: teTarget, teTarget: teTarget,
+      teGoal: teGoalNow, goal: teGoalNow, target: teTarget, teTarget: teTarget,
       cashGoal: state.cashGoalCents, activeCount: activeCount
     };
   }
@@ -2469,6 +2518,64 @@
   // Program year runs September → August (Scouting America "Ideal Year of Scouting").
   var PROGRAM_MONTHS = ['September', 'October', 'November', 'December', 'January', 'February',
     'March', 'April', 'May', 'June', 'July', 'August'];
+  // Phase 4 — the 510-278 worksheet, A − B = C. Deliberately does NOT call
+  // computePackTotals: the goal derives from the PLAN and the commission rate, never from
+  // what has been sold, and letting it depend on sales would be circular (the goal feeds
+  // computePackTotals' teGoal).
+  function fundingSummary() {
+    var scouts = activeScouts().length;
+    var expenses = 0, incomeLines = 0, familyDirect = 0;
+    var byCategory = {};
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      var planned = linePlannedCents(l, scouts);
+      // Money families pay somebody else directly is never the pack's, so it is in neither
+      // A nor B — it is reported on its own as what the year costs a family.
+      if (!lineThroughPack(l)) { familyDirect += planned; return; }
+      byCategory[l.category] = (byCategory[l.category] || 0) + planned;
+      if (l.category === 'income') incomeLines += planned;
+      else expenses += planned;
+    });
+    var carryover = state.budget.startingBalance || 0;
+    // What families are expected to put in, line by line.
+    //
+    // "Plan from an assumption; charge from recorded attendance." Where charges exist they
+    // ARE the answer — real heads, after waivers and forgiveness. Where they do not, the
+    // line falls back to its planning figure, because an event nobody has attended yet is
+    // still money families will owe. Reading only charges would count a family-funded
+    // campout as pure cost until the day it happens, and inflate the popcorn goal by the
+    // whole of it — the pack would be told to raise money it was never going to spend.
+    var fees = 0;
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      if (!lineRaisesCharges(l)) return;
+      var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
+      fees += rows.length ? chargeTotals(rows, state.ledger).standing : linePlannedCents(l, scouts);
+    });
+    var otherFr = 0;
+    state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
+    var cashGoal = state.cashGoalCents || 0;
+    var income = carryover + fees + otherFr + cashGoal + incomeLines;
+    var need = Math.max(0, expenses - income);
+    var pct = parseFloat(state.commissionPct);
+    var pctOk = isFinite(pct) && pct > 0;
+    var salesGoal = pctOk ? Math.round(need / (pct / 100)) : null;
+    return {
+      scouts: scouts, byCategory: byCategory,
+      A: expenses, B: income, C: need,
+      carryover: carryover, fees: fees, otherFr: otherFr, cashGoal: cashGoal,
+      incomeLines: incomeLines, familyDirect: familyDirect,
+      pct: pct, pctOk: pctOk, salesGoal: salesGoal,
+      perScoutGoal: (salesGoal != null && scouts > 0) ? Math.round(salesGoal / scouts) : null
+    };
+  }
+  // The pack's Trail's End goal: derived from the plan by default, or whatever the pack
+  // typed if they chose to set it by hand.
+  function packGoalCents() {
+    if (!state.goalIsDerived) return state.goalCents || 0;
+    var g = fundingSummary().salesGoal;
+    return g == null ? 0 : g;
+  }
   function slotYear(slot) { return slot <= 3 ? state.budget.programYear : state.budget.programYear + 1; }
   function slotLabel(slot) { return PROGRAM_MONTHS[slot] + ' ' + slotYear(slot); }
   function computeBudget() {
@@ -2566,10 +2673,13 @@
     // Funding streams covering the plan: carryover + expected cash donations (kept 100%)
     // + family-paid fees expected (Wave 17), and the rest raised through Trail's End
     // (only commission% of which reaches the pack).
-    var cashGoal = state.cashGoalCents || 0;
-    var teNeed = Math.max(0, planned - startingBalance - cashGoal - feeIncomeExpected);
-    var salesGoal = pctOk ? Math.round(teNeed / (pct / 100)) : null;
-    var perScoutGoal = (salesGoal != null && scouts > 0) ? Math.round(salesGoal / scouts) : null;
+    // Phase 4 — one arithmetic, in fundingSummary(). Repeating it here is how the Budget
+    // card and the goal would drift apart.
+    var fund = fundingSummary();
+    var cashGoal = fund.cashGoal;
+    var teNeed = fund.C;
+    var salesGoal = fund.salesGoal;
+    var perScoutGoal = fund.perScoutGoal;
     return {
       planned: planned, actual: actual, actPlanned: actPlanned, actActual: actActual,
       expPlanned: expPlanned, expActual: expActual, scouts: scouts,
@@ -2589,7 +2699,8 @@
       charges: chg,
       feeIncomeExpected: feeIncomeExpected, feeIncomeCollected: feeIncomeCollected,
       otherFundraiserIn: otherFundraiserIn,
-      pct: pct, salesGoal: salesGoal, perScoutGoal: perScoutGoal
+      pct: pct, salesGoal: salesGoal, perScoutGoal: perScoutGoal,
+      fund: fund
     };
   }
   // Phase 2 — a budget line's month is its event's month. Lines with no event (their event
@@ -6408,7 +6519,9 @@
     return h +
       '<div class="row">' +
       '<label class="fld">Commission rate (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="commission" value="' + esc(state.commissionPct) + '" placeholder="e.g. 33"></label>' +
-      '<label class="fld">Trail’s End goal ($)<input class="money-in" inputmode="decimal" data-ch="goal" value="' + dollars(packT.teGoal) + '" placeholder="e.g. 5000"></label>' +
+      (state.goalIsDerived
+        ? '<label class="fld">Trail’s End goal ($)<input class="money-in" value="' + dollars(packT.teGoal) + '" disabled aria-label="Trail\u2019s End goal, from the plan"></label>'
+        : '<label class="fld">Trail’s End goal ($)<input class="money-in" inputmode="decimal" data-ch="goal" value="' + dollars(state.goalCents) + '" placeholder="e.g. 5000"></label>') +
       '<label class="fld">Cash donations goal ($)<input class="money-in" inputmode="decimal" data-ch="cash-goal" value="' + dollars(packT.cashGoal) + '" placeholder="e.g. 500"></label>' +
       '</div>' +
       '<div class="row" style="margin-top:6px">' +
@@ -6452,6 +6565,10 @@
     } else {
       h += '<span class="small muted money" title="Planned = rates × the assumed head count">' + fmt(linePlanned(l)) + ' planned</span>';
     }
+    h += '<select data-ch="line-category" data-id="' + l.id + '" aria-label="510-278 category">' +
+      LINE_CATEGORIES.map(function (c) {
+        return '<option value="' + c[0] + '"' + (l.category === c[0] ? ' selected' : '') + '>' + esc(c[1]) + '</option>';
+      }).join('') + '</select>';
     h += '<select data-ch="line-funded" data-id="' + l.id + '" aria-label="Whose money is it">' +
       '<option value="pack"' + (lineFamilyFunded(l) ? '' : ' selected') + '>Pack pays</option>' +
       '<option value="families"' + (lineFamilyFunded(l) ? ' selected' : '') + '>Families pay</option>' +
@@ -6582,22 +6699,35 @@
         'but it is part of what Scouting costs a family.</p>';
     }
 
-    // Funding the plan → two goals
-    if (bud.salesGoal != null) {
-      h += '<hr class="divider"><p class="eyebrow">Funding the plan</p>' +
-        '<p class="small">Covering <strong class="money">' + fmt(bud.planned) + '</strong> in planned costs, funded by:</p>' +
-        '<ul class="small" style="margin:2px 0 8px; padding-left:18px; line-height:1.7">' +
-        '<li>Carryover from last year: <span class="money">' + fmt(bud.startingBalance) + '</span></li>' +
-        (bud.feeIncomeExpected > 0 ? '<li>Family-paid fees expected: <span class="money">' + fmt(bud.feeIncomeExpected) + '</span></li>' : '') +
-        '<li>Cash donations goal (pack keeps 100%): <span class="money">' + fmt(bud.cashGoal) + '</span></li>' +
-        '<li>Remaining to raise through Trail’s End: <strong class="money">' + fmt(bud.teNeed) + '</strong></li>' +
-        '</ul>' +
-        '<p class="small">At ' + bud.pct + '% commission, that means selling <strong class="money">' + fmt(bud.salesGoal) + '</strong> through Trail’s End' +
-        (bud.perScoutGoal != null ? ' — <span class="money">' + fmt(bud.perScoutGoal) + '</span> per active scout' : '') + '.</p>' +
-        '<button type="button" class="btn small" data-act="use-budget-goal">Use ' + fmt(bud.salesGoal) + ' as the Trail’s End goal</button>' +
-        '<p class="small muted" style="margin:8px 0 0">Set the cash donations goal in Season setup above to change how much of the plan you expect cash donations to cover.</p>';
+    // Phase 4 — the 510-278 worksheet, as the form actually reads: A − B = C, and the two
+    // goals that fall out of C. Everything here is derived from the plan; the only thing
+    // that used to be typed by hand was the last figure, which was the whole problem.
+    var fs2 = bud.fund;
+    h += '<hr class="divider"><p class="eyebrow">Funding the plan (Pack Operating Budget, 510-278)</p>' +
+      '<table class="tbl fund-tbl"><tbody>' +
+      '<tr><td><strong>A</strong> Total budgeted program expenses</td><td class="num money"><strong>' + fmt(fs2.A) + '</strong></td></tr>' +
+      '<tr><td class="fund-sub">Carryover from last year</td><td class="num money">' + fmt(fs2.carryover) + '</td></tr>' +
+      (fs2.fees ? '<tr><td class="fund-sub">Dues &amp; fees families owe</td><td class="num money">' + fmt(fs2.fees) + '</td></tr>' : '') +
+      (fs2.incomeLines ? '<tr><td class="fund-sub">Budgeted income lines</td><td class="num money">' + fmt(fs2.incomeLines) + '</td></tr>' : '') +
+      (fs2.otherFr ? '<tr><td class="fund-sub">Other fundraisers</td><td class="num money">' + fmt(fs2.otherFr) + '</td></tr>' : '') +
+      '<tr><td class="fund-sub">Cash donations goal</td><td class="num money">' + fmt(fs2.cashGoal) + '</td></tr>' +
+      '<tr><td><strong>B</strong> Income subtotal</td><td class="num money"><strong>' + fmt(fs2.B) + '</strong></td></tr>' +
+      '<tr class="fund-c"><td><strong>C</strong> Total fundraising need <span class="muted">(A − B)</span></td>' +
+        '<td class="num money"><strong>' + fmt(fs2.C) + '</strong></td></tr>' +
+      '</tbody></table>';
+    if (fs2.pctOk) {
+      h += '<p class="small" style="margin:8px 0 0">At <strong>' + fs2.pct + '%</strong> commission that is a pack goal of ' +
+        '<strong class="money">' + fmt(fs2.salesGoal) + '</strong> through Trail’s End' +
+        (fs2.perScoutGoal != null ? ' — <strong class="money">' + fmt(fs2.perScoutGoal) + '</strong> per active scout' : '') + '.</p>';
+      h += '<p class="small" style="margin:8px 0 0">' +
+        (state.goalIsDerived
+          ? '<span class="pill navy">From the plan</span> The Trail’s End goal follows this figure and moves when the plan does. ' +
+            '<button type="button" class="btn small ghost" data-act="goal-manual">Set it by hand instead</button>'
+          : '<span class="pill navy">Set by hand</span> The Trail’s End goal is <strong class="money">' + fmt(state.goalCents) + '</strong>, typed in Season setup — ' +
+            'it does not follow the plan. <button type="button" class="btn small ghost" data-act="goal-derived">Use the figure from the plan</button>') +
+        '</p>';
     } else {
-      h += '<hr class="divider"><p class="small muted">Set a commission rate in Season setup above to see the Trail’s End sales goal needed to fund this budget.</p>';
+      h += '<p class="small muted" style="margin:8px 0 0">Set a commission rate in Season setup above and this becomes a Trail’s End sales goal.</p>';
     }
     h += '</div>';
 
@@ -6671,13 +6801,24 @@
       'Same pricing: <em>flat</em>, or <em>per head</em> against the roster. Mark <em>families pay</em> when families reimburse the cost ' +
       '(like dues) — expected fees reduce what popcorn must raise, and collected fees count as funds-in.</p>';
     if (b.expenses.length) {
-      b.expenses.forEach(function (e) {
-        h += '<div class="erow">' +
-          '<input class="ename" data-ch="line-name" data-id="' + e.id + '" value="' + esc(e.name) + '" placeholder="Expense name">' +
-          lineMoneyControls(e, bud.scouts, e.id) +
-          actualBtn(e.id) +
-          tinyDangerBtn('del-expense:' + e.id, 'Remove ' + (e.name || 'expense')) +
-          '</div>';
+      // Phase 4 — grouped by 510-278 category with a subtotal each, which is how the
+      // worksheet reads and how a committee talks about a budget.
+      LINE_CATEGORIES.forEach(function (cat) {
+        var rows = b.expenses.filter(function (e) { return e.category === cat[0]; });
+        if (!rows.length) return;
+        var sub = rows.reduce(function (n, e) { return n + (lineThroughPack(e) ? linePlanned(e) : 0); }, 0);
+        h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
+          '<strong>' + esc(cat[1]) + '</strong>' +
+          '<span class="small muted money">' + fmt(sub) + '</span></div>';
+        rows.forEach(function (e) {
+          h += '<div class="erow">' +
+            '<input class="ename" data-ch="line-name" data-id="' + e.id + '" value="' + esc(e.name) + '" placeholder="Expense name">' +
+            lineMoneyControls(e, bud.scouts, e.id) +
+            actualBtn(e.id) +
+            tinyDangerBtn('del-expense:' + e.id, 'Remove ' + (e.name || 'expense')) +
+            '</div>';
+        });
+        h += '</div>';
       });
     }
     h += '<button type="button" class="btn small ghost" data-act="add-expense" style="margin-top:8px">+ Add expense</button></div>';
@@ -11504,6 +11645,15 @@
       commit(); return;
     }
     if (act === 'direct-prompt-done') { state.budget.directPrompted = true; commit(); return; }
+    // Phase 4 — the goal follows the plan, or it doesn't. Switching to manual seeds the box
+    // with what the plan currently says, so nobody starts from zero.
+    if (act === 'goal-manual') {
+      var seeded = fundingSummary().salesGoal;
+      state.goalIsDerived = false;
+      if (seeded != null && !state.goalCents) state.goalCents = seeded;
+      commit(); return;
+    }
+    if (act === 'goal-derived') { state.goalIsDerived = true; commit(); return; }
     if (act === 'clear-activity-dates') {
       arm('clear-act-dates', function () {
         state.events.forEach(function (ev) { if (ev.kind === 'activity') ev.date = ''; });
@@ -11693,11 +11843,6 @@
       deleteWithUndo(dtGone.name || 'reward tier', function () {
         state.rewardTiers.tiers.splice(Math.min(dtIx, state.rewardTiers.tiers.length), 0, dtGone);
       });
-      return;
-    }
-    if (act === 'use-budget-goal') {
-      var bud = computeBudget();
-      if (bud.salesGoal != null) { state.goalCents = bud.salesGoal; commit(); }
       return;
     }
     if (act === 'unassign') {
@@ -12236,6 +12381,8 @@
       else if (bk === 'adults-per') {
         var ap = parseFloat(el.value);
         bl.adultsPerScout = (isFinite(ap) && ap >= 0) ? Math.min(9, Math.round(ap * 100) / 100) : 0;
+      } else if (bk === 'category') {
+        if (LINE_CATEGORY_KEYS.indexOf(el.value) !== -1) bl.category = el.value;
       } else if (bk === 'funded') {
         bl.fundedBy = el.value === 'families' ? 'families' : 'pack';
         // "The pack pays, but somebody else is paid directly" is meaningless.
