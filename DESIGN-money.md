@@ -102,10 +102,26 @@ Absorbs today's `meetings[]` and the calendar half of `budget.activities[]`. `so
 round-trips ICS. RSVP and attendance key off `event.id` — one mechanism instead of today's split
 between `attendance[meetingId]` (meetings only) and `rsvps['act:'+id]` (activities only).
 
+#### Attendance is a head count, not a tick
+
+A scout does not arrive alone, and does not arrive with a predictable number of people. Both
+parents often come; siblings usually do. So attendance per family is a small count, not a boolean:
+
+```js
+state.attendance[eventId][scoutId] = { scout: 0|1, adults: 0..n, siblings: 0..n }
+```
+
+Today's meeting attendance (`{ scoutId: true }`) migrates to `{ scout: 1, adults: 0, siblings: 0 }`
+and keeps working unchanged — for a den meeting, heads other than the scout cost nothing and the
+extra fields simply stay zero.
+
+This one record does three jobs: who was there (program), how many heads to cost (budget), and
+what to charge which family (accounts).
+
 ### 3.2 Budget line — `state.budget.lines[]`
 
-The plan. Mirrors 510-278, with one addition this pack needs: a pack event is priced **per head,
-and a scout brings a parent**, so a single event carries two rates.
+The plan. Mirrors 510-278, with one addition this pack needs: a pack event is priced **per head**,
+and the heads are not all the same kind or price.
 
 ```js
 { id, category,                  // 'registration'|'charter'|'advancement'|'recognition'
@@ -113,8 +129,9 @@ and a scout brings a parent**, so a single event carries two rates.
                                  // |'uniforms'|'reserve'|'other'|'income'
   name,
   basis: 'per-head'|'flat',
-  scoutRateCents,                // what one scout costs
-  adultRateCents,                // what one accompanying adult costs (0 = adults free)
+  scoutRateCents,                // per scout
+  adultRateCents,                // per adult
+  siblingRateCents,              // per sibling — often a child rate, sometimes 0
   flatCents,                     // used when basis === 'flat'
   eventId,                       // optional link to an Event
   payer: 'pack'|'family'|'council' }
@@ -134,9 +151,39 @@ calendar — but a council camp fee is not the pack's money and must never move 
 Today's model has no way to express that, so those costs either distort the budget or go
 unrecorded.
 
-`planned = flatCents`, or `scoutRateCents × scouts + adultRateCents × adults`.
-**Planned never moves on its own** — that's the point of a plan. `actualCents` is *gone*; actual is
-derived from the ledger.
+#### Planning assumes; reality is entered afterwards
+
+Parents are not going to RSVP in this app, at least not yet. So the plan cannot wait on them, and
+**the planning head count is an assumption, stated openly**:
+
+```js
+plannedHeads = { scouts: activeScouts, adults: activeScouts × adultsPerScout, siblings: 0 }
+                                                              // adultsPerScout defaults to 1
+planned      = scoutRate × scouts + adultRate × adults + siblingRate × siblings
+```
+
+One adult per scout, no siblings, is the honest default for budgeting — it is the minimum the pack
+will be on the hook for. `adultsPerScout` is editable per line for the events where two parents
+always come. Nothing about this pretends to know who is coming; it is a planning figure.
+
+**After the event, the Treasurer enters what actually happened** — the attendance head counts and
+the real amount spent (as a ledger entry). From that point the line reports:
+
+| | Source |
+|---|---|
+| **Planned** | roster assumption × rates — frozen, the number the committee agreed |
+| **Expected heads** | the same assumption |
+| **Actual heads** | entered attendance |
+| **Actual cost** | Σ ledger entries on the line — what was really paid |
+| **Charged** | rates × actual heads, per family, scout share waived where a tier applies |
+
+Which is exactly the case that started this: *estimate $40 × 10 scouts, actual $42, but only six
+turned up.* Planned stays $400 because that is what was budgeted; actual is whatever the ledger
+says was paid; charges are raised against six families, not ten. Three different numbers, three
+different records, none of them fighting.
+
+**Planned never moves on its own** — that is the point of a plan. `actualCents` is *gone*; actual
+is derived from the ledger.
 
 ### 3.3 Ledger entry — `state.ledger[]` *(new)*
 
@@ -166,22 +213,26 @@ council cheque clears — which is when it's actually true.
 
 ### 3.4 Family account — `state.charges[]` and payments in the ledger
 
-A `payer: 'family'` line raises **two charges per attending scout** — one for the scout, one for
-the accompanying adult — because that is how the cost is actually incurred.
+A `payer: 'family'` line raises charges **from the recorded attendance head counts** — one per
+head, because that is how the cost is actually incurred.
 
 ```js
-charge = { id, scoutId, lineId, who: 'scout'|'adult',
+charge = { id, scoutId, lineId, who: 'scout'|'adult'|'sibling',
            amountCents, date, waivedBy }        // waivedBy = reward tier id
 ```
 
+A family that brought the scout, both parents and a younger sibling gets four charges against that
+scout's account: one `scout`, two `adult`, one `sibling`.
+
 **This pack's rule, expressed exactly:**
 
-> Until a scout reaches a fundraising tier, the family covers **both** the scout and the parent.
-> Once the tier is reached, the family covers **only the parent** — the scout's share is paid from
-> fundraising.
+> Until a scout reaches a fundraising tier, the family covers **the scout and everyone they bring**.
+> Once the tier is reached, the family covers **only the people they bring** — the scout's own
+> share is paid from fundraising.
 
-So a reward tier waives **`who: 'scout'` charges only**. The adult charge always stands. In the
-model that is a one-line rule, and it is the entire feature:
+So a reward tier waives **`who: 'scout'` charges only**. Adults and siblings always stand — a
+scout's fundraising buys the scout's seat, not the family's. In the model that is a one-line rule,
+and it is the entire feature:
 
 ```js
 waived = (charge.who === 'scout') && scoutReachedTier(charge.scoutId, line)
@@ -219,21 +270,46 @@ all, since that money never passes through the pack.
 
 #### Worked example
 
-Blue & Gold, `scoutRate $15`, `adultRate $15`, 10 scouts + 10 adults attending, 3 scouts past the
-tier. Pack pays the hall $340.
+Blue & Gold. `scoutRate $15`, `adultRate $15`, `siblingRate $8`. Roster is 10 scouts.
+
+**At planning time** — nobody has RSVP'd and nobody will:
 
 ```
-Ledger  OUT  $340.00   Blue & Gold — venue          → line "Blue & Gold"
-Charges      20 raised: 10 scout @ $15, 10 adult @ $15   = $300.00
-             3 scout charges waived by tier "Dues covered" = −$45.00
-             families owe $255.00
-Ledger  IN   $255.00 as families pay (one entry each, scoutId set)
-
-Line result: planned $300 · actual $340 · recovered $255 · pack absorbed $85
-             ($45 tier-waived + $40 overspend)
+plannedHeads  10 scouts + 10 adults (one each, the assumption) + 0 siblings
+planned       10 × $15  +  10 × $15                              = $300.00
 ```
 
-Every one of those numbers is a stored record, not a derivation. That is what makes it a book.
+**After the event** — 8 scouts came, 13 adults, 5 siblings. Pack paid the hall $340. Three of the
+eight scouts are past the tier.
+
+```
+Ledger  OUT   $340.00  Blue & Gold — venue                  → line "Blue & Gold"
+Charges       8 scout  @ $15 = $120.00   (3 waived by "Dues covered"  −$45.00)
+             13 adult  @ $15 = $195.00
+              5 sibling @ $8 =  $40.00
+              families owe                                       $310.00
+Ledger  IN    $310.00 as families pay (one entry each, scoutId set)
+
+Line result   planned $300 · actual $340 · charged $355 · waived $45
+              recovered $310 · pack absorbed $30
+```
+
+The pack absorbed $30, and it is worth seeing where that comes from:
+
+```
+overspend against plan   $340 − $300  =  +$40
+tier waivers                              +$45
+extra heads paying           $355 − $300  =  −$55   (26 heads came; 20 were budgeted)
+                                          ───────
+pack absorbed                              $30
+```
+
+Two scouts stayed home but three extra adults and five siblings came, so charging followed 26
+heads rather than the 20 assumed and brought in $55 more than the plan — which covered the
+overspend and most of the waivers. **None of that is expressible today**, where planned and actual
+are the same field multiplied by the roster.
+
+Every number above is a stored record, not a derivation. That is what makes it a book.
 
 ---
 
@@ -281,11 +357,16 @@ that is the migration test, and it should be a test in `test/harness.mjs`, not a
 `budget.activities[]`. Repoint the seven calendar readers. Budget lines keep `eventId`. Delete the
 calendar fields from budget lines.
 
+**Phase 2b — attendance head counts.** Widen `attendance[eventId][scoutId]` from `true` to
+`{ scout, adults, siblings }`, migrating existing marks to `{ scout: 1, adults: 0, siblings: 0 }`.
+Add the post-event entry grid. Useful on its own even before charges exist — the pack finally
+knows how many people actually came to Blue & Gold.
+
 **Phase 3 — payer, charges and family accounts.** Introduce `payer`, migrating `familyPays: true`
 → `'family'` and `false` → `'pack'` (nothing becomes `'council'` automatically — that is a
-judgement call per line, prompted once). Add `scoutRate`/`adultRate`. Generate charges from
-`collected[]` history, waived where a tier covered them. Rework Dues & fees onto charges. The
-attendance/RSVP question (decision 5) is answered here.
+judgement call per line, prompted once). Add the three rates and `adultsPerScout`. Generate
+charges from recorded attendance, waiving `who: 'scout'` where a tier applies. Backfill history
+from `collected[]`. Rework Dues & fees onto charges.
 
 **Phase 4 — categories and the funding summary.** Adopt the 510-278 category list, defaulting
 existing lines to `other`. Add the `A − B = C` fundraising-need summary and the derived per-scout
@@ -318,16 +399,22 @@ and are worth doing even if the rest waits.
 4. **Council events are paid by families directly to council** and never enter the pack's books —
    `payer: 'council'`, on the calendar, costed for families, invisible to the balance.
 
+5. **Plan from an assumption; charge from recorded attendance.** Parents will not be RSVPing here,
+   so the plan assumes every active scout plus one adult. After the event the Treasurer enters the
+   real head counts and the real spend, and charges are raised from those. *(This was the question
+   that started all of this — RSVP is not the answer, because RSVP will not exist.)*
+6. **Attendance is an open head count.** A scout may bring two parents and siblings, so attendance
+   is `{ scout, adults, siblings }` per family per event, not a tick. Siblings get their own rate.
+
 **Still open:**
 
-5. **Attendance → charges.** Raise a charge for everyone on the roster, for RSVP-yes, or only for
-   those who actually attended? *(This is the question that started all of this. It now clearly
-   belongs to the charges layer, not the budget.)* Leaning: **RSVP-yes raises the charge**, since
-   that's the point at which the pack commits money per head — with a way to void a charge when
-   someone genuinely couldn't come.
-6. **Adults per scout.** Always exactly one accompanying adult, or a count per family per event?
-   One is simpler and matches the storefront rule; a count handles both parents plus siblings.
 7. **Scout Account ceiling.** Should the app warn when total tier-waived value gets large relative
    to net fundraising proceeds? No individual balances exist here, so the direct-benefit risk is
    low — but the number is worth seeing.
 8. **Categories.** Adopt 510-278's list verbatim, or a shorter pack-specific one?
+9. **Who enters attendance, and where?** Treasurer on the Money side after the fact, or the
+   Cubmaster/Activities chair on the event itself in Program? The record is the same either way;
+   this is about whose screen it lands on.
+10. **Charging non-attendees.** If a family signs up, the pack buys their meal, and they don't
+    show — is the charge still raised? A `date`/`waivedBy` field can express "charged then
+    forgiven", but the policy is the pack's.
