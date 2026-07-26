@@ -920,6 +920,35 @@
     .tab { font-size: 0.85rem; padding: 8px 9px 10px; }
     .tab.mine::before { width: 4px; height: 4px; margin-right: 4px; }
   }
+  /* Handoff card — the cross-workspace seam. Reads as a LINK BETWEEN TWO PLACES rather than
+     a card: --surface-2 (recessed, so it never competes with a .card), no box-shadow (every
+     .card has one), and a 3px accent rail plus a trailing arrow to give it direction.
+     Quieter than a card, not louder — which is the right answer to banner blindness. */
+  .handoff {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    appearance: none;
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 9px 11px;
+    margin: 12px 0 0;
+    min-height: 44px;
+    cursor: pointer;
+  }
+  .handoff:hover { border-color: var(--accent); }
+  .handoff-body { flex: 1 1 auto; min-width: 0; }
+  .handoff .eyebrow { display: block; margin: 0 0 1px; }
+  .handoff-line { display: block; font-size: 0.85rem; line-height: 1.35; }
+  .handoff-line strong { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .handoff-go { flex: 0 0 auto; color: var(--accent-text); font-weight: 700; font-size: 1rem; line-height: 1; }
+
   /* Home's urgency marker. Deliberately NOT applied to the job pill: that pill is who owns
      the item, and a column of red job names reads as alarm instead of ownership. */
   .urg {
@@ -1609,6 +1638,10 @@
     sections: {},    // Wave 21 — { workspaceId: sectionId }, the last section visited in each
     seasonSetupOpen: false, // Wave 21 — the shared Season setup card's disclosure on Popcorn
     homeRestOpen: false,    // Wave 21 — Home's "Elsewhere in the pack" disclosure
+    // Wave 21 — den scope. null = untouched (fall back to the signed-in leader's den),
+    // '' = they chose All dens, 'Wolf' = that den. NOT persisted, like the rest of `ui`,
+    // so a den leader always reopens on their own den.
+    denFilter: null,
     storefrontId: null,
     expandedScouts: {},
     armed: null,
@@ -2111,19 +2144,26 @@
     });
     return { any: per.length > 0, collected: col, outstanding: out };
   }
-  // Wave 21 — every per-scout charge in the ledger, expenses AND activities. Both kinds
-  // render a collect grid in the budget, but this only ever counted expenses, so a scout
-  // who hadn't paid for a per-scout ACTIVITY showed as owing nothing. One list, used by
-  // scoutOwesCents, the roster pill and the Dues & fees section.
+  // Wave 21 — every per-scout charge in the ledger, expenses AND activities. Both render a
+  // collect grid in the budget, but this only ever counted expenses, so a scout who hadn't
+  // paid for a per-scout ACTIVITY showed as owing nothing.
+  //
+  // The `key` matters: state.collected is keyed by the bare id for expenses but by
+  // 'act:'+id for activities (legacy data left expense keys bare — see computeBudget's
+  // addFeeItem). Getting that wrong writes ticks to a key nothing else reads, so the same
+  // activity ends up with two independent collect states. Every caller takes the key from
+  // here rather than rebuilding it.
   function perScoutCharges() {
     return state.budget.expenses.filter(function (e) { return e.perScout; })
-      .concat(state.budget.activities.filter(function (a) { return a.perScout; }));
+      .map(function (e) { return { item: e, key: e.id, kind: 'expense' }; })
+      .concat(state.budget.activities.filter(function (a) { return a.perScout; })
+        .map(function (a) { return { item: a, key: 'act:' + a.id, kind: 'activity' }; }));
   }
   function scoutOwesCents(scoutId) {
     var owe = 0;
-    perScoutCharges().forEach(function (e) {
-      var cm = state.collected[e.id] || {};
-      if (!cm[scoutId]) owe += e.estCents || 0;
+    perScoutCharges().forEach(function (c) {
+      var cm = state.collected[c.key] || {};
+      if (!cm[scoutId]) owe += c.item.estCents || 0;
     });
     return owe;
   }
@@ -2295,9 +2335,40 @@
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">Advancement</h2>' +
       '<button type="button" class="btn small" data-act="open-shop">Scout Shop list</button></div>' +
-      '<p class="small muted" style="margin:6px 0 0">Unofficial at-a-glance tracker — the official record lives in Scoutbook Plus.</p></div>';
+      '<p class="small muted" style="margin:6px 0 0">Unofficial at-a-glance tracker — the official record lives in Scoutbook Plus.</p>' +
+      // Seam: a den meeting on the calendar can mark its adventure for everyone who checked
+      // in, one tap. This is the other end of that — meetings that ran with an adventure
+      // planned and nobody credited for it.
+      (function () {
+        var t = todayISO();
+        var uncredited = state.meetings.filter(function (m) {
+          if (!m.adventure || !m.date || m.date >= t) return false;
+          return !activeScouts().some(function (s) { return advStatus(s.id, 'req', m.adventure) || advStatus(s.id, 'elect', m.adventure); });
+        });
+        if (!uncredited.length) return '';
+        return handoffCard('Program', 'Scouts', 'calendar',
+          uncredited.length + (uncredited.length === 1 ? ' past meeting' : ' past meetings'),
+          'had an adventure planned that nobody has been credited for yet.');
+      })() +
+      '</div>';
+    // Wave 21 — a den leader lands on their own den. Never a lock: myDens() is [] for
+    // everyone else, and the chips below always offer "All dens".
+    // Three states, and null vs '' matters: null = untouched, so fall back to the signed-in
+    // leader's den; '' = they explicitly chose All dens; a name = that den.
+    var scopeDens = ui.denFilter === null ? myDens() : (ui.denFilter ? [ui.denFilter] : []);
+    if (myDens().length || ui.denFilter !== null) {
+      h += '<div class="row no-print" style="margin:0 0 12px;gap:6px">' +
+        '<button type="button" class="snav" data-act="den-filter" data-name=""' +
+        (scopeDens.length ? '' : ' aria-current="true"') + '>All dens</button>' +
+        DENS.map(function (dn) {
+          var on = scopeDens.length === 1 && scopeDens[0] === dn;
+          return '<button type="button" class="snav" data-act="den-filter" data-name="' + esc(dn) + '"' +
+            (on ? ' aria-current="true"' : '') + '>' + esc(dn) + '</button>';
+        }).join('') + '</div>';
+    }
     var anyDen = false;
     DENS.forEach(function (den) {
+      if (scopeDens.length && scopeDens.indexOf(den) === -1) return;
       var adv = ADVENTURES[den];
       var roster = activeScouts().filter(function (s) { return s.den === den; });
       if (!roster.length || !adv) return;
@@ -2351,7 +2422,11 @@
         '</datalist></div>';
     });
     if (!anyDen) {
-      h += '<div class="empty">No active scouts with a den yet. Give each scout a den on Scouts · Roster to track their Adventures here.</div>';
+      // Wave 21 — say which empty this is. Filtered-to-an-empty-den and no-dens-at-all are
+      // different problems, and the old copy only described the second.
+      h += scopeDens.length
+        ? '<div class="empty">No active scouts in the ' + esc(scopeDens.join(' or ')) + ' den yet. Choose <strong>All dens</strong> above to see the rest of the pack.</div>'
+        : '<div class="empty">No active scouts with a den yet. Give each scout a den on Scouts · Roster to track their Adventures here.</div>';
     }
     return h;
   }
@@ -5137,9 +5212,29 @@
       return h;
     }
 
-    h += '<div class="card"><h2 class="section display">Roster <span class="pill navy">' + active.length + ' active</span></h2>';
-    active.forEach(function (s) { h += renderScoutRow(s, totals[s.id]); });
-    if (!active.length) h += '<p class="small muted">Everyone is archived.</p>';
+    // Wave 21 — same den scope as Advancement: a den leader lands on their own den, with
+    // "All dens" always one tap away. Everyone else sees no chips at all.
+    var scopeDens = ui.denFilter === null ? myDens() : (ui.denFilter ? [ui.denFilter] : []);
+    if (myDens().length || ui.denFilter !== null) {
+      h += '<div class="row no-print" style="margin:0 0 12px;gap:6px">' +
+        '<button type="button" class="snav" data-act="den-filter" data-name=""' +
+        (scopeDens.length ? '' : ' aria-current="true"') + '>All dens</button>' +
+        DENS.map(function (dn) {
+          var on = scopeDens.length === 1 && scopeDens[0] === dn;
+          return '<button type="button" class="snav" data-act="den-filter" data-name="' + esc(dn) + '"' +
+            (on ? ' aria-current="true"' : '') + '>' + esc(dn) + '</button>';
+        }).join('') + '</div>';
+    }
+    var shown = scopeDens.length ? active.filter(function (s) { return scopeDens.indexOf(s.den) !== -1; }) : active;
+
+    h += '<div class="card"><h2 class="section display">Roster <span class="pill navy">' + shown.length +
+      (scopeDens.length ? ' in ' + esc(scopeDens.join(' / ')) : ' active') + '</span></h2>';
+    shown.forEach(function (s) { h += renderScoutRow(s, totals[s.id]); });
+    if (!shown.length) {
+      h += '<p class="small muted">' + (scopeDens.length
+        ? 'Nobody in that den yet — choose <strong>All dens</strong> above to see the rest of the pack.'
+        : 'Everyone is archived.') + '</p>';
+    }
     h += '</div>';
 
     if (archived.length) {
@@ -6179,6 +6274,33 @@
       }).join('') + '</ol>' +
       '<p class="flow-loop">↻ and the carryover starts step 1 again</p></div>';
   }
+  /* ---------------- Wave 21: handoff cards ---------------- */
+  // One component for every seam where one job's number becomes another job's input. It's a
+  // real <button>: tapping it lands on the section that owns the other half.
+  //
+  // Two rules keep these from becoming wallpaper, and both are RENDER rules, not styling:
+  //   1. It goes at the FOOT of the card that owns the number. You read the number, the
+  //      question "and where does that go?" forms, then the answer appears. A banner at the
+  //      top of a stack is chrome, and chrome goes invisible in about four sessions.
+  //   2. It returns '' unless there is a live, non-zero figure the card itself computed.
+  //      A handoff conditional on data can never decay into decoration.
+  //
+  // NOTE: `main` is display:none when printing, so none of these reach paper. The printable
+  // counterpart is the "Where the money lives" list on Pack · Season — add a seam here and
+  // add it there too, or the handover document a new treasurer prints quietly goes stale.
+  function handoffCard(fromLabel, toLabel, sectionId, figure, line) {
+    var w = SECTION_HOME[sectionId];
+    if (!w || !figure) return '';
+    return '<button type="button" class="handoff no-print" data-act="goto" data-tab="' + esc(w) +
+      '" data-section="' + esc(sectionId) + '">' +
+      '<span class="handoff-body">' +
+      '<span class="eyebrow">' + esc(fromLabel) + ' <span aria-hidden="true">&rarr;</span> ' + esc(toLabel) + '</span>' +
+      '<span class="handoff-line"><strong>' + esc(figure) + '</strong> ' + esc(line) + '</span>' +
+      '</span>' +
+      '<span class="handoff-go" aria-hidden="true">&rarr;</span>' +
+      '<span class="visually-hidden">Opens ' + esc(toLabel) + '</span></button>';
+  }
+
   /* ----- Money · Dues & fees ----- */
   // Wave 21 — a real home for the collect grids. They existed before, but the only way to
   // reach one was to tick "per scout" on a budget row and then expand it — the most buried
@@ -6216,6 +6338,11 @@
     } else if (roster.length) {
       h += '<p class="small muted" style="margin:8px 0 0">Everyone’s square. Nothing outstanding.</p>';
     }
+    // Seam: the roster carries the same "owes" figure on each scout's row.
+    if (owedTotal) {
+      h += handoffCard('Money', 'Scouts', 'roster', owing.length + (owing.length === 1 ? ' scout' : ' scouts'),
+        (owing.length === 1 ? 'shows' : 'show') + ' an amount owed on the roster.');
+    }
     h += '</div>';
 
     // One card per charge, each with the collect grid that was previously buried.
@@ -6223,13 +6350,14 @@
       '<p class="small muted" style="margin:0 0 8px">Tick a scout as they pay. Fees marked ' +
       '<strong>families pay</strong> join the budget’s funds-in as they’re collected.</p>';
     charges.forEach(function (c) {
-      var isActivity = state.budget.activities.indexOf(c) !== -1;
+      // c.key, not c.item.id — activities are keyed 'act:'+id in state.collected, and
+      // ticking against the bare id would write somewhere the budget never reads.
       h += '<div class="block-card" style="margin-top:8px">' +
-        '<div class="spread"><span class="assign-name">' + esc(c.name || (isActivity ? 'Untitled activity' : 'Untitled expense')) +
-        ' <span class="small muted">' + (isActivity ? 'activity' : 'expense') +
-        (c.familyPays ? ' · families pay' : '') + '</span></span>' +
-        '<span class="money">' + fmt(c.estCents || 0) + ' <span class="small muted">each</span></span></div>' +
-        renderCollectBlock(c, c.id) + '</div>';
+        '<div class="spread"><span class="assign-name">' + esc(c.item.name || ('Untitled ' + c.kind)) +
+        ' <span class="small muted">' + esc(c.kind) +
+        (c.item.familyPays ? ' · families pay' : '') + '</span></span>' +
+        '<span class="money">' + fmt(c.item.estCents || 0) + ' <span class="small muted">each</span></span></div>' +
+        renderCollectBlock(c.item, c.key) + '</div>';
     });
     h += '</div>';
     return h;
@@ -6328,6 +6456,17 @@
     }
     leaders.forEach(function (l) { h += renderLeaderRow(l); });
     if (canEdit()) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
+    // Seam: this roster is what staffs storefront shifts, so a thin roster shows up as a
+    // two-deep gap over on Popcorn. Makes the leader list consequential rather than a
+    // contact sheet.
+    var shortShifts = state.storefronts.filter(function (sf) {
+      return (sf.date || '') >= todayISO() && storefrontNeedsAdults(sf);
+    }).length;
+    if (shortShifts) {
+      h += handoffCard('Pack', 'Popcorn', 'storefronts',
+        shortShifts + (shortShifts === 1 ? ' storefront' : ' storefronts'),
+        (shortShifts === 1 ? 'still needs' : 'still need') + ' a second adult on a shift.');
+    }
     h += '</div>';
 
     // Wave 19(40) — AHMR pointer (plain text, deliberately not a link).
@@ -6460,6 +6599,12 @@
         '<div class="bar" role="img" aria-label="Cash donations goal ' + cashPct + ' percent"><div class="bar-fill" style="width:' + cashPct + '%"></div></div>' +
         '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.cashKept) + '</strong> of <span class="money">' + fmt(pack.cashGoal) + '</span> (' + cashPct + '%)' +
         (pack.viaTE ? ' · cash is routed through Trail’s End right now, so nothing counts here' : '') + '</p>';
+    }
+    // Seam: the Kernel's commission is the Treasurer's biggest line of funds-in, and until
+    // now nothing on this screen said so.
+    if (pack.commission) {
+      h += handoffCard('Popcorn', 'Money', 'budget', fmt(pack.commission),
+        'of commission counts as funds in on the budget.');
     }
     h += '</div>';
 
@@ -6650,8 +6795,14 @@
         ? ' of <span class="money">' + fmt(fr.goalCents) + '</span> goal (' + Math.min(100, Math.round(ft.total / fr.goalCents * 100)) + '%)' +
           (showGoal ? ' · per-scout target <span class="money">' + fmt(perTarget) + '</span> across ' + activeCount + ' active scouts' : '')
         : '') +
-      '</p></div>';
-    return h;
+      '</p>';
+    // Seam: this checkbox silently moves the budget's funds-in. Say so, but only while
+    // it's actually ticked AND there's money behind it.
+    if (fr.countInFunds && ft.total) {
+      h += handoffCard('Popcorn', 'Money', 'budget', fmt(ft.total),
+        'from ' + (fr.name || 'this fundraiser') + ' counts as funds in on the budget.');
+    }
+    return h + '</div>';
   }
 
   /* ----- Wave 8: reward tiers card (Standings tab) ----- */
@@ -6703,7 +6854,11 @@
       if (sum.duesCents > 0) {
         h += '<p class="small" style="margin:10px 0 0"><strong>' + sum.coveredCount + '</strong> of <strong>' + sum.activeCount +
           '</strong> active ' + scoutWord + ' ' + haveWord + ' earned dues coverage — the pack covers <strong class="money">' + fmt(sum.rewardDues) +
-          '</strong> (' + sum.coveredCount + ' × ' + fmt(sum.duesCents) + '). Recorded on the Budget as actual spending.</p>';
+          '</strong> (' + sum.coveredCount + ' × ' + fmt(sum.duesCents) + ').</p>' +
+          // Seam: reward tiers are configured here but book straight into the budget's
+          // ACTUAL SPENT, which was previously only a sentence at the end of a card.
+          handoffCard('Popcorn', 'Money', 'budget', fmt(sum.rewardDues),
+            'of covered dues is booked as actual spending on the budget.');
       } else {
         h += '<p class="small muted" style="margin:10px 0 0"><strong>' + sum.coveredCount + '</strong> of ' + sum.activeCount +
           ' active ' + scoutWord + ' ' + haveWord + ' reached the dues tier. Set a dues amount above to record the pack’s cost on the Budget.</p>';
@@ -9456,6 +9611,7 @@
     if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
     if (act === 'toggle-home-rest') { ui.homeRestOpen = !ui.homeRestOpen; render(); return; }
+    if (act === 'den-filter') { ui.denFilter = el.dataset.name || ''; ui.resetScroll = true; render(); return; }
     // Wave 21 — the one-time "where things moved" card. Using a row to navigate counts as
     // having understood it, so that dismisses it too.
     if (act === 'moved-dismiss') { state.movedNoticeDismissed = true; commit(); return; }

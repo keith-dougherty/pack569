@@ -498,6 +498,79 @@ test('Start here lives on Home, not Calendar', () => {
   ok(/Start here<\/h2>/.test(hm[0]), 'the Start here card is not on Home');
 });
 
+/* ================================================================
+   Wave 21 — handoff cards and den scoping
+   ================================================================ */
+
+test('collect keys match the convention the budget already uses', () => {
+  // state.collected is keyed by the bare id for expenses but 'act:'+id for activities.
+  // Getting that wrong writes ticks to a key nothing else reads, so the same activity
+  // ends up with two independent collect states.
+  const fn = /function perScoutCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'perScoutCharges() not found');
+  ok(/key: e\.id/.test(fn[0]), 'expense charges do not use the bare id');
+  ok(/key: 'act:' \+ a\.id/.test(fn[0]), "activity charges do not use the 'act:' prefix");
+  // Nothing downstream may rebuild the key from the item.
+  const owes = /function scoutOwesCents\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/state\.collected\[c\.key\]/.test(owes[0]), 'scoutOwesCents does not read c.key');
+  const dues = /function renderDues\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(/renderCollectBlock\(c\.item, c\.key\)/.test(dues[0]), 'the Dues grid does not pass c.key');
+});
+
+test('a handoff renders only when it carries a live figure', () => {
+  // The anti-banner-blindness rule is a RENDER rule, not styling: a handoff conditional
+  // on data can never decay into decoration.
+  const fn = /function handoffCard\([\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'handoffCard() not found');
+  ok(/if \(!w \|\| !figure\) return '';/.test(fn[0]), 'handoffCard does not bail on a missing figure');
+});
+
+test('every handoff points at a section that exists', () => {
+  const sectionIds = new Set(nav.WORKSPACES.flatMap((w) => w.sections.map((s) => s.id)));
+  const calls = [...SCRIPT.matchAll(/handoffCard\('([^']+)', '([^']+)', '(\w+)'/g)];
+  ok(calls.length >= 6, `expected the six seams, found ${calls.length}`);
+  for (const [, , , section] of calls) {
+    ok(sectionIds.has(section), `a handoff routes to unknown section "${section}"`);
+  }
+});
+
+test('handoffs never reach paper', () => {
+  // main is display:none when printing. They carry no-print anyway, and the printable
+  // counterpart is the "Where the money lives" list on Pack · Season.
+  const fn = /function handoffCard\([\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/class="handoff no-print"/.test(fn[0]), 'the handoff card is missing no-print');
+});
+
+test('the handoff is quieter than a card, not louder', () => {
+  const css = HTML.slice(0, HTML.indexOf('</style>'));
+  const rule = /\n  \.handoff \{[^}]*\}/.exec(css);
+  ok(rule, '.handoff rule not found');
+  ok(/background: var\(--surface-2\)/.test(rule[0]), '.handoff should sit on the recessed surface');
+  ok(!/box-shadow/.test(rule[0]), '.handoff must not have a shadow — every .card has one');
+  ok(/min-height: 44px/.test(rule[0]), '.handoff is below a comfortable phone target');
+});
+
+test('den scope distinguishes "untouched" from "all dens"', () => {
+  // null = fall back to the signed-in leader's den; '' = they chose All dens. Collapsing
+  // the two makes the All dens button do nothing.
+  ok(/denFilter: null/.test(SCRIPT), 'ui.denFilter does not start as null');
+  const uses = [...SCRIPT.matchAll(/ui\.denFilter === null \? myDens\(\) : \(ui\.denFilter \? \[ui\.denFilter\] : \[\]\)/g)];
+  ok(uses.length >= 2, `the three-state check should guard both scoped screens, found ${uses.length}`);
+  ok(/ui\.denFilter = el\.dataset\.name \|\| ''/.test(SCRIPT),
+    'the den-filter action does not write an empty string for All dens');
+});
+
+test('den scope is a default, never a lock', () => {
+  // A den leader covering for someone else must always be able to see the whole pack.
+  const chips = [...SCRIPT.matchAll(/data-act="den-filter" data-name=""/g)];
+  ok(chips.length >= 2, `every scoped screen needs an "All dens" escape, found ${chips.length}`);
+});
+
+test('den scope never gates a workspace', () => {
+  // Scoping filters rows. It must not decide what someone can reach.
+  ok(!/myDens\(\)[^;\n]*\?\s*'' :/.test(SCRIPT), 'myDens() is being used to hide a surface');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
