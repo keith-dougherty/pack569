@@ -141,6 +141,7 @@
     font-weight: 600;
     font-size: 0.92rem;
     padding: 8px 14px 10px;
+    min-height: 40px; /* Wave 21 — was 39.3px computed, under this file's own button.btn floor */
     border-radius: 8px 8px 0 0;
     cursor: pointer;
     flex: 0 0 auto;
@@ -624,21 +625,36 @@
   .closeout-list { margin: 6px 0 0; padding-left: 20px; font-size: 0.88rem; line-height: 1.55; }
   .closeout-list li { margin: 5px 0; }
 
-  /* ---------- Wave 15 ---------- */
-  /* Right-edge fade cue on the tab strip — shown only while the strip can scroll
-     (render() toggles .scrollable). No new tokens: the gradient fades to --navy, the
-     topbar's background in BOTH themes, so it reads correctly everywhere. It never
-     intercepts taps. */
-  .tabs-wrap { position: relative; }
-  .tabs-wrap.scrollable::after {
+  /* ---------- Wave 15 (generalized in Wave 21) ---------- */
+  /* Edge-fade cue on a horizontally scrollable strip — shown only while the strip can
+     actually scroll (render() toggles .scrollable). Wave 21 made this serve BOTH strips by
+     moving the gradient target into a per-wrapper --fade-to, so the workspace strip (on
+     --navy) and the section strip (on --ground) share one implementation instead of a
+     copy-paste. Still no new tokens, and it never intercepts taps.
+     Wave 21 also adds the matching LEFT cue: .scrolled means the user has moved the strip,
+     and until now nothing indicated there was anything back the other way. */
+  .tabs-wrap { --fade-to: var(--navy); }
+  .subnav-wrap { --fade-to: var(--ground); }
+  .tabs-wrap, .subnav-wrap { position: relative; }
+  .tabs-wrap.scrollable::after,
+  .subnav-wrap.scrollable::after,
+  .tabs-wrap.scrollable.scrolled::before,
+  .subnav-wrap.scrollable.scrolled::before {
     content: '';
     position: absolute;
     top: 0;
-    right: 0;
     bottom: 0;
     width: 28px;
-    background: linear-gradient(to right, transparent, var(--navy));
     pointer-events: none;
+  }
+  .tabs-wrap.scrollable::after, .subnav-wrap.scrollable::after {
+    right: 0;
+    background: linear-gradient(to right, transparent, var(--fade-to));
+  }
+  .tabs-wrap.scrollable.scrolled::before, .subnav-wrap.scrollable.scrolled::before {
+    left: 0;
+    background: linear-gradient(to left, transparent, var(--fade-to));
+    z-index: 1;
   }
 
   /* ---------- Wave 16 ---------- */
@@ -815,18 +831,112 @@
     border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
     overflow-wrap: anywhere; word-break: break-all;
   }
+
+  /* ---------- Wave 21: the workspace nav shell ---------- */
+  /* Nine flat, feature-shaped tabs become six job-shaped WORKSPACES (the navy .tabs strip,
+     unchanged) plus a SECTION strip for the surfaces inside one.
+     The section strip deliberately lives OUTSIDE .topbar, on --ground — the surface .tab.on
+     already bleeds into — so sticky chrome at 375px stays what it was (~93px) instead of
+     growing to ~136px. On a phone with the keyboard up that difference is most of what's
+     left to type a budget line into. It scrolls away with the content, and it renders only
+     when the workspace actually offers a choice, so Home never shows a second row.
+     No new tokens: every colour here is an existing var, so all four theme blocks are
+     untouched. Active state is fill + dark ink + weight (the btn.primary pattern), never an
+     amber marker on navy — --accent on --navy is 2.71:1 and fails even the 3:1 non-text bar
+     (same reason the Wave 18 toast note gives). */
+  .subnav-wrap { background: var(--ground); }
+  .subnav-wrap[hidden] { display: none; }
+  .subnav-inner { max-width: 760px; margin: 0 auto; padding: 0 12px; }
+  .subnav { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 10px 0 2px; }
+  .subnav::-webkit-scrollbar { display: none; }
+  .snav {
+    appearance: none;
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.85rem;
+    line-height: 1.2;
+    color: var(--ink-soft);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 99px;
+    padding: 7px 13px;
+    min-height: 36px;
+    cursor: pointer;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .snav:hover { border-color: var(--accent); color: var(--ink); }
+  .snav[aria-current] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #1A1408;
+    font-weight: 700;
+  }
+  /* "One of your jobs lives here." Marks, never hides or reorders — the strip is in a fixed
+     order so muscle memory holds and two leaders looking at one screen see the same thing.
+     A dot in --navy-ink (the tab's own text colour, at full opacity against the 0.7 the
+     labels use) rather than gold, for the contrast reason above. */
+  .tab.mine::before {
+    content: '';
+    display: inline-block;
+    width: 5px; height: 5px;
+    margin-right: 6px;
+    vertical-align: 1px;
+    border-radius: 50%;
+    background: var(--navy-ink);
+  }
+  .tab.on.mine::before { background: var(--accent); } /* on --ground, where gold does pass */
+  /* Escape hatch past up to 11 nav buttons. Lives in the static shell, so unlike anything
+     inside #view it is never destroyed by a re-render. */
+  .skip-link {
+    position: fixed;
+    left: 8px;
+    top: -64px;
+    z-index: 30;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--accent);
+    border-radius: 9px;
+    padding: 9px 14px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .skip-link:focus { top: 8px; }
+  /* Desktop has always been one 760px column (main and .topbar-inner are both capped there,
+     and ~40 layout rules are authored to that measure). The honest win is just that neither
+     strip can overflow at this width, so retire the fades and let the pills breathe. */
+  @media (min-width: 900px) {
+    .tabs-wrap.scrollable::after, .subnav-wrap.scrollable::after,
+    .tabs-wrap.scrolled::before, .subnav-wrap.scrolled::before { display: none; }
+    .subnav { padding-top: 12px; }
+    .snav { font-size: 0.92rem; padding: 8px 15px; min-height: 40px; }
+  }
+  /* Six workspace labels run ~400px at the default .tab metrics, so on a 375px phone the
+     last two sit off-screen behind a scroll gesture — which is exactly how the old nine-tab
+     strip lost Derby and Pack. Tightening the type and padding here fits all six with no
+     scroll at all, and a nav that never scrolls is one you can trust. Still 40px tall. */
+  @media (max-width: 420px) {
+    .tabs { gap: 2px; }
+    .tab { font-size: 0.85rem; padding: 8px 9px 10px; }
+    .tab.mine::before { width: 4px; height: 4px; margin-right: 4px; }
+  }
+  @media print { .subnav-wrap, .skip-link { display: none !important; } }
 </style>
 
+<a class="skip-link no-print" href="#view">Skip to content</a>
 <div class="topbar no-print">
   <div class="topbar-inner">
     <div class="hdr-row">
       <h1 class="wordmark"><span class="fleur" id="fleurSlot" aria-hidden="true"></span><span>Ideal <span class="gold">Year</span> of Scouting</span><small id="hdrPack"></small></h1>
       <button type="button" class="sync-pill no-print" id="syncPill" data-act="goto-pack"></button>
     </div>
-    <div class="tabs-wrap"><nav class="tabs" id="tabs"></nav></div>
+    <div class="tabs-wrap"><nav class="tabs" id="tabs" aria-label="Workspaces"></nav></div>
   </div>
 </div>
-<main id="view"></main>
+<div class="subnav-wrap no-print" id="subnav" hidden>
+  <div class="subnav-inner"><nav class="subnav" id="sections"></nav></div>
+</div>
+<main id="view" tabindex="-1"></main>
 <div id="overlayHost"></div>
 <div id="toastHost" class="no-print" aria-live="polite"></div>
 
@@ -1430,7 +1540,11 @@
   }
   var state = load();
   var ui = {
-    tab: 'calendar', // Wave 18(11) — first paint matches the leftmost tab
+    // Wave 21 — first paint is the leftmost WORKSPACE, which is now Home. `ui` is never
+    // persisted, so this means every session and every reload starts there for free — which
+    // is the only reason a personalized Home is worth building.
+    tab: 'home',
+    sections: {},    // Wave 21 — { workspaceId: sectionId }, the last section visited in each
     storefrontId: null,
     expandedScouts: {},
     armed: null,
@@ -3737,17 +3851,89 @@
   }
 
   /* ---------------- Rendering ---------------- */
-  var TABS = [
-    { id: 'calendar', label: 'Calendar' },
-    { id: 'storefronts', label: 'Storefronts' },
-    { id: 'scouts', label: 'Scouts' },
-    { id: 'advancement', label: 'Advancement' },
-    { id: 'totals', label: 'Standings' }, // Wave 17 — renamed; internal id stays 'totals' (stored ui state)
-    { id: 'budget', label: 'Budget' },
-    { id: 'inventory', label: 'Inventory' },
-    { id: 'derby', label: 'Derby' },
-    { id: 'pack', label: 'Pack' }
+  // Wave 21 — six job-shaped WORKSPACES, each holding one or more SECTIONS. Order is FIXED
+  // for everyone (myJobs() only adds the .mine marker): a strip that re-sorted per person
+  // would mean two leaders on the phone to each other are looking at different screens, and
+  // since `ui` isn't persisted it could reshuffle on reload too.
+  //
+  // Every one of the nine old tab labels survives verbatim as a section label, so muscle
+  // memory maps 1:1 — that's a constraint on this redesign, not a coincidence. Section ids
+  // reuse the old tab id wherever one existed, which is what lets TAB_ALIAS below be a pure
+  // lookup. Money and Pack hold a single section for now; Phase 3 splits them.
+  var WORKSPACES = [
+    { id: 'home', label: 'Home', sections: [
+      { id: 'home', label: 'Home' }
+    ] },
+    { id: 'program', label: 'Program', sections: [
+      { id: 'calendar', label: 'Calendar' },
+      { id: 'derby', label: 'Derby' }
+    ] },
+    { id: 'scouts', label: 'Scouts', sections: [
+      { id: 'roster', label: 'Roster' },
+      { id: 'advancement', label: 'Advancement' }
+    ] },
+    { id: 'popcorn', label: 'Popcorn', sections: [
+      { id: 'storefronts', label: 'Storefronts' },
+      { id: 'totals', label: 'Standings' }, // Wave 17 renamed the label; the id stays 'totals'
+      { id: 'inventory', label: 'Inventory' }
+    ] },
+    { id: 'money', label: 'Money', sections: [
+      { id: 'budget', label: 'Budget' }
+    ] },
+    { id: 'pack', label: 'Pack', sections: [
+      { id: 'packmain', label: 'Pack' }
+    ] }
   ];
+  // Old flat tab id -> where it lives now. Nine entries, one per pre-Wave-21 tab, so every
+  // data-tab="budget" string already embedded across this file keeps landing correctly with
+  // no edit at the call site.
+  var TAB_ALIAS = {
+    calendar:    { tab: 'program', section: 'calendar' },
+    storefronts: { tab: 'popcorn', section: 'storefronts' },
+    scouts:      { tab: 'scouts',  section: 'roster' },
+    advancement: { tab: 'scouts',  section: 'advancement' },
+    totals:      { tab: 'popcorn', section: 'totals' },
+    budget:      { tab: 'money',   section: 'budget' },
+    inventory:   { tab: 'popcorn', section: 'inventory' },
+    derby:       { tab: 'program', section: 'derby' },
+    pack:        { tab: 'pack',    section: 'packmain' }
+  };
+  var WS_BY_ID = {}, SECTION_HOME = {};
+  WORKSPACES.forEach(function (w) {
+    WS_BY_ID[w.id] = w;
+    w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; });
+  });
+  function curWorkspace() { return WS_BY_ID[ui.tab] || WS_BY_ID.home; }
+  // The remembered section for this workspace, validated — a stale id (from an alias jump,
+  // or a section renamed in a later phase) falls back to the first section rather than
+  // rendering a blank view.
+  function curSection() {
+    var w = curWorkspace(), want = ui.sections[w.id];
+    for (var i = 0; i < w.sections.length; i++) if (w.sections[i].id === want) return want;
+    return w.sections[0].id;
+  }
+  // The one navigation entry point. preferRemembered = the workspace strip, where going back
+  // to a workspace should return you to where you were inside it; everything else is an
+  // explicit jump that lands on a definite section.
+  function gotoNav(tabId, sectionId, preferRemembered) {
+    var w, s = null;
+    if (sectionId && SECTION_HOME[sectionId]) { w = SECTION_HOME[sectionId]; s = sectionId; }
+    else if (preferRemembered && WS_BY_ID[tabId]) { w = tabId; }
+    else if (TAB_ALIAS[tabId]) { w = TAB_ALIAS[tabId].tab; s = TAB_ALIAS[tabId].section; }
+    else if (WS_BY_ID[tabId]) { w = tabId; }
+    else { w = 'home'; s = 'home'; }
+    ui.tab = w;
+    if (s) ui.sections[w] = s;
+    ui.armed = null;
+    ui.resetScroll = true;
+    render();
+  }
+  // Which workspaces carry one of this user's jobs. MARKING ONLY — never filters the strip.
+  function myWorkspaceIds() {
+    var out = {};
+    myJobs().forEach(function (id) { if (JOB_BY_ID[id]) out[JOB_BY_ID[id].home] = true; });
+    return out;
+  }
   // Parent phase — the only two tabs a parent/pending user ever sees. The Pack tab, the
   // Members card, Budget, Inventory, Scouts, Advancement and Derby are not rendered at all
   // in that mode, so there is nothing to hide.
@@ -3773,7 +3959,9 @@
   // legitimately disappear after activation (a fired armed delete) simply fail the
   // lookup: focus falls back to <body>, no crash, and the scroll restore below is
   // independent of focus so there's no scroll jump either.
-  var SIG_ATTRS = ['id', 'slot', 'sf', 'scout', 'key', 'kind', 'name', 'date', 'tab', 's', 'adult'];
+  // Wave 21 adds 'section'. NOT reusing 'key' for it: 'key' already carries RSVP event keys,
+  // so a section pill and an RSVP control could collide into the same signature.
+  var SIG_ATTRS = ['id', 'slot', 'sf', 'scout', 'key', 'kind', 'name', 'date', 'tab', 'section', 's', 'adult'];
   function focusSignature(el) {
     if (!el || !el.dataset) return null;
     var type = el.dataset.ch ? 'ch' : (el.dataset.act ? 'act' : null);
@@ -3794,6 +3982,33 @@
   // recently activated data-act control (set by the click/keydown handlers); when an
   // overlay opens it becomes the "opener" that gets focus back on close.
   var lastOverlayKind = null, overlayOpenerSig = null, lastActSig = null;
+
+  // Wave 21 — overflow cue + keep-the-active-item-visible, for BOTH nav strips. Generalizes
+  // what Wave 15 did inline for .tabs, and fixes two things on the way through:
+  //   * the overflow test gains the +1 sub-pixel tolerance the .tbl-wrap test at the bottom
+  //     of render() has always had (a bare > gives a phantom fade at some zoom levels);
+  //   * keeping the active item visible writes strip.scrollLeft directly instead of calling
+  //     scrollIntoView. That matters: scrollIntoView({block:'nearest'}) can scroll the PAGE,
+  //     which raced the window.scrollTo(0, y) restore at the end of render() — it only
+  //     happened to be safe because the restore ran afterwards and cancelled it. scrollLeft
+  //     cannot move the page at all. The visibility guard reproduces inline:'nearest'
+  //     semantics, so a strip the user hand-scrolled is left alone unless the active item is
+  //     genuinely off-screen.
+  function navStripPass(strip) {
+    if (!strip) return;
+    var wrap = strip.parentElement;
+    var over = strip.scrollWidth > strip.clientWidth + 1;
+    if (wrap && wrap.classList) wrap.classList.toggle('scrollable', over);
+    if (!over) { if (wrap && wrap.classList) wrap.classList.remove('scrolled'); return; }
+    var on = strip.querySelector('[aria-current]');
+    if (on) {
+      var l = on.offsetLeft, r = l + on.offsetWidth;
+      var vl = strip.scrollLeft, vr = vl + strip.clientWidth;
+      if (l < vl) strip.scrollLeft = Math.max(0, l - 8);
+      else if (r > vr) strip.scrollLeft = r - strip.clientWidth + 8;
+    }
+    if (wrap && wrap.classList) wrap.classList.toggle('scrolled', strip.scrollLeft > 4);
+  }
 
   function render() {
     var y = window.scrollY;
@@ -3820,38 +4035,54 @@
     document.getElementById('hdrPack').textContent = gate ? ''
       : (parent ? ((sync.parentView && sync.parentView.packName) || '') : (state.packName || ''));
     var tabsEl = document.getElementById('tabs');
-    var tabDefs = gate ? [] : (parent ? parentTabDefs() : TABS);
+    var secEl = document.getElementById('sections');
+    var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES);
     var tabAct = parent ? 'parent-tab' : 'tab';
     var tabCur = parent ? parentTab() : ui.tab;
+    var mine = (gate || parent) ? {} : myWorkspaceIds();
     tabsEl.innerHTML = tabDefs.map(function (t) {
       var on = tabCur === t.id;
-      return '<button type="button" class="tab' + (on ? ' on' : '') + '" data-act="' + tabAct + '" data-tab="' + t.id + '"' +
-        (on ? ' aria-current="page"' : '') + '>' + t.label + '</button>';
+      var isMine = !!mine[t.id];
+      return '<button type="button" class="tab' + (on ? ' on' : '') + (isMine ? ' mine' : '') +
+        '" data-act="' + tabAct + '" data-tab="' + esc(t.id) + '"' +
+        (on ? ' aria-current="page"' : '') +
+        (isMine ? ' aria-label="' + esc(t.label) + ', one of your jobs"' : '') +
+        '>' + esc(t.label) + '</button>';
     }).join('');
-    // Wave 15 — phone-width discoverability: when the strip overflows, show the right-edge
-    // fade cue (CSS keys off .scrollable) and keep the active tab scrolled into view.
-    var tabsOverflow = tabsEl.scrollWidth > tabsEl.clientWidth;
-    var tabsWrap = tabsEl.parentElement;
-    if (tabsWrap && tabsWrap.classList && tabsWrap.classList.contains('tabs-wrap')) {
-      tabsWrap.classList.toggle('scrollable', tabsOverflow);
-    }
-    if (tabsOverflow) {
-      try {
-        var onTab = tabsEl.querySelector('.tab.on');
-        if (onTab) onTab.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-      } catch (e2) { /* older engines without options-object scrollIntoView */ }
-    }
+    // Wave 21 — the section strip, rendered only when the workspace actually offers a
+    // choice (so Home, and any future single-section workspace, shows no second row at
+    // all). Gates and the parent app never get one: their nav is the strip above.
+    var wsNow = (gate || parent) ? null : curWorkspace();
+    var secDefs = wsNow ? wsNow.sections : [];
+    var secCur = wsNow ? curSection() : '';
+    secEl.innerHTML = secDefs.length < 2 ? '' : secDefs.map(function (s) {
+      var on = secCur === s.id;
+      // aria-current="page" stays the WORKSPACE's marker — two elements claiming "page" in
+      // one document is ambiguous — so the section uses "true" and the two <nav>s carry
+      // distinct labels. Deliberately NOT role="tablist": that owes a real tabpanel
+      // relationship, roving tabindex and arrow keys, against a DOM rebuilt every keystroke.
+      return '<button type="button" class="snav" data-act="section" data-tab="' + esc(wsNow.id) +
+        '" data-section="' + esc(s.id) + '"' + (on ? ' aria-current="true"' : '') + '>' + esc(s.label) + '</button>';
+    }).join('');
+    secEl.setAttribute('aria-label', wsNow ? ('Sections in ' + wsNow.label) : 'Sections');
+    document.getElementById('subnav').hidden = !secEl.innerHTML;
+    navStripPass(tabsEl);
+    navStripPass(secEl);
     var v = document.getElementById('view');
+    // Wave 21 — dispatch on the SECTION, not the workspace. Every renderer below is the one
+    // that was already there; only the key changed.
+    var sec = (gate || parent) ? '' : curSection();
     if (gate) v.innerHTML = renderJoinGate(gate);
     else if (parent) v.innerHTML = renderParentApp();
-    else if (ui.tab === 'calendar') v.innerHTML = renderCalendarTab();
-    else if (ui.tab === 'storefronts') v.innerHTML = ui.storefrontId ? renderStorefrontDetail() : renderStorefrontList();
-    else if (ui.tab === 'scouts') v.innerHTML = renderScouts();
-    else if (ui.tab === 'advancement') v.innerHTML = renderAdvancement();
-    else if (ui.tab === 'budget') v.innerHTML = renderBudget();
-    else if (ui.tab === 'inventory') v.innerHTML = renderInventory();
-    else if (ui.tab === 'pack') v.innerHTML = renderPack();
-    else if (ui.tab === 'derby') v.innerHTML = renderDerby();
+    else if (sec === 'home') v.innerHTML = renderHome();
+    else if (sec === 'calendar') v.innerHTML = renderCalendarTab();
+    else if (sec === 'storefronts') v.innerHTML = ui.storefrontId ? renderStorefrontDetail() : renderStorefrontList();
+    else if (sec === 'roster') v.innerHTML = renderScouts();
+    else if (sec === 'advancement') v.innerHTML = renderAdvancement();
+    else if (sec === 'budget') v.innerHTML = renderBudget();
+    else if (sec === 'inventory') v.innerHTML = renderInventory();
+    else if (sec === 'packmain') v.innerHTML = renderPack();
+    else if (sec === 'derby') v.innerHTML = renderDerby();
     else v.innerHTML = renderTotals();
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
     // users are on the parent app instead, which carries its own notices.
@@ -4418,10 +4649,14 @@
         '<button type="button" class="btn small ghost" data-act="start-here-dismiss">Dismiss</button></div>' +
         '<p class="small muted" style="margin:6px 0 4px">Five steps to set up your pack’s year:</p>' +
         '<div class="assign-row"><span class="assign-name">1 · Pack name &amp; sync</span><button type="button" class="btn small" data-act="goto-pack">Pack tab</button></div>' +
-        '<div class="assign-row"><span class="assign-name">2 · Add your scouts</span><button type="button" class="btn small" data-act="tab" data-tab="scouts">Scouts tab</button></div>' +
+        // Wave 21 — these use data-act="goto" rather than "tab". "tab" + data-tab="scouts"
+        // would produce the SAME focus signature as the Scouts button in the workspace
+        // strip, and findBySignature takes the first match in document order — so focus
+        // would silently jump to the topbar after every re-render.
+        '<div class="assign-row"><span class="assign-name">2 · Add your scouts</span><button type="button" class="btn small" data-act="goto" data-tab="scouts" data-section="roster">Scouts</button></div>' +
         '<div class="assign-row"><span class="assign-name">3 · Seed the standard year</span><button type="button" class="btn small" data-act="start-here-seed">Seed now</button></div>' +
         '<div class="assign-row"><span class="assign-name">4 · Import your Trail’s End schedule</span><button type="button" class="btn small" data-act="goto-pack">Pack tab</button></div>' +
-        '<div class="assign-row"><span class="assign-name">5 · Set commission &amp; goals</span><button type="button" class="btn small" data-act="tab" data-tab="budget">Budget tab</button></div>' +
+        '<div class="assign-row"><span class="assign-name">5 · Set commission &amp; goals</span><button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>' +
         '</div>';
     }
     // Wave 19(16) — "Next up": the next 1–2 upcoming dated things; hidden when none.
@@ -5463,6 +5698,44 @@
       '<label class="fld" style="flex:1 1 160px">Notes<input data-ch="ldr-notes" data-id="' + l.id + '" value="' + esc(l.notes) + '" placeholder="Optional"></label>' +
       tinyDangerBtn('del-leader:' + l.id, 'Remove ' + (l.name || 'leader')) +
       '</div>' + jobsBlock + '</div>';
+  }
+  // Wave 21 — Home. PLACEHOLDER SHAPE: Phase 4 replaces the body with the per-job "needs
+  // you this week" queue and the Pack Flow map. What's already true here and must stay
+  // true: Home renders NO data-ch inputs. The whole app re-renders on every keystroke, so
+  // an editable field on Home would drag computeBudget()/computeScoutTotals() and every
+  // queue predicate into the typing path. Home routes; the workspaces do the work.
+  function renderHome() {
+    var me = leaderForUser();
+    var jobIds = myJobs();
+    var h = '';
+    if (me && me.name) {
+      h += '<p class="row" style="gap:6px;margin:0 2px 12px;align-items:center">' +
+        '<span class="display" style="font-size:1.05rem">Hi ' + esc(me.name) + '</span>' +
+        jobIds.map(function (j) { return '<span class="pill">' + esc(jobLabel(j)) + '</span>'; }).join('') +
+        '</p>';
+    }
+    h += '<div class="card"><h2 class="section display">Your pack, by job</h2>';
+    if (jobIds.length) {
+      h += '<p class="small muted" style="margin:0 0 8px">The workspaces marked with a dot are where your jobs live. ' +
+        'Everything else stays open to you — a job decides what’s highlighted, never what you’re allowed to see.</p>';
+    } else if (sync.user) {
+      h += '<p class="small muted" style="margin:0 0 8px">No job linked to your sign-in yet. ' +
+        'A pack admin can set one on <button type="button" class="btn small ghost" data-act="goto-pack">Pack</button> — ' +
+        'until then you see the whole pack’s view, which works exactly as it always has.</p>';
+    } else {
+      h += '<p class="small muted" style="margin:0 0 8px">Pick where you’re headed. Sign in on the Pack workspace and ' +
+        'this page starts showing what needs <em>you</em>.</p>';
+    }
+    var mineMap = myWorkspaceIds();
+    WORKSPACES.forEach(function (w) {
+      if (w.id === 'home') return;
+      var isMine = !!mineMap[w.id];
+      h += '<div class="assign-row"><span class="assign-name">' + (isMine ? '<span class="pill">yours</span> ' : '') + esc(w.label) +
+        ' <span class="small muted">' + esc(w.sections.map(function (s) { return s.label; }).join(' · ')) + '</span></span>' +
+        '<button type="button" class="btn small" data-act="goto" data-tab="' + esc(w.id) + '" data-section="' + esc(w.sections[0].id) + '">Open</button></div>';
+    });
+    h += '</div>';
+    return h;
   }
   function renderPack() {
     // Sync card
@@ -8525,8 +8798,13 @@
   // (scroll doesn't bubble, so listen in the capture phase).
   document.addEventListener('scroll', function (e) {
     var t = e.target;
-    if (t && t.classList && t.classList.contains('tbl-wrap')) {
-      t.classList.toggle('scrolled', t.scrollLeft > 4);
+    if (!t || !t.classList) return;
+    if (t.classList.contains('tbl-wrap')) { t.classList.toggle('scrolled', t.scrollLeft > 4); return; }
+    // Wave 21 — the nav strips scroll themselves but paint their fades on the wrapper, so
+    // the class has to land one level up.
+    if (t.classList.contains('tabs') || t.classList.contains('subnav')) {
+      var w = t.parentElement;
+      if (w && w.classList) w.classList.toggle('scrolled', t.scrollLeft > 4);
     }
   }, true);
 
@@ -8648,8 +8926,13 @@
       if (tFn) tFn();
       return;
     }
-    if (act === 'tab') { ui.tab = el.dataset.tab; ui.armed = null; ui.resetScroll = true; render(); return; }
-    if (act === 'goto-pack') { ui.tab = 'pack'; ui.armed = null; ui.resetScroll = true; render(); return; }
+    // Wave 21 — all navigation funnels through gotoNav(). 'tab' carries a workspace id from
+    // the strip, but ALSO the nine legacy ids still embedded in cards across this file;
+    // those don't match a workspace, so they fall through to TAB_ALIAS and land correctly
+    // without a single call-site edit.
+    if (act === 'tab') { gotoNav(el.dataset.tab, null, true); return; }
+    if (act === 'section' || act === 'goto') { gotoNav(el.dataset.tab, el.dataset.section, false); return; }
+    if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
     // ---- Parent phase (the only navigation the parent app has) ----
     if (act === 'parent-tab') {
       ui.parentTab = el.dataset.tab === 'standings' ? 'standings' : 'schedule';
@@ -8729,7 +9012,7 @@
     // Wave 15 — also switch tabs: storefront rows are embedded in the Calendar day detail
     // too, where opening one otherwise looked like a dead tap (and left a stale
     // storefrontId to hijack the next Storefronts visit). Covers keydown activation too.
-    if (act === 'open-storefront') { ui.tab = 'storefronts'; ui.storefrontId = el.dataset.id; ui.resetScroll = true; render(); return; }
+    if (act === 'open-storefront') { ui.storefrontId = el.dataset.id; gotoNav('popcorn', 'storefronts', false); return; }
     if (act === 'back') { ui.storefrontId = null; ui.resetScroll = true; render(); return; }
     // Wave 11 — queue dates for the new-storefront draft (transient; no commit/persist).
     if (act === 'sf-add-date') {
@@ -8851,7 +9134,8 @@
       var sfId = uid();
       state.storefronts.push({ id: sfId, name: '', date: sfDate, blocks: [newBlock(1, '10:00', '12:00'), newBlock(2, '12:00', '14:00')] });
       sortStorefronts();
-      ui.tab = 'storefronts';
+      ui.tab = 'popcorn';             // Wave 21 — storefronts now live in the Popcorn workspace
+      ui.sections.popcorn = 'storefronts';
       ui.storefrontId = sfId;
       ui.resetScroll = true;
       commit(); return;

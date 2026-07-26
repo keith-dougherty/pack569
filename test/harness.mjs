@@ -207,6 +207,119 @@ test('add-leader seeds the new job fields', () => {
   for (const k of ['jobs:', 'dens:', 'uid:']) ok(m[0].includes(k), `add-leader is missing ${k}`);
 });
 
+/* ================================================================
+   Wave 21 — the six-workspace nav shell
+   ================================================================ */
+const nav = sandbox(['WORKSPACES', 'TAB_ALIAS']);
+
+const OLD_TABS = ['calendar', 'storefronts', 'scouts', 'advancement', 'totals',
+  'budget', 'inventory', 'derby', 'pack'];
+
+test('TAB_ALIAS covers every one of the nine old tabs', () => {
+  // This is what lets the data-tab="…" strings already embedded across index.html keep
+  // working untouched. A miss here is a dead button, not a crash — hence the test.
+  for (const id of OLD_TABS) ok(nav.TAB_ALIAS[id], `no alias for the old "${id}" tab`);
+  eq(Object.keys(nav.TAB_ALIAS).sort(), [...OLD_TABS].sort(), 'alias keys');
+});
+
+test('every alias points at a workspace and section that exist', () => {
+  const wsIds = new Set(nav.WORKSPACES.map((w) => w.id));
+  for (const [old, dest] of Object.entries(nav.TAB_ALIAS)) {
+    ok(wsIds.has(dest.tab), `alias "${old}" -> unknown workspace "${dest.tab}"`);
+    const ws = nav.WORKSPACES.find((w) => w.id === dest.tab);
+    ok(ws.sections.some((s) => s.id === dest.section),
+      `alias "${old}" -> "${dest.section}" is not a section of "${dest.tab}"`);
+  }
+});
+
+test('section ids are globally unique', () => {
+  // SECTION_HOME is a flat id -> workspace map, so a duplicate would silently route a
+  // section to the wrong workspace.
+  const seen = new Set();
+  for (const w of nav.WORKSPACES) {
+    for (const s of w.sections) {
+      ok(!seen.has(s.id), `section id "${s.id}" is used in more than one workspace`);
+      seen.add(s.id);
+    }
+  }
+});
+
+test('Home is first, and is the first paint', () => {
+  eq(nav.WORKSPACES[0].id, 'home', 'first workspace');
+  ok(/^\s*tab: 'home',/m.test(SCRIPT), "ui.tab does not default to 'home'");
+  ok(/^\s*sections: \{\}/m.test(SCRIPT), 'ui.sections is not initialised');
+});
+
+test('every old tab label survives as a section label', () => {
+  // The migration promise: muscle memory maps 1:1, so no clever renames.
+  const labels = new Set(nav.WORKSPACES.flatMap((w) => w.sections.map((s) => s.label)));
+  for (const l of ['Calendar', 'Derby', 'Advancement', 'Standings', 'Budget', 'Inventory', 'Storefronts']) {
+    ok(labels.has(l), `the old "${l}" label no longer appears as a section`);
+  }
+});
+
+test('every renderer the dispatch names is reachable from some section', () => {
+  const sectionIds = new Set(nav.WORKSPACES.flatMap((w) => w.sections.map((s) => s.id)));
+  const dispatch = [...SCRIPT.matchAll(/sec === '([a-z]+)'/g)].map((m) => m[1]);
+  ok(dispatch.length >= 8, `expected the section dispatch chain, found ${dispatch.length} branches`);
+  for (const id of dispatch) ok(sectionIds.has(id), `dispatch handles "${id}", which is not a section`);
+});
+
+test('navigation funnels through gotoNav', () => {
+  // Stray `ui.tab = …` assignments bypass section bookkeeping and the scroll reset.
+  const strays = [...SCRIPT.matchAll(/ui\.tab = (?!'popcorn';\s*\/\/ Wave 21)/g)];
+  const decl = /tab: 'home',/.test(SCRIPT);
+  ok(decl, 'ui.tab declaration missing');
+  ok(strays.length <= 1, `${strays.length} direct ui.tab assignments remain; navigation should go through gotoNav()`);
+});
+
+test('the section strip is not sticky chrome', () => {
+  // It must be a SIBLING that follows a closed .topbar, on --ground — not a second row
+  // inside it. Nested, sticky chrome grows from ~93px to ~136px, and on a phone with the
+  // keyboard up that is most of what's left to type a budget line into.
+  const shell = /<div class="topbar no-print">[\s\S]*?<main id="view"/.exec(HTML);
+  ok(shell, 'could not find the app shell markup');
+  // topbar-inner closes, then topbar closes, THEN the subnav opens.
+  ok(/<\/div>\s*<\/div>\s*<div class="subnav-wrap no-print" id="subnav" hidden>/.test(shell[0]),
+    'the section strip is not a sibling following a closed .topbar');
+  const css = HTML.slice(0, HTML.indexOf('</style>'));
+  ok(/\.subnav-wrap \{ background: var\(--ground\); \}/.test(css),
+    'the section strip does not sit on --ground');
+});
+
+test('nav chrome never prints and is keyboard-escapable', () => {
+  ok(/class="subnav-wrap no-print"/.test(HTML), 'the section strip is missing no-print');
+  ok(/class="skip-link no-print" href="#view"/.test(HTML), 'no skip link past the nav strips');
+  ok(/<main id="view" tabindex="-1">/.test(HTML), 'the skip target is not focusable');
+});
+
+test("SIG_ATTRS carries 'section' so focus survives a re-render", () => {
+  const m = /var SIG_ATTRS = \[([^\]]+)\]/.exec(SCRIPT);
+  ok(m, 'SIG_ATTRS not found');
+  ok(m[1].includes("'section'"), "SIG_ATTRS is missing 'section'");
+  ok(m[1].includes("'tab'"), "SIG_ATTRS lost 'tab'");
+});
+
+test('no in-content jump collides with a workspace strip button', () => {
+  // findBySignature uses querySelector — first match in document order wins — so an
+  // in-card data-act="tab" whose data-tab is also a workspace id would steal focus to
+  // the topbar on every re-render.
+  const wsIds = new Set(nav.WORKSPACES.map((w) => w.id));
+  for (const m of SCRIPT.matchAll(/data-act="tab" data-tab="([a-z]+)"/g)) {
+    ok(!wsIds.has(m[1]),
+      `an in-content button uses data-act="tab" data-tab="${m[1]}", which collides with the workspace strip`);
+  }
+});
+
+test('gold is never used as a marker on navy', () => {
+  // --accent on --navy is 2.71:1 — fails 4.5:1 for text and 3:1 for a non-text indicator.
+  const css = HTML.slice(0, HTML.indexOf('</style>'));
+  const tabMine = /\.tab\.mine::before \{[^}]*\}/.exec(css);
+  ok(tabMine, '.tab.mine::before not found');
+  ok(/background: var\(--navy-ink\)/.test(tabMine[0]),
+    'the "yours" marker on the navy strip must use --navy-ink, not --accent');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
