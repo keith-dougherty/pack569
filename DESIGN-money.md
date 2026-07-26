@@ -1,8 +1,9 @@
 # Design — separating the plan, the money, and the calendar
 
-**Status:** Written 2026-07-26. **Phases 0, 1, 2 and 2b are built** (2026-07-26) — the ledger,
-bank reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`, and
-attendance as a head count. Phases 3–4 remain proposal.
+**Status:** Written 2026-07-26. **Phases 0, 1, 2, 2b and 3a are built** (2026-07-26) — the
+ledger, bank reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`,
+attendance as a head count, and per-head pricing with `fundedBy`/`paidDirectTo`. Phase 3b
+(charges and family accounts) and Phase 4 remain proposal.
 **Problem:** budgeting and spending are the same record, so neither can be done properly.
 
 > **Naming note.** `state.ledger` is the transaction register described in §3.3. The word
@@ -742,11 +743,37 @@ Still deferred to Phase 3, because it needs `fundedBy` to know which lines care:
 *"a past event with attendance but no spend, or spend but no attendance"* (§3.5). Firing it on
 every pack-funded line would be noise.
 
-**Phase 3 — fundedBy, charges and family accounts.** Introduce `fundedBy`, migrating
-`familyPays: true` → `'families'` and `false` → `'pack'` (no line gets a `paidDirectTo`
-automatically — that is a judgement call per line, prompted once). Add the three rates and `adultsPerScout`. Generate
-charges from recorded attendance, waiving `who: 'scout'` where a tier applies. Backfill history
-from `collected[]`. Rework Dues & fees onto charges.
+**Phase 3a — pricing, `fundedBy` and `paidDirectTo`. ✅ BUILT.** The `perScout`/`familyPays`
+booleans are gone. A line now carries `basis: 'flat'|'per-head'`, the three rates,
+`adultsPerScout`, `fundedBy: 'pack'|'families'` and `paidDirectTo`. Migration is total-preserving
+— a per-scout line's estimate becomes its SCOUT rate with the adult and sibling rates at zero, so
+`adultsPerScout: 1` multiplies a rate of zero and nothing moves. Asserted in `test/harness.mjs`.
+
+- **Paid-direct money is out of the books entirely** — excluded from planned, actual, the balance
+  and the collect grid — and reported separately as *what the year costs a family*. Before this it
+  either sat in the budget and overstated what the pack spends, or was left out and understated
+  what Scouting costs a family. `fundedBy: 'pack'` with a payee is not expressible.
+- **The paid-direct question is asked once, per pack**, on a dismissible card. Migration never
+  guesses it: whether families pay the pack or pay the council is a judgement call per line.
+- **Switching basis carries the money across** rather than zeroing it.
+- **The rollover carries the pricing shape and rebuilds the calendar.** Phase 2 had left a bug
+  here — the re-seeded activity lines had no `eventId`, so the whole plan would have come back
+  under "Not on the calendar" with its months lost. Flat lines seed next year from the ledger;
+  per-head lines keep their rates, because those are per-person prices and back-deriving them from
+  a total that depended on who turned up would be worse than leaving them alone.
+
+*Interim, closed by 3b:* expected family income still counts only the **scout** share of a
+per-head line, because `state.collected` can record just one tick per scout. The adult and sibling
+shares are real money families owe (the pack fronts it and is made whole) and start counting when
+charges replace the collect grid. Until then the figure understates family income, so the popcorn
+goal comes out slightly high rather than slightly short.
+
+**Phase 3b — charges and family accounts.** *(Next.)* Generate charges from recorded attendance
+× rates, waiving `who: 'scout'` where a tier applies. Add the four settlement paths — paid,
+donated, waived, forgiven. Backfill history from `collected[]`. Rework Dues & fees onto charges.
+Also picks up the Home nag deferred from 2b: a past event with attendance but no spend, or spend
+but no attendance, is an incomplete book — now expressible, because `fundedBy` says which lines
+care.
 
 **Phase 4 — categories and the funding summary.** Adopt the 510-278 category list, defaulting
 existing lines to `other`. Add the `A − B = C` fundraising-need summary and the derived per-scout

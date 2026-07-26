@@ -803,6 +803,8 @@ test('reconciling compares the TICKED entries to the statement', () => {
 const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
+  'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS', 'HEAD_KINDS',
+  'linePlannedHeads', 'linePlannedCents',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
@@ -937,8 +939,12 @@ test('the year rollover clears the ledger and opens next year at the bank balanc
   ok(/var closingBank = bookBalance\(\)/.test(fn[0]), 'the closing bank balance is not captured');
   ok(/closingBank/.test(fn[0]) && /openingCents = closingBank/.test(fn[0]),
     "next year's book does not open at the closing bank balance");
-  ok(/Math\.round\(act \/ bud\.scouts\)/.test(fn[0]),
-    'a per-scout line seeds next year from a total instead of a rate');
+  // Phase 3a — a per-head line keeps its RATES rather than back-deriving them from a total
+  // that depended on who happened to turn up; only flat lines seed from the ledger.
+  ok(/if \(linePerHead\(x\)\) return;/.test(fn[0]),
+    'a per-head line is having its rates re-derived from last year\u2019s total');
+  ok(/state\.events\.push\(ev\)/.test(fn[0]),
+    'the rollover does not rebuild the calendar — the plan would come back unscheduled');
 });
 
 test('a divergence merge never drops a ledger entry', () => {
@@ -1013,7 +1019,7 @@ test('Phase 2: the calendar fields leave the budget line, the money stays', () =
   const after = ctx.normalizeState(preSplitState());
   const line = after.budget.activities.find(a => a.id === 'a1');
   ok(line, 'the budget line kept its own id — the ledger posts against it');
-  eq(line.estCents, 80000, 'the money stayed on the line');
+  eq(line.flatCents, 80000, 'the money stayed on the line');
   ['date', 'time', 'endTime', 'location', 'note', 'sourceUid', 'slot'].forEach(f => {
     ok(!(f in line), `calendar field "${f}" is still on the budget line`);
   });
@@ -1093,7 +1099,7 @@ test('Phase 2: a budget line whose event vanished is unlinked, not left dangling
   d.events = d.events.filter(e => e.id !== line.eventId);   // the event was deleted
   const after = ctx.normalizeState(JSON.parse(JSON.stringify(d)));
   eq(after.budget.activities.find(a => a.id === 'a1').eventId, '', 'the stale link survived');
-  eq(after.budget.activities.find(a => a.id === 'a1').estCents, 80000, 'the money was lost with the event');
+  eq(after.budget.activities.find(a => a.id === 'a1').flatCents, 80000, 'the money was lost with the event');
 });
 
 test('importing a calendar no longer writes budget rows', () => {
@@ -1216,6 +1222,136 @@ test('the head-count grid is only asked for where heads cost something', () => {
   ok(fn, 'renderAttendanceBlock() not found');
   ok(/var heads = m\.kind === 'activity'/.test(fn[0]), 'the grid does not distinguish activities from meetings');
   ok(/data-ch="att-adults"/.test(fn[0]) && /data-ch="att-siblings"/.test(fn[0]), 'head-count inputs missing');
+});
+
+/* ================================================================
+   Money redesign — Phase 3a: how a line is priced, and whose money it is (3.2).
+   ================================================================ */
+
+const PRICE_FNS = ['centsOf', 'uid', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
+  'linePlannedHeads', 'linePlannedCents'];
+
+test('Phase 3a: the line-shape migration does not move a single total', () => {
+  // Same discipline as Phase 1. Today's planned is estCents x roster for a per-scout line
+  // and estCents flat otherwise; a migrated line must plan to exactly the same number.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const scouts = 10;
+  const before = {
+    version: 1, scouts: Array.from({ length: scouts }, (_, i) => ({ id: 's' + i, name: 'S' + i })),
+    budget: {
+      programYear: 2025, startingBalance: 0,
+      activities: [
+        { id: 'a1', slot: 1, name: 'Campout', estCents: 80000, perScout: false, familyPays: false },
+        { id: 'a2', slot: 9, name: 'Day camp', estCents: 14500, perScout: true, familyPays: true }
+      ],
+      expenses: [
+        { id: 'e1', name: 'Charter', estCents: 10000, perScout: false, familyPays: false },
+        { id: 'e2', name: 'Dues', estCents: 8000, perScout: true, familyPays: true }
+      ]
+    }
+  };
+  const legacy = [...before.budget.activities, ...before.budget.expenses]
+    .reduce((t, x) => t + x.estCents * (x.perScout ? scouts : 1), 0);
+  const after = ctx.normalizeState(JSON.parse(JSON.stringify(before)));
+  const got = [...after.budget.activities, ...after.budget.expenses]
+    .reduce((t, x) => t + ctx.linePlannedCents(x, scouts), 0);
+  eq(got, legacy, 'total planned across every line');
+});
+
+test('Phase 3a: a per-scout line becomes a per-head line priced on the scout rate', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [{ id: 's1' }],
+    budget: { programYear: 2025, activities: [], expenses: [
+      { id: 'e1', name: 'Dues', estCents: 8000, perScout: true, familyPays: true },
+      { id: 'e2', name: 'Charter', estCents: 10000, perScout: false, familyPays: false }
+    ] }
+  });
+  const dues = d.budget.expenses.find(e => e.id === 'e1');
+  eq(dues.basis, 'per-head', 'basis');
+  eq(dues.scoutRateCents, 8000, 'the estimate became the SCOUT rate');
+  eq(dues.adultRateCents, 0, 'no adult rate is invented');
+  eq(dues.siblingRateCents, 0, 'no sibling rate is invented');
+  eq(dues.adultsPerScout, 1, 'the planning assumption defaults to one adult per scout');
+  eq(dues.fundedBy, 'families', 'familyPays became fundedBy');
+  const charter = d.budget.expenses.find(e => e.id === 'e2');
+  eq(charter.basis, 'flat', 'basis');
+  eq(charter.flatCents, 10000, 'flat cost');
+  eq(charter.fundedBy, 'pack', 'the pack pays for its own charter');
+  [dues, charter].forEach(l => {
+    ok(!('estCents' in l) && !('perScout' in l) && !('familyPays' in l),
+      'an old pricing field survived the migration');
+  });
+});
+
+test('Phase 3a: an adult rate of zero means the assumption changes nothing', () => {
+  // adultsPerScout defaults to 1, so a migrated line multiplies one adult by a rate of
+  // zero. If that default ever started costing money, every pack's plan would jump on
+  // upgrade — which is exactly what the totals test above exists to prevent.
+  const { linePlannedCents, freshLine } = sandbox(PRICE_FNS);
+  const l = freshLine({ basis: 'per-head', scoutRateCents: 4000, adultRateCents: 0, adultsPerScout: 1 });
+  eq(linePlannedCents(l, 10), 40000, 'planned');
+});
+
+test('Phase 3a: planned is rates x an assumed head count, stated openly', () => {
+  // DESIGN-money.md 3.2: one adult per scout and no siblings is the honest default — the
+  // minimum the pack is on the hook for.
+  const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
+  const bg = freshLine({ basis: 'per-head', scoutRateCents: 1500, adultRateCents: 1500, siblingRateCents: 800 });
+  eq(linePlannedHeads(bg, 10), { scouts: 10, adults: 10, siblings: 0 }, 'assumed heads');
+  eq(linePlannedCents(bg, 10), 30000, 'the 3.4 worked example plans to $300');
+  bg.adultsPerScout = 2;
+  eq(linePlannedCents(bg, 10), 45000, 'two parents always come on this one');
+});
+
+test('Phase 3a: a flat line ignores the roster entirely', () => {
+  const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
+  const charter = freshLine({ basis: 'flat', flatCents: 10000, scoutRateCents: 999 });
+  eq(linePlannedCents(charter, 50), 10000, 'a charter fee is a charter fee');
+  eq(linePlannedHeads(charter, 50), { scouts: 0, adults: 0, siblings: 0 }, 'no heads are assumed');
+});
+
+test('Phase 3a: "the pack pays, but somebody else is paid directly" is not expressible', () => {
+  // If the pack is paying, it goes through the pack's account. The UI must not offer the
+  // combination and the model must not store it.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    budget: { programYear: 2025, activities: [], expenses: [
+      { id: 'e1', name: 'Camp', basis: 'flat', flatCents: 100, fundedBy: 'pack', paidDirectTo: 'Council' }
+    ] }
+  });
+  eq(d.budget.expenses[0].paidDirectTo, '', 'a pack-funded line kept a payee');
+});
+
+test('Phase 3a: council money never touches the pack balance, but is still visible', () => {
+  // fundedBy: families + paidDirectTo: Council. No charge, no ledger entry, no effect on
+  // the balance — and still counted in what the year costs a family.
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'computeBudget() not found');
+  ok(/if \(!lineThroughPack\(a\)\) \{ familyDirect \+=/.test(fn[0]),
+    'paid-direct activities are still counted as pack spending');
+  ok(/if \(!lineThroughPack\(e\)\) \{ familyDirect \+=/.test(fn[0]),
+    'paid-direct expenses are still counted as pack spending');
+  ok(/familyDirect: familyDirect/.test(fn[0]),
+    'the true-cost-to-a-family figure is computed but never reported');
+  const fee = /function addFeeItem\(item, colKey\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(fee && /lineThroughPack\(item\)/.test(fee[0]),
+    'a paid-direct line still raises family fee income the pack never handles');
+});
+
+test('Phase 3a: switching basis carries the money across rather than zeroing it', () => {
+  const h = /if \(bk === 'basis'\) \{[\s\S]*?\n      \}/.exec(SCRIPT)
+    || /\} else if \(bk === 'basis'\) \{[\s\S]*?\n      \}/.exec(SCRIPT);
+  ok(h, 'the basis handler not found');
+  ok(/bl\.scoutRateCents = bl\.flatCents/.test(h[0]) && /bl\.flatCents = bl\.scoutRateCents/.test(h[0]),
+    'switching basis silently wipes the amount somebody typed');
+});
+
+test('one handler set serves every budget line, not parallel act-/exp- families', () => {
+  ok(/if \(ch\.indexOf\('line-'\) === 0\)/.test(SCRIPT), 'the unified line- handler is missing');
+  ["act-est", "exp-est", "act-perscout", "exp-perscout", "act-familypays", "exp-familypays"]
+    .forEach(dead => ok(!SCRIPT.includes(`'${dead}'`), `${dead} is still handled`));
 });
 
 /* ---------------- report ---------------- */

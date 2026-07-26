@@ -599,6 +599,14 @@
     width: 58px; min-height: 36px; padding: 4px 6px;
     text-align: center; font-variant-numeric: tabular-nums;
   }
+  /* Phase 3a — per-head rates and the funding arrangement get their own wrapped line under
+     the budget row. Three rates and an assumption do not fit beside a name, and cramming
+     them there is how the old single "Est." box came about in the first place. */
+  .lrates { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 4px 0 2px; }
+  .lrates .att-mini input.money-in { width: 78px; text-align: right; }
+  .lrates .att-mini input:not(.money-in) { width: 74px; }
+  .lrates .att-mini > input[data-ch="line-direct"] { width: 200px; max-width: 100%; text-align: left; }
+  .lrate-note { flex: 1 1 100%; }
 
   /* ---------- Wave 3: dues collection, advancement, Scout Shop list ---------- */
   /* No new tokens — done/awarded fills reuse --accent/--good with the same dark-ink
@@ -1249,6 +1257,39 @@
   // A den meeting simply leaves adults/siblings at zero: heads other than the scout cost
   // nothing there, so its screen keeps the plain tick it has always had.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // MONEY REDESIGN, Phase 3a — how a budget line is priced, and whose money it is
+  // (DESIGN-money.md §3.2).
+  //
+  // The old `perScout` boolean answered three questions at once — unit of measure, who
+  // owes, and (proposed) attendance. It is replaced by two independent fields:
+  //
+  //   basis      'flat' | 'per-head'   — how the cost is worked out
+  //   fundedBy   'pack' | 'families'   — whose money it is in the end
+  //   paidDirectTo  '' or a payee name — does it pass through the pack's bank account?
+  //
+  // `familyPays: true` could not express a council camp at all. The obvious fix — a third
+  // value, 'council' — reads backwards: it sounds like the council is PAYING FOR the camp
+  // when the council is the one being paid. Two questions, two fields.
+  //
+  //   pack     · ''         vendor ← PACK. One ledger entry out. Nobody is billed.
+  //   families · ''         vendor ← PACK ← families. Out, then back in per family.
+  //   families · 'Council'  Council ← families. The pack is not in this transaction.
+  // ---------------------------------------------------------------------------
+  function centsOf(v) { return (typeof v === 'number' && isFinite(v) && v > 0) ? Math.round(v) : 0; }
+  function freshLine(patch) {
+    var l = {
+      id: uid(), name: '', basis: 'flat',
+      scoutRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
+      adultsPerScout: 1, fundedBy: 'pack', paidDirectTo: ''
+    };
+    if (patch) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
+    return l;
+  }
+  var LINE_BASES = ['flat', 'per-head'];
+  var LINE_FUNDERS = ['pack', 'families'];
+  // A pack event is priced per head, and the heads are not all the same kind or price.
+  var HEAD_KINDS = ['scout', 'adult', 'sibling'];
   var ATT_MAX_HEADS = 99;
   function attHeads(v) {
     var n = (typeof v === 'number' && isFinite(v)) ? Math.floor(v) : parseInt(v, 10);
@@ -1500,30 +1541,66 @@
     if (!d.budget || typeof d.budget !== 'object') d.budget = freshBudget();
     if (typeof d.budget.programYear !== 'number') d.budget.programYear = defaultProgramYear();
     if (typeof d.budget.startingBalance !== 'number') d.budget.startingBalance = 0;
+    // Phase 3a — the paid-direct question is asked once, per pack, not per upgrade.
+    d.budget.directPrompted = d.budget.directPrompted === true;
     if (!Array.isArray(d.budget.activities)) d.budget.activities = [];
     if (!Array.isArray(d.budget.expenses)) d.budget.expenses = [];
-    // Wave 17 — per-scout activities (camp fees) and family-paid fees. Booleans only;
-    // amounts still live in estCents (actualCents was migrated away in Phase 1 — actual
-    // is now Σ ledger). familyPays is only meaningful alongside
-    // perScout (computeBudget gates on both).
+    // Wave 17 — per-scout activities (camp fees) and family-paid fees. Phase 3a replaced
+    // both booleans; see migrateLineShape below.
     // Wave 20 — activities carry event detail: a canonical 'HH:MM' start/end (same shape
     // as meetings), a location, free-text notes, and the source calendar's UID so a
     // re-import updates the same row instead of duplicating it. All absent on older
     // pack records → '' , which renders exactly as before.
     d.budget.activities.forEach(function (a) {
       if (!a || typeof a !== 'object') return;
-      a.perScout = a.perScout === true;
-      a.familyPays = a.familyPays === true;
       a.time = parseLegacyTime(a.time);
       a.endTime = parseLegacyTime(a.endTime);
       a.location = typeof a.location === 'string' ? a.location : '';
       a.note = typeof a.note === 'string' ? a.note : '';
       a.sourceUid = typeof a.sourceUid === 'string' ? a.sourceUid : '';
     });
-    d.budget.expenses.forEach(function (e) {
-      if (!e || typeof e !== 'object') return;
-      e.familyPays = e.familyPays === true;
-    });
+    // -----------------------------------------------------------------------
+    // Phase 3a — the line shape. Runs once per line: the ABSENCE of `basis` is the marker,
+    // exactly like actualCents in Phase 1 and eventId in Phase 2.
+    //
+    // Totals must not move. Today's planned is `estCents × roster` for a per-scout line and
+    // `estCents` flat otherwise, so a migrated per-head line carries the whole estimate as
+    // its SCOUT rate with the adult and sibling rates at zero. `adultsPerScout` defaults to
+    // 1 — the honest planning assumption, and the minimum the pack is on the hook for — but
+    // it multiplies an adult rate of zero, so nothing changes until somebody sets one.
+    // -----------------------------------------------------------------------
+    function migrateLineShape(l) {
+      if (typeof l.id !== 'string' || !l.id) l.id = uid();
+      if (LINE_BASES.indexOf(l.basis) === -1) {
+        var wasPerScout = l.perScout === true;
+        var est = (typeof l.estCents === 'number' && isFinite(l.estCents)) ? Math.round(l.estCents) : 0;
+        l.basis = wasPerScout ? 'per-head' : 'flat';
+        l.scoutRateCents = wasPerScout ? est : 0;
+        l.adultRateCents = 0;
+        l.siblingRateCents = 0;
+        l.flatCents = wasPerScout ? 0 : est;
+        l.adultsPerScout = 1;
+        // familyPays was only ever read alongside perScout (computeBudget gated on both), so
+        // a families-pay flag left on a flat line was unreachable state, never a cost anyone
+        // was billed. Preserving today's totals means it does not become one now.
+        l.fundedBy = (wasPerScout && l.familyPays === true) ? 'families' : 'pack';
+        l.paidDirectTo = '';
+      }
+      if (LINE_FUNDERS.indexOf(l.fundedBy) === -1) l.fundedBy = 'pack';
+      l.scoutRateCents = centsOf(l.scoutRateCents);
+      l.adultRateCents = centsOf(l.adultRateCents);
+      l.siblingRateCents = centsOf(l.siblingRateCents);
+      l.flatCents = centsOf(l.flatCents);
+      l.adultsPerScout = (typeof l.adultsPerScout === 'number' && isFinite(l.adultsPerScout) && l.adultsPerScout >= 0)
+        ? Math.min(9, Math.round(l.adultsPerScout * 100) / 100) : 1;
+      l.paidDirectTo = typeof l.paidDirectTo === 'string' ? l.paidDirectTo.trim() : '';
+      // "The pack is paying, but somebody else is paid directly" is meaningless — if the
+      // pack is paying, it goes through the pack's account.
+      if (l.fundedBy !== 'families') l.paidDirectTo = '';
+      delete l.estCents; delete l.perScout; delete l.familyPays;
+    }
+    d.budget.activities.forEach(function (a) { if (a && typeof a === 'object') migrateLineShape(a); });
+    d.budget.expenses.forEach(function (e) { if (e && typeof e === 'object') migrateLineShape(e); });
     // Phase 0 — the ledger. Absent on every pre-Phase-0 pack record → []. Coerced in place
     // and never destructive: only an entry that isn't an object at all is dropped, because
     // a ledger you can silently lose rows from is not a book.
@@ -1586,7 +1663,10 @@
       var cents = Math.round(line.actualCents);
       delete line.actualCents;
       if (!cents) return;
-      var total = cents * (line.perScout ? migScouts : 1);
+      // Phase 3a normalizes the line shape BEFORE this runs, so `perScout` is already gone;
+      // `basis === 'per-head'` is the same fact under its new name. Getting this wrong would
+      // migrate a per-scout line's actual as a rate instead of a total.
+      var total = cents * (line.basis === 'per-head' ? migScouts : 1);
       if (!total) return;
       d.ledger.push({
         id: uid(), date: line.date || migDate,
@@ -2306,23 +2386,23 @@
   function computeBudget() {
     var b = state.budget;
     var scouts = activeScouts().length;
-    var actPlanned = 0, actActual = 0;
-    // Wave 17 — per-scout activities (camp fees) multiply by the active roster, exactly
-    // like per-scout expenses always have. That is still true of the PLAN, which is a
-    // deliberate assumption about a roster.
+    // Phase 3a — planned comes from the line's rates against an assumed head count.
+    // Phase 1 — actual does NOT multiply by anything: a ledger entry is a total, what the
+    // pack really paid, on a date, to somebody. The roster changing afterwards cannot alter
+    // it, and that is the point.
     //
-    // Phase 1 — but it is NOT true of the actual, which no longer multiplies by anything.
-    // A ledger entry is a total: what the pack really paid, on a date, to somebody. The
-    // roster changing afterwards cannot alter it, and that is the point.
+    // A line with a payee in paidDirectTo is excluded from BOTH: that money never passes
+    // through the pack's account, so counting it would overstate what the pack spends.
+    var actPlanned = 0, actActual = 0, familyDirect = 0;
     b.activities.forEach(function (a) {
-      var aMult = a.perScout ? scouts : 1;
-      actPlanned += (a.estCents || 0) * aMult;
+      if (!lineThroughPack(a)) { familyDirect += linePlannedCents(a, scouts); return; }
+      actPlanned += linePlannedCents(a, scouts);
       actActual += lineActualCents(state.ledger, a.id);
     });
     var expPlanned = 0, expActual = 0;
     b.expenses.forEach(function (e) {
-      var mult = e.perScout ? scouts : 1;
-      expPlanned += (e.estCents || 0) * mult;
+      if (!lineThroughPack(e)) { familyDirect += linePlannedCents(e, scouts); return; }
+      expPlanned += linePlannedCents(e, scouts);
       expActual += lineActualCents(state.ledger, e.id);
     });
     var planned = actPlanned + expPlanned;
@@ -2341,8 +2421,17 @@
     var coverage = tierCoverageConfigured() ? packCoverage() : {};
     var feesAbsorbed = 0;
     function addFeeItem(item, colKey) {
-      if (!(item.perScout && item.familyPays)) return;
-      var each = item.estCents || 0;
+      // Phase 3a — a family-funded line the pack fronts. Paid-direct lines raise nothing
+      // here: the pack never handles that money, so it is neither a cost nor an income.
+      if (!(linePerHead(item) && lineFamilyFunded(item) && lineThroughPack(item))) return;
+      // INTERIM: only the SCOUT share is counted as expected family income, because
+      // state.collected can only record one tick per scout — so expected and collected stay
+      // reconcilable with each other. A line's adult and sibling shares are real money
+      // families owe (§3.2: the pack fronts it and is made whole), and they start counting
+      // in Phase 3b when charges replace this grid. Until then the figure is conservative:
+      // it understates family income, so the popcorn goal comes out slightly high rather
+      // than slightly short, which is the safe direction to be wrong in.
+      var each = item.scoutRateCents || 0;
       var cm = state.collected[colKey] || {};
       var cov = coverage[colKey] || {};
       feeRoster.forEach(function (s) {
@@ -2387,6 +2476,10 @@
       commission: commission, commissionKnown: pack.commission != null,
       retainedCash: retainedCash, viaTE: pack.viaTE,
       startingBalance: startingBalance, cashGoal: cashGoal, teNeed: teNeed,
+      // Phase 3a — what a year costs a family OUTSIDE the pack's books (council camps,
+      // uniforms). Never part of planned, never part of the balance; reported so the true
+      // cost of Scouting to a family is visible rather than dropped.
+      familyDirect: familyDirect,
       fundsIn: fundsIn, balance: fundsIn - actual,
       rewardDues: rewardDues, rewardCovered: reward.coveredCount, rewardDuesEach: reward.duesCents,
       feesAbsorbed: feesAbsorbed, coverageOn: tierCoverageConfigured(),
@@ -2402,6 +2495,58 @@
   }
   function unscheduledActivities() {
     return state.budget.activities.filter(function (a) { return lineSlot(a) === -1; });
+  }
+
+  /* ---------------- Budget line pricing (Phase 3a) ---------------- */
+  // Pure (takes the line + a roster size) so the Node harness can exercise the planning math.
+  //
+  // Parents are not going to RSVP in this app, at least not yet, so the plan cannot wait on
+  // them: the planning head count is an ASSUMPTION, stated openly. One adult per scout and
+  // no siblings is the honest default — it is the minimum the pack is on the hook for.
+  // Nothing here pretends to know who is coming. What actually happened is recorded
+  // afterwards as attendance, and from Phase 3b it is what families are charged from.
+  function linePlannedHeads(l, scoutN) {
+    if (l.basis !== 'per-head') return { scouts: 0, adults: 0, siblings: 0 };
+    return { scouts: scoutN, adults: Math.round(scoutN * (l.adultsPerScout || 0)), siblings: 0 };
+  }
+  function linePlannedCents(l, scoutN) {
+    if (l.basis !== 'per-head') return l.flatCents || 0;
+    var hd = linePlannedHeads(l, scoutN);
+    return (l.scoutRateCents || 0) * hd.scouts +
+      (l.adultRateCents || 0) * hd.adults +
+      (l.siblingRateCents || 0) * hd.siblings;
+  }
+  function lineRateFor(l, who) {
+    if (l.basis !== 'per-head') return 0;
+    if (who === 'adult') return l.adultRateCents || 0;
+    if (who === 'sibling') return l.siblingRateCents || 0;
+    return l.scoutRateCents || 0;
+  }
+  // Does this money pass through the pack's bank account? A line with a payee named in
+  // paidDirectTo never does — families pay THEM — so it must never move the pack's balance,
+  // raise a charge, or appear in what fundraising has to cover. It still exists so the
+  // committee can see the true cost of a year to a family.
+  function lineThroughPack(l) { return !l.paidDirectTo; }
+  function lineFamilyFunded(l) { return l.fundedBy === 'families'; }
+  function linePerHead(l) { return l.basis === 'per-head'; }
+  // Every budget line, both arrays, with the label the rest of the app uses.
+  function allBudgetLines() {
+    return state.budget.activities.map(function (a) { return { line: a, kind: 'activity', key: 'act:' + a.id }; })
+      .concat(state.budget.expenses.map(function (e) { return { line: e, kind: 'expense', key: e.id }; }));
+  }
+  function linePlanned(l) { return linePlannedCents(l, activeScouts().length); }
+  function lineRateSummary(l) {
+    if (l.basis !== 'per-head') return '';
+    var bits = ['scout ' + fmt(l.scoutRateCents || 0)];
+    if (l.adultRateCents) bits.push('adult ' + fmt(l.adultRateCents));
+    if (l.siblingRateCents) bits.push('sibling ' + fmt(l.siblingRateCents));
+    return bits.join(' · ');
+  }
+  // How the money is arranged, in one phrase. Three real cases, and the third could not be
+  // said at all before Phase 3a.
+  function lineFundingLabel(l) {
+    if (!lineFamilyFunded(l)) return 'the pack pays';
+    return l.paidDirectTo ? ('families pay ' + l.paidDirectTo + ' directly') : 'families pay, through the pack';
   }
 
   /* ---------------- Ledger (Phase 0) ---------------- */
@@ -2653,17 +2798,18 @@
 
 
   /* ---------------- Wave 3: dues / fee collection ---------------- */
-  // state.collected = { expenseId: { scoutId: true } } — only meaningful for perScout expenses.
-  // Amount owed per scout is always the expense's estCents; no separate money entry.
+  // state.collected = { lineId: { scoutId: true } } — per-head, family-funded lines the pack
+  // fronts. Amount owed per scout is the line's SCOUT rate. (Phase 3b replaces this whole
+  // mechanism with charges; until then it is the collection record.)
   function feesTotals() {
-    var per = state.budget.expenses.filter(function (e) { return e.perScout; });
+    var per = state.budget.expenses.filter(function (e) { return linePerHead(e) && lineThroughPack(e); });
     var roster = activeScouts();
     var col = 0, out = 0;
     per.forEach(function (e) {
       var cm = state.collected[e.id] || {};
       roster.forEach(function (s) {
-        if (cm[s.id]) col += e.estCents || 0;
-        else out += e.estCents || 0;
+        if (cm[s.id]) col += e.scoutRateCents || 0;
+        else out += e.scoutRateCents || 0;
       });
     });
     return { any: per.length > 0, collected: col, outstanding: out };
@@ -2678,9 +2824,10 @@
   // activity ends up with two independent collect states. Every caller takes the key from
   // here rather than rebuilding it.
   function perScoutCharges() {
-    return state.budget.expenses.filter(function (e) { return e.perScout; })
+    function billable(l) { return linePerHead(l) && lineThroughPack(l); }
+    return state.budget.expenses.filter(billable)
       .map(function (e) { return { item: e, key: e.id, kind: 'expense' }; })
-      .concat(state.budget.activities.filter(function (a) { return a.perScout; })
+      .concat(state.budget.activities.filter(billable)
         .map(function (a) { return { item: a, key: 'act:' + a.id, kind: 'activity' }; }));
   }
   function scoutOwesCents(scoutId) {
@@ -2692,7 +2839,7 @@
     perScoutCharges().forEach(function (c) {
       if ((coverage[c.key] || {})[scoutId]) return;
       var cm = state.collected[c.key] || {};
-      if (!cm[scoutId]) owe += c.item.estCents || 0;
+      if (!cm[scoutId]) owe += c.item.scoutRateCents || 0;
     });
     return owe;
   }
@@ -2712,7 +2859,7 @@
     var owingRoster = activeRoster.filter(function (s) { return !covered[s.id]; });
     var coveredCount = activeRoster.length - owingRoster.length;
     var count = owingRoster.filter(function (s) { return cm[s.id]; }).length;
-    var outstanding = (owingRoster.length - count) * (e.estCents || 0);
+    var outstanding = (owingRoster.length - count) * (e.scoutRateCents || 0);
     var label = 'Collected ' + count + ' of ' + owingRoster.length +
       (coveredCount ? ' · ' + coveredCount + ' covered by the pack' : '') +
       (outstanding > 0 ? ' · ' + fmt(outstanding) + ' outstanding' : '');
@@ -3076,7 +3223,7 @@
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot
       var seedEv = freshEvent({ kind: 'activity', slot: t.slot, name: t.name });
       state.events.push(seedEv);
-      state.budget.activities.push({ id: uid(), name: t.name, eventId: seedEv.id, estCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push(freshLine({ name: t.name, eventId: seedEv.id }));
       added += 1;
     });
     if (added) {
@@ -5276,9 +5423,11 @@
         // nobody has budgeted for. An imported BAND calendar is now full of these, and
         // that is the fix — importing a calendar no longer writes budget rows.
         h += line('Budget', '<span class="muted">not budgeted</span>');
-      } else if (aLine.estCents) {
-        h += line('Estimated', '<span class="money">' + fmt(aLine.estCents) + '</span>' +
-          (aLine.perScout ? ' per scout' + (aLine.familyPays ? ' — families pay' : '') : ' total'));
+      } else if (linePlanned(aLine)) {
+        h += line('Estimated', '<span class="money">' + fmt(linePlanned(aLine)) + '</span>' +
+          (linePerHead(aLine) ? ' <span class="muted">' + esc(lineRateSummary(aLine)) + '</span>' : ' total') +
+          (aLine.paidDirectTo ? ' <span class="pill navy">paid to ' + esc(aLine.paidDirectTo) + '</span>'
+            : (lineFamilyFunded(aLine) ? ' <span class="pill navy">families pay</span>' : '')));
       } else {
         h += line('Estimated', '<span class="muted">no cost entered</span>');
       }
@@ -5339,7 +5488,7 @@
           // Phase 2 — cost is the linked BUDGET LINE's, not the event's. An event with no
           // line shows no money, which is exactly right for an imported calendar entry.
           var agLine = lineForEvent(e.ev.id);
-          if (agLine && agLine.estCents) meta.push(fmt(agLine.estCents) + (agLine.perScout ? ' / scout' : ''));
+          if (agLine && linePlanned(agLine)) meta.push(fmt(linePlanned(agLine)) + (linePerHead(agLine) ? ' planned' : ''));
         }
         var pill = rsvpPill(evKey);
         var open = !!ui.agendaOpen[evKey];
@@ -5486,7 +5635,7 @@
             '<input class="aname" data-ch="ev-name" data-id="' + ev.id + '" value="' + esc(ev.name) + '" placeholder="Activity name">' +
             '<input type="date" class="adate" data-ch="ev-date" data-id="' + ev.id + '" value="' + esc(ev.date || '') + '" aria-label="Date (optional)">' +
             (evLine
-              ? '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + evLine.id + '" value="' + dollars(evLine.estCents) + '" placeholder="Est." aria-label="Estimated cost">'
+              ? '<span class="small muted money" title="Planned cost — edit the rates in Money · Budget">' + fmt(linePlanned(evLine)) + ' planned</span>'
               : '<button type="button" class="btn small ghost" data-act="budget-this-event" data-id="' + ev.id + '">+ Budget this</button>') +
             tinyDangerBtn('del-event:' + ev.id, 'Remove activity') +
             '</div>' +
@@ -5832,7 +5981,7 @@
       h += '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Covered by a reward tier</p>' +
         covLines.map(function (c) {
           return '<div class="assign-row"><span class="assign-name">' + esc(c.item.name || ('Untitled ' + c.kind)) + '</span>' +
-            '<span class="money">' + fmt(c.item.estCents || 0) + '</span></div>';
+            '<span class="money">' + fmt(c.item.scoutRateCents || 0) + '</span></div>';
         }).join('') +
         '<p class="small muted" style="margin:8px 0 0">The pack pays these, so ' + esc(s.name || 'this scout') +
         '’s family isn’t billed for them. <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="rewards">Reward tiers</button></p></div>';
@@ -5920,7 +6069,7 @@
     var cov = packCoverage();
     perScoutCharges().forEach(function (c) {
       Object.keys(cov[c.key] || {}).forEach(function (sid) {
-        out[sid] = (out[sid] || 0) + (c.item.estCents || 0);
+        out[sid] = (out[sid] || 0) + (c.item.scoutRateCents || 0);
       });
     });
     return out;
@@ -6086,6 +6235,53 @@
   // Phase 2 — one activity budget line. The DATE is not here any more: it belongs to the
   // linked event, and is shown read-only with a way to go and change it where it lives.
   // Two fields editing one date from two screens is how they drift.
+  // Phase 3a — the pricing controls, shared by activity and expense rows. `basis` decides
+  // whether one flat amount or three per-head rates are asked for; `fundedBy` decides
+  // whether a payee and a collect grid appear at all.
+  function lineMoneyControls(l, scoutN, collectKey) {
+    var perHead = linePerHead(l);
+    var h = '<select data-ch="line-basis" data-id="' + l.id + '" aria-label="How this is priced">' +
+      '<option value="flat"' + (perHead ? '' : ' selected') + '>Flat cost</option>' +
+      '<option value="per-head"' + (perHead ? ' selected' : '') + '>Per head</option>' +
+      '</select>';
+    if (!perHead) {
+      h += '<input class="money-in" inputmode="decimal" data-ch="line-flat" data-id="' + l.id + '" value="' +
+        dollars(l.flatCents) + '" placeholder="Cost" aria-label="Flat cost">';
+    } else {
+      h += '<span class="small muted money" title="Planned = rates × the assumed head count">' + fmt(linePlanned(l)) + ' planned</span>';
+    }
+    h += '<select data-ch="line-funded" data-id="' + l.id + '" aria-label="Whose money is it">' +
+      '<option value="pack"' + (lineFamilyFunded(l) ? '' : ' selected') + '>Pack pays</option>' +
+      '<option value="families"' + (lineFamilyFunded(l) ? ' selected' : '') + '>Families pay</option>' +
+      '</select>';
+    // The per-head rates get their own wrapped line — three rates and an assumption do not
+    // fit beside a name, and cramming them there is how the old single "Est." box happened.
+    if (perHead) {
+      h += '<div class="lrates">' +
+        '<label class="att-mini">scout<input class="money-in" inputmode="decimal" data-ch="line-scout-rate" data-id="' + l.id + '" value="' + dollars(l.scoutRateCents) + '" placeholder="0.00"></label>' +
+        '<label class="att-mini">adult<input class="money-in" inputmode="decimal" data-ch="line-adult-rate" data-id="' + l.id + '" value="' + dollars(l.adultRateCents) + '" placeholder="0.00"></label>' +
+        '<label class="att-mini">sibling<input class="money-in" inputmode="decimal" data-ch="line-sibling-rate" data-id="' + l.id + '" value="' + dollars(l.siblingRateCents) + '" placeholder="0.00"></label>' +
+        '<label class="att-mini">adults/scout<input class="weight-in" type="number" min="0" max="9" step="0.5" inputmode="decimal" data-ch="line-adults-per" data-id="' + l.id + '" value="' + esc(l.adultsPerScout) + '"></label>' +
+        '<span class="small muted lrate-note">' + scoutN + ' scouts + ' +
+          linePlannedHeads(l, scoutN).adults + ' adults assumed — nobody has RSVP\u2019d, this is a planning figure</span>' +
+        '</div>';
+    }
+    // Whose money, and whether it touches our account at all.
+    if (lineFamilyFunded(l)) {
+      h += '<div class="lrates">' +
+        '<label class="att-mini" style="text-transform:none;letter-spacing:0">Paid directly to (leave blank if the pack collects it)' +
+        '<input data-ch="line-direct" data-id="' + l.id + '" value="' + esc(l.paidDirectTo) + '" placeholder="e.g. Council, Scout Shop" aria-label="Paid directly to"></label>' +
+        (l.paidDirectTo
+          ? '<span class="small muted lrate-note">Never enters the pack\u2019s books — no charge, no ledger entry, no effect on the balance. It still counts toward what the year costs a family.</span>'
+          : '<span class="small muted lrate-note">The pack fronts it and is paid back by families.</span>') +
+        '</div>';
+    }
+    if (collectKey && lineFamilyFunded(l) && lineThroughPack(l) && perHead) h += renderCollectBlock(l, collectKey);
+    return h;
+  }
+  // Phase 2 — the DATE is not here: it belongs to the linked event, and is shown read-only
+  // with a way to go and change it where it lives. Two fields editing one date from two
+  // screens is how they drift.
   function activityLineRow(a, scoutN) {
     var ev = eventForLine(a);
     var when = ev
@@ -6093,20 +6289,15 @@
         ? '<button type="button" class="btn small ghost" data-act="cal-jump-day" data-date="' + esc(ev.date) + '" title="Show this day on the calendar">' + esc(fmtDate(ev.date)) + '</button>'
         : '<span class="small muted">' + esc(slotLabel(ev.slot)) + ' · no date yet</span>')
       : '<span class="small muted">not scheduled</span>';
-    // Wave 17 — per-scout activities (camp fees) mirror the expense row: per-scout ×
-    // roster line, a families-pay flag, and the shared collect grid ('act:'-prefixed key).
     return '<div class="arow">' +
-      '<input class="aname" data-ch="act-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
+      '<input class="aname" data-ch="line-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
       when +
-      '<input class="money-in" inputmode="decimal" data-ch="act-est" data-id="' + a.id + '" value="' + dollars(a.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
+      lineMoneyControls(a, scoutN, 'act:' + a.id) +
       actualBtn(a.id) +
-      '<label class="perscout"><input type="checkbox" data-ch="act-perscout" data-id="' + a.id + '"' + (a.perScout ? ' checked' : '') + '> per scout</label>' +
-      (a.perScout ? '<label class="perscout"><input type="checkbox" data-ch="act-familypays" data-id="' + a.id + '"' + (a.familyPays ? ' checked' : '') + '> families pay</label>' : '') +
-      (a.perScout ? '<span class="small muted money">= ' + fmt((a.estCents || 0) * scoutN) + '</span>' : '') +
       tinyDangerBtn('del-activity:' + a.id, 'Remove activity') +
-      (a.perScout ? renderCollectBlock(a, 'act:' + a.id) : '') +
       '</div>';
   }
+
   function renderBudget() {
     var b = state.budget;
     var bud = computeBudget();
@@ -6178,6 +6369,17 @@
           '. ' + open + '</p>';
       })();
 
+    // Phase 3a — money families pay somebody else directly. It is never planned, never
+    // spent, never in the balance — and it is still part of what a year costs a family.
+    // Before this it either sat in the budget and overstated what the pack spends, or was
+    // left out and understated what Scouting costs.
+    if (bud.familyDirect > 0) {
+      h += '<p class="small" style="margin:8px 0 0"><span class="pill navy">Paid directly</span> Families pay ' +
+        '<strong class="money">' + fmt(bud.familyDirect) + '</strong> straight to somebody else this year ' +
+        '(council camps, uniforms). That never passes through the pack’s account, so it isn’t in the figures above — ' +
+        'but it is part of what Scouting costs a family.</p>';
+    }
+
     // Funding the plan → two goals
     if (bud.salesGoal != null) {
       h += '<hr class="divider"><p class="eyebrow">Funding the plan</p>' +
@@ -6197,12 +6399,35 @@
     }
     h += '</div>';
 
+    // Phase 3a — the paid-direct question, asked once. Migration never guesses it: whether
+    // families pay the pack or pay the council is a judgement call per line, and getting it
+    // wrong in either direction misstates the books.
+    if (!b.directPrompted) {
+      var famLines = allBudgetLines().filter(function (r) { return lineFamilyFunded(r.line) && lineThroughPack(r.line); });
+      if (famLines.length) {
+        h += '<div class="card"><h2 class="section display">One question about family-paid lines</h2>' +
+          '<p class="small" style="margin:0 0 8px">These are marked <strong>families pay</strong>. For each one: does the money ' +
+          'go <em>through the pack</em> (you collect it and pay the vendor), or do families pay somebody else <em>directly</em> — ' +
+          'a council camp, or the Scout Shop for uniforms?</p>' +
+          '<p class="small muted" style="margin:0 0 8px">Paid-directly money never enters the pack’s books: no charge, no ledger ' +
+          'entry, no effect on the balance. Set a payee on the line below and it moves out of the pack’s figures. ' +
+          'If the pack collects it, there is nothing to change.</p>' +
+          '<ul class="small" style="margin:0 0 10px;padding-left:18px;line-height:1.7">' +
+          famLines.map(function (r) {
+            return '<li>' + esc(r.line.name || ('Untitled ' + r.kind)) + ' — <span class="money">' + fmt(linePlanned(r.line)) + '</span></li>';
+          }).join('') +
+          '</ul>' +
+          '<button type="button" class="btn small" data-act="direct-prompt-done">Got it — they all go through the pack</button></div>';
+      }
+    }
+
     // Monthly activity plan
     h += '<div class="card"><h2 class="section display">Activity plan by month</h2>' +
       '<p class="small muted" style="margin:0 0 4px">Plan each month’s activities and estimated cost. <em>Actual</em> is not typed here any more — ' +
       'it is whatever the ledger says was paid against the line, so tap it to record a transaction. ' +
-      'Tick <em>per scout</em> for a cost paid for each scout (camp fees) — it multiplies by the ' + bud.scouts + ' active scouts, ' +
-      'and <em>families pay</em> adds a collect grid and counts collected fees as funds-in, like dues.</p>';
+      'Price it <em>flat</em> or <em>per head</em> — a per-head line charges a scout, adult and sibling rate against ' +
+      'an assumed ' + bud.scouts + ' scouts plus the adults you expect. Say whether the <em>pack</em> or <em>families</em> ' +
+      'pay for it, and name a payee if families pay somebody else directly.</p>';
     if (state.events.some(function (ev) { return ev.kind === 'activity' && ev.date; })) {
       var clrArmed = ui.armed === 'clear-act-dates';
       h += '<div class="row no-print" style="margin:0 0 4px">' +
@@ -6215,9 +6440,8 @@
       var mp = 0, ma = 0;
       // Wave 17 — month subtotals honor per-scout multiplication so they match the overview.
       acts.forEach(function (a) {
-        var aMult = a.perScout ? bud.scouts : 1;
-        mp += (a.estCents || 0) * aMult;
-        ma += lineActual(a.id); // Phase 1 — a total from the ledger, never a rate × roster
+        mp += lineThroughPack(a) ? linePlanned(a) : 0;   // paid-direct money is never ours
+        ma += lineActual(a.id);   // Phase 1 — a total from the ledger, never a rate × roster
       });
       h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
         '<strong>' + esc(slotLabel(slot)) + '</strong>' +
@@ -6241,20 +6465,16 @@
 
     // Other / fixed pack expenses
     h += '<div class="card"><h2 class="section display">Other pack expenses</h2>' +
-      '<p class="small muted" style="margin:0 0 6px">Non-activity costs — registration, insurance, Scout Life, awards, uniforms. Tick <em>per scout</em> for a cost charged for each scout (× ' + bud.scouts + ' active). ' +
-      'Tick <em>families pay</em> when families reimburse that cost (like dues) — expected fees reduce what popcorn must raise, and collected fees count as funds-in.</p>';
+      '<p class="small muted" style="margin:0 0 6px">Non-activity costs — registration, insurance, Scout Life, awards, uniforms. ' +
+      'Same pricing: <em>flat</em>, or <em>per head</em> against the roster. Mark <em>families pay</em> when families reimburse the cost ' +
+      '(like dues) — expected fees reduce what popcorn must raise, and collected fees count as funds-in.</p>';
     if (b.expenses.length) {
       b.expenses.forEach(function (e) {
-        var line = e.perScout ? (e.estCents || 0) * bud.scouts : (e.estCents || 0);
         h += '<div class="erow">' +
-          '<input class="ename" data-ch="exp-name" data-id="' + e.id + '" value="' + esc(e.name) + '" placeholder="Expense name">' +
-          '<input class="money-in" inputmode="decimal" data-ch="exp-est" data-id="' + e.id + '" value="' + dollars(e.estCents) + '" placeholder="Est." aria-label="Estimated cost">' +
+          '<input class="ename" data-ch="line-name" data-id="' + e.id + '" value="' + esc(e.name) + '" placeholder="Expense name">' +
+          lineMoneyControls(e, bud.scouts, e.id) +
           actualBtn(e.id) +
-          '<label class="perscout"><input type="checkbox" data-ch="exp-perscout" data-id="' + e.id + '"' + (e.perScout ? ' checked' : '') + '> per scout</label>' +
-          (e.perScout ? '<label class="perscout"><input type="checkbox" data-ch="exp-familypays" data-id="' + e.id + '"' + (e.familyPays ? ' checked' : '') + '> families pay</label>' : '') +
-          (e.perScout ? '<span class="small muted money">= ' + fmt(line) + '</span>' : '') +
           tinyDangerBtn('del-expense:' + e.id, 'Remove ' + (e.name || 'expense')) +
-          (e.perScout ? renderCollectBlock(e, e.id) : '') +
           '</div>';
       });
     }
@@ -6959,7 +7179,7 @@
     // the ledger is half a book: the pack knows what it planned and not what it paid.
     var unposted = state.budget.activities.filter(function (a) {
       var pEv = eventForLine(a);
-      return pEv && pEv.date && pEv.date < today && (a.estCents || 0) > 0 && !lineEntryCount(a.id);
+      return pEv && pEv.date && pEv.date < today && linePlanned(a) > 0 && lineThroughPack(a) && !lineEntryCount(a.id);
     });
     if (unposted.length) {
       add('treasurer', 'week', unposted.length + ' past activit' + (unposted.length === 1 ? 'y has' : 'ies have') + ' no spend recorded',
@@ -7331,8 +7551,8 @@
       h += '<div class="block-card" style="margin-top:8px">' +
         '<div class="spread"><span class="assign-name">' + esc(c.item.name || ('Untitled ' + c.kind)) +
         ' <span class="small muted">' + esc(c.kind) +
-        (c.item.familyPays ? ' · families pay' : '') + '</span></span>' +
-        '<span class="money">' + fmt(c.item.estCents || 0) + ' <span class="small muted">each</span></span></div>' +
+        (lineFamilyFunded(c.item) ? ' · families pay' : '') + '</span></span>' +
+        '<span class="money">' + fmt(c.item.scoutRateCents || 0) + ' <span class="small muted">per scout</span></span></div>' +
         renderCollectBlock(c.item, c.key) + '</div>';
     });
     h += '</div>';
@@ -7822,7 +8042,7 @@
     var sum = rewardTierSummary();
     var baseLabel = 'sales + online donations' + (state.cashThroughTrailsEnd ? ' + cash donations' : '');
     // Wave 21 — every per-scout "families pay" line is something a tier can cover.
-    var coverable = perScoutCharges().filter(function (c) { return c.item.familyPays; });
+    var coverable = perScoutCharges().filter(function (c) { return lineFamilyFunded(c.item); });
     var coverage = packCoverage();
     var configured = tierCoverageConfigured();
 
@@ -7854,7 +8074,7 @@
           var byKey = {};
           coverable.forEach(function (c) { byKey[c.key] = c; });
           var chargeLabel = function (c) {
-            return (c.item.name || ('Untitled ' + c.kind)) + ' · ' + fmt(c.item.estCents || 0);
+            return (c.item.name || ('Untitled ' + c.kind)) + ' · ' + fmt(c.item.scoutRateCents || 0);
           };
           h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p>' +
             chipPicker({
@@ -7908,7 +8128,7 @@
       var lines = [];
       coverable.forEach(function (c) {
         var n = Object.keys(coverage[c.key] || {}).length;
-        if (n) lines.push({ name: c.item.name || ('Untitled ' + c.kind), n: n, cents: n * (c.item.estCents || 0) });
+        if (n) lines.push({ name: c.item.name || ('Untitled ' + c.kind), n: n, cents: n * (c.item.scoutRateCents || 0) });
       });
       h += '<hr class="divider"><p class="eyebrow">What the pack is covering</p>';
       if (lines.length) {
@@ -9254,7 +9474,7 @@
       // Phase 2 — the estimate belongs to the budget line, not the event. An unbudgeted
       // event simply exports without a cost line.
       var icsLine = lineForEvent(ev.id);
-      if (icsLine && icsLine.estCents) desc.push('Estimated ' + fmt(icsLine.estCents) + (icsLine.perScout ? ' per scout' : ''));
+      if (icsLine && linePlanned(icsLine)) desc.push('Estimated ' + fmt(linePlanned(icsLine)) + (linePerHead(icsLine) ? ' (' + lineRateSummary(icsLine) + ')' : ''));
       if (desc.length) props.push('DESCRIPTION:' + icsEscape(desc.join('\n\n')));
       ev2(props);
     });
@@ -10146,10 +10366,10 @@
         // instead of estimate × roster. The archived shape is unchanged, so every past
         // season still reads exactly as it did; only the source of the number is better.
         activities: state.budget.activities.map(function (x) {
-          return { name: x.name || '', slot: x.slot || 0, estCents: x.estCents || 0, actualCents: lineActual(x.id) };
+          return { name: x.name || '', slot: lineSlot(x), estCents: linePlanned(x), actualCents: lineActual(x.id) };
         }),
         expenses: state.budget.expenses.map(function (x) {
-          return { name: x.name || '', estCents: x.estCents || 0, actualCents: lineActual(x.id), perScout: !!x.perScout };
+          return { name: x.name || '', estCents: linePlanned(x), actualCents: lineActual(x.id), perScout: linePerHead(x) };
         })
       },
       events: {
@@ -10204,33 +10424,57 @@
     var closingHadLedger = state.ledger.length > 0;
     var b = state.budget;
     var closingYear = b.programYear; // Wave 19(3) — compared against densAdvancedYear below
-    // Phase 1 — next year's estimate seeds from what things ACTUALLY cost, which is what
-    // this rollover always tried to do; it just finally has true numbers to do it with.
+    // Phase 1/3a — next year's plan seeds from what things ACTUALLY cost, which is what this
+    // rollover always tried to do; it just finally has true numbers to do it with.
+    //
+    // A FLAT line seeds its cost from the ledger: a charter fee is a total, and last year's
+    // total is the best guess at next year's. A PER-HEAD line keeps its RATES untouched —
+    // those are per-person prices, and back-deriving them from a total that depended on who
+    // happened to turn up would be worse than leaving them alone.
+    //
     // Read before programYear moves, because lineActual is keyed on this year's line ids.
-    var seedEst = {};
+    var seedFlat = {};
     b.activities.concat(b.expenses).forEach(function (x) {
+      if (linePerHead(x)) return;
       var act = lineActual(x.id);
-      // A per-scout line is planned as a RATE, but the ledger holds totals — so divide the
-      // real spend back down by the roster it was spread across. Without this, a $145 camp
-      // fee for 10 scouts would seed next year's plan at $1,450 per scout.
-      if (x.perScout) act = bud.scouts ? Math.round(act / bud.scouts) : 0;
-      seedEst[x.id] = act > 0 ? act : (x.estCents || 0);
+      seedFlat[x.id] = act > 0 ? act : (x.flatCents || 0);
+    });
+    // Phase 2 — the calendar entry each activity was attached to, captured before events[]
+    // is cleared below. Without this the whole plan would come back unscheduled: the pack
+    // would keep its budget and lose every month it was planned for.
+    var carried = b.activities.map(function (x) {
+      var ev = eventForLine(x);
+      return {
+        line: x,
+        slot: ev ? ev.slot : 0,
+        location: ev ? ev.location : '',
+        note: ev ? ev.note : ''
+      };
     });
     b.programYear += 1;
     b.startingBalance = bud.balance;
-    // Re-seed the plan: same names + months, dates cleared, this year's actuals become next year's estimates.
-    b.activities = b.activities.map(function (x) {
-      // Wave 20 — the plan carries over, this year's schedule does not: date, times, and
-      // the source UID are cleared (a new year's calendar hasn't been published yet).
-      // Location and notes are kept — the campground and the packing list rarely change.
-      return { id: uid(), slot: x.slot || 0, name: x.name || '', date: '',
-        time: '', endTime: '', location: x.location || '', note: x.note || '', sourceUid: '',
-        perScout: !!x.perScout, familyPays: !!x.familyPays, // Wave 17 — camp-fee shape carries over
-        estCents: seedEst[x.id] };
+    // Re-seed the plan: same names, same months, dates cleared — a new year's calendar has
+    // not been published yet. Location and notes are kept, because the campground and the
+    // packing list rarely change.
+    state.events = [];
+    b.activities = carried.map(function (c) {
+      var x = c.line;
+      var ev = freshEvent({ kind: 'activity', name: x.name || '', slot: c.slot, location: c.location, note: c.note });
+      state.events.push(ev);
+      return freshLine({
+        name: x.name || '', eventId: ev.id, basis: x.basis,
+        scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
+        siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
+        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo
+      });
     });
     b.expenses = b.expenses.map(function (x) {
-      return { id: uid(), name: x.name || '', perScout: !!x.perScout, familyPays: !!x.familyPays,
-        estCents: seedEst[x.id] };
+      return freshLine({
+        name: x.name || '', basis: x.basis,
+        scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
+        siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
+        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo
+      });
     });
     // Phase 0 — the ledger belongs to the year it recorded, and it went into the archive
     // with the rest of the season. Start a clean book, opened at the closing bank balance
@@ -10252,7 +10496,6 @@
     state.densAdvancedYear = 0; // fresh year — the advanced roster hasn't been advanced AGAIN
     state.storefronts = [];
     state.entries = [];
-    state.events = [];   // Phase 2 — the calendar is the year's, like storefronts and sales
     state.rsvps = {};
     state.attendance = {};
     state.collected = {};
@@ -10936,7 +11179,7 @@
     if (act === 'add-activity') {
       var addEv = freshEvent({ kind: 'activity', slot: +el.dataset.slot });
       state.events.push(addEv);
-      state.budget.activities.push({ id: uid(), name: '', eventId: addEv.id, estCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push(freshLine({ eventId: addEv.id }));
       commit(); return;
     }
     if (act === 'add-storefront-day') {
@@ -10953,7 +11196,7 @@
     if (act === 'add-activity-day') {
       var dayEv = freshEvent({ kind: 'activity', date: el.dataset.date, slot: dateToSlot(el.dataset.date) });
       state.events.push(dayEv);
-      state.budget.activities.push({ id: uid(), name: '', eventId: dayEv.id, estCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push(freshLine({ eventId: dayEv.id }));
       commit(); return;
     }
     // Phase 2 — give an existing (probably imported) event a budget line. The other half of
@@ -10961,10 +11204,11 @@
     if (act === 'budget-this-event') {
       var btEv = getEvent(el.dataset.id);
       if (!btEv || lineForEvent(btEv.id)) return;
-      state.budget.activities.push({ id: uid(), name: btEv.name || '', eventId: btEv.id, estCents: 0, perScout: false, familyPays: false });
+      state.budget.activities.push(freshLine({ name: btEv.name || '', eventId: btEv.id }));
       showToast('Added a budget line for “' + (btEv.name || 'Activity') + '”.');
       commit(); return;
     }
+    if (act === 'direct-prompt-done') { state.budget.directPrompted = true; commit(); return; }
     if (act === 'clear-activity-dates') {
       arm('clear-act-dates', function () {
         state.events.forEach(function (ev) { if (ev.kind === 'activity') ev.date = ''; });
@@ -11108,7 +11352,7 @@
       return;
     }
     if (act === 'add-expense') {
-      state.budget.expenses.push({ id: uid(), name: '', estCents: 0, perScout: false, familyPays: false });
+      state.budget.expenses.push(freshLine());
       commit(); return;
     }
     if (act === 'add-inv-product') {
@@ -11678,21 +11922,39 @@
       if (led.source !== 'donation') led.donor = '';
       commit(); return;
     }
-    // Phase 2 — act-* now addresses a BUDGET LINE only. Everything that was a calendar
-    // field moved to ev-* below, which is the split made visible in the handler table.
-    if (ch === 'act-name' || ch === 'act-est' || ch === 'act-perscout' || ch === 'act-familypays') {
-      var act = state.budget.activities.find(function (a) { return a.id === el.dataset.id; });
-      if (!act) return;
-      if (ch === 'act-name') {
-        act.name = el.value;
+    // Phase 3a — ONE handler set for every budget line, activity or expense, resolved
+    // through getBudgetLine. Before this there were parallel act-* and exp-* families
+    // doing the same work twice.
+    if (ch.indexOf('line-') === 0) {
+      var bl = getBudgetLine(el.dataset.id);
+      if (!bl) return;
+      var bk = ch.slice(5);
+      if (bk === 'name') {
+        bl.name = el.value;
         // Keep the calendar entry's name in step while they still agree. Once somebody has
-        // deliberately named them differently, this stops touching the event — a budget
-        // line called "Camp deposit" against an event called "Fall campout" is legitimate.
-        var actEv = eventForLine(act);
-        if (actEv && actEv.kind === 'activity') actEv.name = el.value;
-      } else if (ch === 'act-est') act.estCents = toCents(el.value);
-      else if (ch === 'act-perscout') act.perScout = el.checked;    // Wave 17
-      else act.familyPays = el.checked;                             // Wave 17
+        // deliberately named them differently this stops touching the event — a budget line
+        // called "Camp deposit" against an event called "Fall campout" is legitimate.
+        var blEv = eventForLine(bl);
+        if (blEv && blEv.kind === 'activity') blEv.name = el.value;
+      } else if (bk === 'basis') {
+        bl.basis = el.value === 'per-head' ? 'per-head' : 'flat';
+        // Carry the money across rather than silently zeroing it: switching a $100 flat
+        // charter fee to per-head should not quietly wipe the $100 somebody typed.
+        if (bl.basis === 'per-head' && !bl.scoutRateCents && bl.flatCents) { bl.scoutRateCents = bl.flatCents; bl.flatCents = 0; }
+        else if (bl.basis === 'flat' && !bl.flatCents && bl.scoutRateCents) { bl.flatCents = bl.scoutRateCents; bl.scoutRateCents = 0; }
+      } else if (bk === 'flat') bl.flatCents = toCents(el.value);
+      else if (bk === 'scout-rate') bl.scoutRateCents = toCents(el.value);
+      else if (bk === 'adult-rate') bl.adultRateCents = toCents(el.value);
+      else if (bk === 'sibling-rate') bl.siblingRateCents = toCents(el.value);
+      else if (bk === 'adults-per') {
+        var ap = parseFloat(el.value);
+        bl.adultsPerScout = (isFinite(ap) && ap >= 0) ? Math.min(9, Math.round(ap * 100) / 100) : 0;
+      } else if (bk === 'funded') {
+        bl.fundedBy = el.value === 'families' ? 'families' : 'pack';
+        // "The pack pays, but somebody else is paid directly" is meaningless.
+        if (bl.fundedBy !== 'families') bl.paidDirectTo = '';
+      } else if (bk === 'direct') bl.paidDirectTo = el.value.trim();
+      else return;
       commit(); return;
     }
     // The calendar record. One handler for every event field, meeting or activity.
@@ -11719,15 +11981,7 @@
       else mtg.note = el.value;
       commit(); return;
     }
-    if (ch === 'exp-name' || ch === 'exp-est' || ch === 'exp-perscout' || ch === 'exp-familypays') {
-      var exp = state.budget.expenses.find(function (e) { return e.id === el.dataset.id; });
-      if (!exp) return;
-      if (ch === 'exp-name') exp.name = el.value;
-      else if (ch === 'exp-est') exp.estCents = toCents(el.value);
-      else if (ch === 'exp-familypays') exp.familyPays = el.checked; // Wave 17
-      else exp.perScout = el.checked;
-      commit(); return;
-    }
+
     if (ch === 'sf-name' || ch === 'sf-date') {
       var sf = getStorefront(el.dataset.id);
       if (!sf) return;
