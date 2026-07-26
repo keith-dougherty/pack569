@@ -104,22 +104,39 @@ between `attendance[meetingId]` (meetings only) and `rsvps['act:'+id]` (activiti
 
 ### 3.2 Budget line — `state.budget.lines[]`
 
-The plan. Mirrors 510-278.
+The plan. Mirrors 510-278, with one addition this pack needs: a pack event is priced **per head,
+and a scout brings a parent**, so a single event carries two rates.
 
 ```js
 { id, category,                  // 'registration'|'charter'|'advancement'|'recognition'
                                  // |'events'|'activities'|'camp'|'materials'|'training'
                                  // |'uniforms'|'reserve'|'other'|'income'
   name,
-  basis: 'per-scout'|'per-adult'|'flat',
-  costPerCents,                  // the rate
-  count,                         // 0 = "use the live roster count"
+  basis: 'per-head'|'flat',
+  scoutRateCents,                // what one scout costs
+  adultRateCents,                // what one accompanying adult costs (0 = adults free)
+  flatCents,                     // used when basis === 'flat'
   eventId,                       // optional link to an Event
-  familyPays }                   // does this raise a family charge?
+  payer: 'pack'|'family'|'council' }
 ```
 
-`planned = costPerCents × (count || rosterCount(basis))`. **Planned never moves on its own** —
-that's the point of a plan. `actualCents` is *gone*; actual is derived from the ledger.
+**`payer` is load-bearing** and replaces the old `familyPays` boolean:
+
+| `payer` | Money moves | In the pack's books? | Example |
+|---|---|---|---|
+| `pack` | pack pays, nobody is charged | yes — expense only | charter fee, awards, program materials |
+| `family` | pack pays the vendor, families reimburse | yes — expense **and** charges | Blue & Gold, pack campout |
+| `council` | **family pays council directly** | **no** — informational only | day camp, resident camp |
+
+`council` lines never touch the ledger and never produce a pack charge. They exist so the
+committee can see the true cost of the year to a family, and so the event still appears on the
+calendar — but a council camp fee is not the pack's money and must never move the pack's balance.
+Today's model has no way to express that, so those costs either distort the budget or go
+unrecorded.
+
+`planned = flatCents`, or `scoutRateCents × scouts + adultRateCents × adults`.
+**Planned never moves on its own** — that's the point of a plan. `actualCents` is *gone*; actual is
+derived from the ledger.
 
 ### 3.3 Ledger entry — `state.ledger[]` *(new)*
 
@@ -149,19 +166,74 @@ council cheque clears — which is when it's actually true.
 
 ### 3.4 Family account — `state.charges[]` and payments in the ledger
 
+A `payer: 'family'` line raises **two charges per attending scout** — one for the scout, one for
+the accompanying adult — because that is how the cost is actually incurred.
+
 ```js
-charge = { id, scoutId, lineId, amountCents, date, waivedBy }   // waivedBy = reward tier id
+charge = { id, scoutId, lineId, who: 'scout'|'adult',
+           amountCents, date, waivedBy }        // waivedBy = reward tier id
 ```
 
-- A `familyPays` budget line **raises a charge per scout** — optionally only for attendees.
-- Payments are ledger entries with a `scoutId`.
-- **Reward-tier coverage becomes `waivedBy`** — a charge that exists and is explicitly waived,
-  rather than a scout silently missing from a collect grid. That's auditable, and it makes the
-  Scout Account boundary measurable: total waived vs total net proceeds.
-- Balance per family = `Σ charges − Σ payments`.
+**This pack's rule, expressed exactly:**
+
+> Until a scout reaches a fundraising tier, the family covers **both** the scout and the parent.
+> Once the tier is reached, the family covers **only the parent** — the scout's share is paid from
+> fundraising.
+
+So a reward tier waives **`who: 'scout'` charges only**. The adult charge always stands. In the
+model that is a one-line rule, and it is the entire feature:
+
+```js
+waived = (charge.who === 'scout') && scoutReachedTier(charge.scoutId, line)
+```
+
+**Where this sits relative to the two models Scouting America describes.** The unit budgeting
+guidelines offer a choice:
+
+- **Full funding** — *"all money goes to the unit and all activities are paid for all Scouts,"*
+  with fundraising incentivised only by prize programs. What a family pays is unrelated to what
+  their scout sold, so there is nothing to stop free-riding.
+- **Scout Accounts** — a share of **net** proceeds credited to the individual scout, commonly
+  60/40 to the unit. This is the model that carries IRS direct-benefit exposure, which is why the
+  guidance caps it by percentage and forbids ever paying a Scout or family.
+
+This pack's rule is a third option and avoids the weakness of each. There are **no individual
+account balances**, so there is no direct-benefit surface to manage — but crossing a threshold
+buys the scout's own seat, so effort still changes the outcome. Threshold-based rather than
+proportional-credit-based.
+
+It also sits comfortably with *"plan on raising the money you need, rather than asking your
+families to pay out for each event"*: the family charge is what happens **until** fundraising
+covers it, not instead of fundraising. The adult charge remaining is the part that was never a
+scout's to earn.
+
+- Payments are ledger entries carrying a `scoutId`.
+- **Waived is recorded, not absent.** A waived charge still exists, marked with the tier that
+  waived it — so the ledger shows what the pack absorbed, per scout, per event. That is auditable,
+  and it makes the Scout Account boundary *measurable*: total waived vs total net proceeds.
+- Family balance = `Σ unwaived charges − Σ payments`.
 
 Attendance now lands cleanly: it decides **which charges are raised**, not what the pack spent —
-because what the pack spent is whatever the ledger says.
+because what the pack spent is whatever the ledger says. And `council` lines raise no charges at
+all, since that money never passes through the pack.
+
+#### Worked example
+
+Blue & Gold, `scoutRate $15`, `adultRate $15`, 10 scouts + 10 adults attending, 3 scouts past the
+tier. Pack pays the hall $340.
+
+```
+Ledger  OUT  $340.00   Blue & Gold — venue          → line "Blue & Gold"
+Charges      20 raised: 10 scout @ $15, 10 adult @ $15   = $300.00
+             3 scout charges waived by tier "Dues covered" = −$45.00
+             families owe $255.00
+Ledger  IN   $255.00 as families pay (one entry each, scoutId set)
+
+Line result: planned $300 · actual $340 · recovered $255 · pack absorbed $85
+             ($45 tier-waived + $40 overspend)
+```
+
+Every one of those numbers is a stored record, not a derivation. That is what makes it a book.
 
 ---
 
@@ -173,7 +245,9 @@ because what the pack spent is whatever the ledger says.
 | `budget.expenses[]` | budget lines with no `eventId` |
 | `activity.actualCents × roster` | Σ ledger entries on that line |
 | `collected[key][scoutId] = true` | a charge + a payment ledger entry |
-| reward tier `covers[]` | charges with `waivedBy = tierId` |
+| reward tier `covers[]` | tier threshold waives `who: 'scout'` charges |
+| `familyPays` boolean | `payer: 'pack'\|'family'\|'council'` |
+| camp fees in the pack budget | `payer: 'council'` — visible, outside the books |
 | `computeBudget().commission` | an income ledger entry, posted when it lands |
 | `meetings[]` + `attendance[]` | Events + attendance keyed on `event.id` |
 | storefront `salesCents`/`donationsCents` | unchanged — popcorn keeps its own subsystem |
@@ -189,28 +263,36 @@ internals.
 Non-negotiable: **`version` stays `1`**, migration is in `normalizeState`, and no ledger is ever
 destroyed. There is precedent — `cashInCommission`/`cashInGoal` were migrated and deleted in place.
 
-**Phase 0 — ledger alongside.** Add `state.ledger = []`, a Money · Ledger section, and manual
-entry. Nothing else changes; `computeBudget` still works exactly as today. Immediately useful on
-its own: a real cheque register.
+**Phase 0 — the ledger, and bank reconciliation.** Add `state.ledger = []`, a Money · Ledger
+section with entry, filtering and a running balance, plus a **reconcile** view: tick entries
+against a bank statement, enter the statement closing balance, see the difference. Nothing else
+changes — `computeBudget` still works exactly as today, so the app keeps functioning while the
+Treasurer starts keeping the real book alongside it.
 
-**Phase 1 — derive actual from the ledger.** For each budget line with `actualCents > 0`, write one
-ledger entry (date = event date, else program-year end, description = line name). Then
+*This is now the load-bearing phase.* Everything after it is about removing the duplicate,
+derived version of numbers the ledger already holds.
+
+**Phase 1 — derive actual from the ledger.** For each budget line with `actualCents > 0`, write
+one ledger entry (date = event date, else program-year end, description = line name). Then
 `actual = Σ ledger`, and `actualCents` is deleted. Totals must be **identical before and after** —
-that's the migration test.
+that is the migration test, and it should be a test in `test/harness.mjs`, not a spot-check.
 
 **Phase 2 — split events out.** Create `state.events[]` from `meetings[]` + the calendar half of
 `budget.activities[]`. Repoint the seven calendar readers. Budget lines keep `eventId`. Delete the
 calendar fields from budget lines.
 
-**Phase 3 — charges and family accounts.** Generate charges from `collected[]` history, waived
-where a reward tier covered them. Rework Dues & fees onto charges. Attendance-driven charging
-becomes available here.
+**Phase 3 — payer, charges and family accounts.** Introduce `payer`, migrating `familyPays: true`
+→ `'family'` and `false` → `'pack'` (nothing becomes `'council'` automatically — that is a
+judgement call per line, prompted once). Add `scoutRate`/`adultRate`. Generate charges from
+`collected[]` history, waived where a tier covered them. Rework Dues & fees onto charges. The
+attendance/RSVP question (decision 5) is answered here.
 
-**Phase 4 — categories.** Adopt the 510-278 category list, defaulting existing lines to `other`.
-Add the A − B = C fundraising-need summary and the derived per-scout popcorn goal.
+**Phase 4 — categories and the funding summary.** Adopt the 510-278 category list, defaulting
+existing lines to `other`. Add the `A − B = C` fundraising-need summary and the derived per-scout
+popcorn goal — replacing today's hand-entered Trail's End goal with one computed from the plan.
 
-Each phase is shippable and reversible on its own. Phase 0 and 1 are worth doing even if we stop
-there — they're what make the balance real.
+Each phase is shippable and reversible on its own. **Phases 0 and 1 alone make the balance real**
+and are worth doing even if the rest waits.
 
 ---
 
@@ -224,14 +306,28 @@ there — they're what make the balance real.
 
 ---
 
-## 7. Open decisions
+## 7. Decisions
 
-1. **Does the pack bill families per event, or fundraise to cover?** If mostly the latter, family
-   accounts stay a small side-ledger and Phase 3 can wait.
-2. **How real does the ledger need to be?** Categorised spending only, or true reconciliation
-   against monthly bank statements (BSA assumes the latter, with a quarterly audit)?
-3. **Attendance → charges.** Raise a charge only for attendees, for RSVP-yes, or for the whole
-   roster? *(This is the question that started this — it belongs here, not in the budget.)*
-4. **Scout Account ceiling.** Should the app warn when total tier-waived value approaches a share
-   of net proceeds? Common guidance is 60/40 to the unit.
-5. **Categories.** Adopt 510-278's list verbatim, or a shorter pack-specific one?
+**Settled (owner, 2026-07-26):**
+
+1. **The Treasurer keeps the full books in this app.** Not categorised spending — a real ledger
+   that reconciles to the bank statement. This raises Phase 0 from "nice register" to the
+   foundation everything else sits on.
+2. **Families are billed per event, per head** — scout and accompanying parent both.
+3. **A fundraising tier waives the scout's share only.** The adult share always stands.
+4. **Council events are paid by families directly to council** and never enter the pack's books —
+   `payer: 'council'`, on the calendar, costed for families, invisible to the balance.
+
+**Still open:**
+
+5. **Attendance → charges.** Raise a charge for everyone on the roster, for RSVP-yes, or only for
+   those who actually attended? *(This is the question that started all of this. It now clearly
+   belongs to the charges layer, not the budget.)* Leaning: **RSVP-yes raises the charge**, since
+   that's the point at which the pack commits money per head — with a way to void a charge when
+   someone genuinely couldn't come.
+6. **Adults per scout.** Always exactly one accompanying adult, or a count per family per event?
+   One is simpler and matches the storefront rule; a count handles both parents plus siblings.
+7. **Scout Account ceiling.** Should the app warn when total tier-waived value gets large relative
+   to net fundraising proceeds? No individual balances exist here, so the direct-benefit risk is
+   low — but the number is worth seeing.
+8. **Categories.** Adopt 510-278's list verbatim, or a shorter pack-specific one?
