@@ -1349,12 +1349,8 @@
     ['income', 'Income']
   ];
   var LINE_CATEGORY_KEYS = LINE_CATEGORIES.map(function (c) { return c[0]; });
-  var LINE_CATEGORY_LABELS = {};
-  LINE_CATEGORIES.forEach(function (c) { LINE_CATEGORY_LABELS[c[0]] = c[1]; });
   var LINE_BASES = ['flat', 'per-head'];
   var LINE_FUNDERS = ['pack', 'families'];
-  // A pack event is priced per head, and the heads are not all the same kind or price.
-  var HEAD_KINDS = ['scout', 'adult', 'sibling'];
   var ATT_MAX_HEADS = 99;
   function attHeads(v) {
     var n = (typeof v === 'number' && isFinite(v)) ? Math.floor(v) : parseInt(v, 10);
@@ -2645,10 +2641,10 @@
     // forgiveness; `paid + donated` is what has arrived. Where charges exist they are the
     // truth and the roster-assumption figure above is only a fallback for lines nobody has
     // recorded heads against yet.
-    if (chg.raised > 0) {
-      feeIncomeExpected = chg.standing;
-      feeIncomeCollected = chg.paid + chg.donated;
-    }
+    // AUDIT FIX — take the expected figure from fundingSummary so the Budget card and the
+    // worksheet cannot disagree. It already blends real charges with the planning fallback.
+    feeIncomeExpected = fundingSummary().fees;
+    feeIncomeCollected = chg.paid + chg.donated;
     // Wave 17 — other fundraisers a leader opted into funds-in (default off).
     var otherFundraiserIn = 0;
     state.fundraisers.forEach(function (fr) {
@@ -2731,12 +2727,6 @@
       (l.adultRateCents || 0) * hd.adults +
       (l.siblingRateCents || 0) * hd.siblings;
   }
-  function lineRateFor(l, who) {
-    if (l.basis !== 'per-head') return 0;
-    if (who === 'adult') return l.adultRateCents || 0;
-    if (who === 'sibling') return l.siblingRateCents || 0;
-    return l.scoutRateCents || 0;
-  }
   // Does this money pass through the pack's bank account? A line with a payee named in
   // paidDirectTo never does — families pay THEM — so it must never move the pack's balance,
   // raise a charge, or appear in what fundraising has to cover. It still exists so the
@@ -2757,17 +2747,16 @@
     if (l.siblingRateCents) bits.push('sibling ' + fmt(l.siblingRateCents));
     return bits.join(' · ');
   }
-  // How the money is arranged, in one phrase. Three real cases, and the third could not be
-  // said at all before Phase 3a.
-  function lineFundingLabel(l) {
-    if (!lineFamilyFunded(l)) return 'the pack pays';
-    return l.paidDirectTo ? ('families pay ' + l.paidDirectTo + ' directly') : 'families pay, through the pack';
-  }
 
   /* ---------------- Charges (Phase 3b) ---------------- */
   // Only a per-head, family-funded line the pack actually handles raises charges. A
   // paid-direct line raises none at all — that money never passes through the pack.
   function lineRaisesCharges(l) {
+    // AUDIT FIX — an 'income' line IS income; billing families for it would count the same
+    // money twice in the funding summary (once as fees owed, once as a budgeted income
+    // line). Filing dues under "Income" is a plausible mistake, so the model refuses it
+    // rather than silently doubling B.
+    if (l.category === 'income') return false;
     return linePerHead(l) && lineFamilyFunded(l) && lineThroughPack(l);
   }
   // How a line's charges are worked out. A line attached to an EVENT charges whoever turned
@@ -2991,11 +2980,6 @@
     if (!id) return null;
     return state.budget.activities.find(function (a) { return a.id === id; }) ||
       state.budget.expenses.find(function (e) { return e.id === id; }) || null;
-  }
-  function budgetLineName(id) {
-    var ln = getBudgetLine(id);
-    if (!ln) return '';
-    return ln.name || (state.budget.expenses.indexOf(ln) === -1 ? 'Untitled activity' : 'Untitled expense');
   }
 
   /* ---------------- Two-tap confirm ---------------- */
@@ -10877,7 +10861,11 @@
         name: x.name || '', eventId: ev.id, basis: x.basis,
         scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
         siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
-        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo
+        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
+        // AUDIT FIX — carry the category. freshLine defaults to 'other', so without this the
+        // whole 510-278 grouping was silently reset every year — and an 'income' line came
+        // back as an ordinary expense that bills families.
+        category: x.category
       });
     });
     b.expenses = b.expenses.map(function (x) {
@@ -10885,7 +10873,11 @@
         name: x.name || '', basis: x.basis,
         scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
         siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
-        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo
+        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
+        // AUDIT FIX — carry the category. freshLine defaults to 'other', so without this the
+        // whole 510-278 grouping was silently reset every year — and an 'income' line came
+        // back as an ordinary expense that bills families.
+        category: x.category
       });
     });
     // Phase 0 — the ledger belongs to the year it recorded, and it went into the archive
@@ -10911,6 +10903,12 @@
     state.rsvps = {};
     state.attendance = {};
     state.collected = {};
+    // AUDIT FIX — charges belong to the year that raised them. Without this, a waived or
+    // forgiven charge survives the rollover (syncCharges keeps settled rows on purpose)
+    // pointing at a line id that no longer exists, and the new year opens reporting last
+    // year's forgiveness against a "Removed line". Money that actually moved is in the
+    // ledger, which the archive already captured.
+    state.charges = [];
     state.advancement = {};  // new rank = new adventures
     state.derby = { name: '', date: '', lanes: state.derby.lanes || 4, cars: [], awards: [] }; // Wave 19(18) — awards reset too
     state.fundraisers.forEach(function (fr) { fr.sales = []; });
@@ -11670,14 +11668,15 @@
       state.budget.activities.forEach(function (a, i) { if (a.id === daId) daIx = i; });
       if (daIx === -1) return;
       var daGone = state.budget.activities.splice(daIx, 1)[0];
-      var daRsvps = state.rsvps['act:' + daId];
-      var daCol = state.collected['act:' + daId];
-      delete state.rsvps['act:' + daId];
-      delete state.collected['act:' + daId];
+      // AUDIT FIX — take the line's charges with it. syncCharges deliberately KEEPS a
+      // settled charge (waived, forgiven, or paid against), so without this a deleted line
+      // leaves them behind for good, counted in every Dues total under "Removed line".
+      // Money that actually moved stays in the ledger either way.
+      var daChg = state.charges.filter(function (c) { return c.lineId === daId; });
+      state.charges = state.charges.filter(function (c) { return c.lineId !== daId; });
       deleteWithUndo(daGone.name || 'activity', function () {
         state.budget.activities.splice(Math.min(daIx, state.budget.activities.length), 0, daGone);
-        if (daRsvps) state.rsvps['act:' + daId] = daRsvps;
-        if (daCol) state.collected['act:' + daId] = daCol;
+        daChg.forEach(function (c) { state.charges.push(c); });
       });
       return;
     }
@@ -11825,11 +11824,12 @@
       state.budget.expenses.forEach(function (x, i) { if (x.id === dxId) dxIx = i; });
       if (dxIx === -1) return;
       var dxGone = state.budget.expenses.splice(dxIx, 1)[0];
-      var dxCol = state.collected[dxId];
-      delete state.collected[dxId];
+      // AUDIT FIX — as with activities: settled charges would otherwise outlive the line.
+      var dxChg = state.charges.filter(function (c) { return c.lineId === dxId; });
+      state.charges = state.charges.filter(function (c) { return c.lineId !== dxId; });
       deleteWithUndo(dxGone.name || 'expense', function () {
         state.budget.expenses.splice(Math.min(dxIx, state.budget.expenses.length), 0, dxGone);
-        if (dxCol) state.collected[dxId] = dxCol;
+        dxChg.forEach(function (c) { state.charges.push(c); });
       });
       return;
     }
@@ -12094,6 +12094,12 @@
             if (!Object.keys(state.collected[k]).length) delete state.collected[k];
           }
         });
+        // AUDIT FIX (Phase 3b) — a removed scout's charges go with them; a settled one would
+        // otherwise sit in the totals against a family who is not on the roster. Their
+        // LEDGER entries stay — that money really did move — but they stop pointing at a
+        // scout who no longer exists, so they read as ordinary pack income.
+        state.charges = state.charges.filter(function (c) { return c.scoutId !== id; });
+        state.ledger.forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; });
         delete state.advancement[id];
         // Wave 4: strip the scout's other-fundraiser sales
         state.fundraisers.forEach(function (fr5) {

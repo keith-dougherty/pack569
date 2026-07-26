@@ -16,6 +16,33 @@ decisions in §7 (9, 11) and whatever the pack learns from a season of using it.
 
 ---
 
+## 0. Audit, 2026-07-26
+
+Everything above was built and then audited. The audit found **five defects that the
+phase-by-phase tests missed**, all of the same family: a record outliving the thing it
+belonged to.
+
+| Defect | Effect |
+|---|---|
+| `rolloverYear` never cleared `state.charges` | A waived or forgiven charge survived the year-end pointing at a deleted line. The new year opened reporting last year's forgiveness against a "Removed line", and every Dues total was wrong. |
+| Deleting a budget line orphaned its charges | `syncCharges` keeps settled rows *on purpose*, so a forgiven charge outlived the line for good. Now the charges go with the line and come back on Undo. |
+| Removing a scout orphaned their charges | A settled charge sat in the totals against a family no longer on the roster. Their charges now go; their ledger entries stay (that money really moved) but stop pointing at a scout who does not exist. |
+| An `income`-category line raised charges | Filing dues under "Income" — a plausible mistake — counted the same money twice in B, once as fees owed and once as a budgeted income line. |
+| `rolloverYear` dropped `category` | `freshLine` defaults to `other`, so the whole 510-278 grouping silently reset every year — and an income line came back as an ordinary expense that bills families. |
+
+The common cause is worth recording: **`syncCharges` deliberately refuses to delete a settled
+charge**, which is right — a book does not lose rows because somebody corrected a head count.
+But that makes every *deliberate* deletion (a line, a scout, a year) responsible for its own
+cascade, and four of the five defects were a missing cascade.
+
+Also removed: five functions and constants written during the phases and never called
+(`budgetLineName`, `lineRateFor`, `lineFundingLabel`, `HEAD_KINDS`, `LINE_CATEGORY_LABELS`).
+
+Tests went 137 → 143. The gap they had in common: they asserted that each phase's *new* code
+was right, and never that the *old* code around it had been taught about the new records.
+
+---
+
 ## 1. The problem, concretely
 
 One record does three unrelated jobs:

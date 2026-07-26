@@ -770,8 +770,8 @@ test('reconciling compares the TICKED entries to the statement', () => {
 const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
-  'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS', 'HEAD_KINDS',
-  'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'LINE_CATEGORY_LABELS', 'CHARGE_WHO',
+  'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
+  'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'CHARGE_WHO',
   'linePlannedHeads', 'linePlannedCents',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
@@ -1524,7 +1524,7 @@ test('Phase 4: existing lines default to "other" rather than being guessed at', 
 });
 
 test('Phase 4: the 510-278 category list is adopted whole', () => {
-  const { LINE_CATEGORY_KEYS } = sandbox(['LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'LINE_CATEGORY_LABELS']);
+  const { LINE_CATEGORY_KEYS } = sandbox(['LINE_CATEGORIES', 'LINE_CATEGORY_KEYS']);
   ['registration', 'charter', 'advancement', 'recognition', 'events', 'activities',
     'camp', 'materials', 'training', 'uniforms', 'reserve', 'other', 'income']
     .forEach(k => ok(LINE_CATEGORY_KEYS.indexOf(k) !== -1, `category "${k}" is missing`));
@@ -1588,6 +1588,63 @@ test('Phase 4: the Budget card and the goal share one arithmetic', () => {
   ok(/var fund = fundingSummary\(\);/.test(fn[0]), 'computeBudget does not use fundingSummary');
   ok(/var teNeed = fund\.C;/.test(fn[0]), 'computeBudget recomputes the fundraising need');
   ok(/var salesGoal = fund\.salesGoal;/.test(fn[0]), 'computeBudget recomputes the sales goal');
+});
+
+/* ================================================================
+   Audit regressions — four bugs that survived the phase work, all found by
+   auditing rather than by the tests written alongside it.
+   ================================================================ */
+
+test('AUDIT: the year rollover clears charges', () => {
+  // syncCharges deliberately KEEPS a settled charge, so without an explicit clear a waived
+  // or forgiven row survives the rollover pointing at a line id that no longer exists — and
+  // the new year opens reporting last year's forgiveness against a "Removed line".
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'rolloverYear() not found');
+  ok(/state\.charges = \[\];/.test(fn[0]), "last year's charges are carried into the new year");
+});
+
+test('AUDIT: the rollover carries the 510-278 category', () => {
+  // freshLine defaults category to 'other', so the whole grouping was silently reset every
+  // year — and an 'income' line came back as an ordinary expense that bills families.
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'rolloverYear() not found');
+  const carries = fn[0].match(/category: x\.category/g) || [];
+  eq(carries.length, 2, 'both activities and expenses must carry their category');
+});
+
+test('AUDIT: deleting a budget line takes its charges with it, and Undo brings them back', () => {
+  ['del-activity', 'del-expense'].forEach(act => {
+    const fn = new RegExp(`if \\(act\\.indexOf\\('${act}:'\\) === 0\\) \\{[\\s\\S]*?\\n    \\}`).exec(SCRIPT);
+    ok(fn, `${act} handler not found`);
+    ok(/state\.charges = state\.charges\.filter/.test(fn[0]), `${act} orphans the line's charges`);
+    ok(/forEach\(function \(c\) \{ state\.charges\.push\(c\); \}\)/.test(fn[0]),
+      `${act} does not restore charges on Undo`);
+  });
+});
+
+test('AUDIT: removing a scout strips their charges but keeps the money that moved', () => {
+  // A settled charge would otherwise sit in the totals against a family who is not on the
+  // roster. Their ledger entries stay — that money really did move.
+  ok(/state\.charges = state\.charges\.filter\(function \(c\) \{ return c\.scoutId !== id; \}\);/.test(SCRIPT),
+    "a removed scout's charges survive them");
+  ok(/state\.ledger\.forEach\(function \(e\) \{ if \(e\.scoutId === id\) e\.scoutId = ''; \}\);/.test(SCRIPT),
+    "a removed scout's payments still point at a scout who no longer exists");
+});
+
+test('AUDIT: an income-category line is never billed to families', () => {
+  // Filing dues under "Income" is a plausible mistake, and it counted the same money twice
+  // in B — once as fees owed, once as a budgeted income line.
+  const fn = /function lineRaisesCharges\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'lineRaisesCharges() not found');
+  ok(/if \(l\.category === 'income'\) return false;/.test(fn[0]),
+    'an income line still raises charges — B double-counts it');
+});
+
+test('AUDIT: the Budget card and the worksheet cannot disagree about family income', () => {
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/feeIncomeExpected = fundingSummary\(\)\.fees;/.test(fn[0]),
+    'computeBudget computes expected family income its own way');
 });
 
 /* ---------------- report ---------------- */
