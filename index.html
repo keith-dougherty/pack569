@@ -6856,18 +6856,26 @@
           '<span class="small muted">' + k + ' scout' + (k === 1 ? '' : 's') + '</span>' +
           tinyDangerBtn('del-tier:' + t.id, 'Remove ' + (t.name || 'tier')) +
           '</div>';
-        // What this tier picks up. Checkboxes, because a tier covers a whole line for
-        // whoever reaches it — there's no per-scout choice to make here.
+        // What this tier picks up. Wave 21 — a picker, not a checkbox list: with a tier per
+        // reward level the same full list repeated on every tier is mostly empty boxes.
+        // Chips show only what's chosen, and the select offers what's left — the same shape
+        // as the leader jobs picker and storefront scout assignment.
         if (coverable.length) {
-          h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p><div class="rsvp-list">' +
-            coverable.map(function (c) {
-              var on = covers.indexOf(c.key) !== -1;
-              return '<label class="att-row"><input type="checkbox" data-ch="tier-cover" data-id="' + t.id +
-                '" data-name="' + esc(c.key) + '"' + (on ? ' checked' : '') +
-                ' aria-label="' + esc((t.name || 'This tier') + ' covers ' + (c.item.name || c.kind)) + '">' +
-                '<span>' + esc(c.item.name || ('Untitled ' + c.kind)) +
-                ' <span class="small muted">' + esc(c.kind) + ' · ' + fmt(c.item.estCents || 0) + ' each</span></span></label>';
-            }).join('') + '</div>';
+          var byKey = {};
+          coverable.forEach(function (c) { byKey[c.key] = c; });
+          var chargeLabel = function (c) {
+            return (c.item.name || ('Untitled ' + c.kind)) + ' · ' + fmt(c.item.estCents || 0);
+          };
+          h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p>' +
+            chipPicker({
+              id: t.id, canEdit: canEdit(), removeAct: 'tier-cover-remove', addCh: 'tier-cover-add',
+              addLabel: '+ Add a charge this tier covers…',
+              // Stale keys (a deleted budget line) simply drop out here.
+              chosen: covers.filter(function (k) { return byKey[k]; })
+                .map(function (k) { return { value: k, label: chargeLabel(byKey[k]) }; }),
+              addable: coverable.filter(function (c) { return covers.indexOf(c.key) === -1; })
+                .map(function (c) { return { value: c.key, label: chargeLabel(c) }; })
+            });
           if (!covers.length) {
             h += '<p class="small muted" style="margin:6px 0 0">Covers no charges — a reward in its own right.</p>';
           }
@@ -9758,6 +9766,13 @@
       clrLdr.role = '';
       commit(); return;
     }
+    // Wave 21 — drop a charge from a tier's coverage (chip ✕). data-name is the collect key.
+    if (act === 'tier-cover-remove') {
+      var rmTier = state.rewardTiers.tiers.find(function (t) { return t.id === el.dataset.id; });
+      if (!rmTier) return;
+      rmTier.covers = arrOf(rmTier.covers).filter(function (k) { return k !== el.dataset.name; });
+      commit(); return;
+    }
     if (act === 'ldr-job-remove' || act === 'ldr-den-remove') {
       var rmLdr = state.leaders.find(function (x) { return x.id === el.dataset.id; });
       if (!rmLdr) return;
@@ -10374,17 +10389,15 @@
       else tier.thresholdCents = toCents(el.value);
       commit(); return;
     }
-    // Wave 21 — tick a per-scout charge this tier covers. data-name carries the collect key
+    // Wave 21 — add a per-scout charge this tier covers. el.value is the collect key
     // ('act:'+id for an activity, the bare id for an expense).
-    if (ch === 'tier-cover') {
+    if (ch === 'tier-cover-add') {
       var covTier = state.rewardTiers.tiers.find(function (t) { return t.id === el.dataset.id; });
-      if (!covTier) return;
-      var covKey = el.dataset.name;
+      if (!covTier || !el.value) return;
       var covList = arrOf(covTier.covers);
-      covTier.covers = el.checked
-        ? (covList.indexOf(covKey) === -1 ? covList.concat([covKey]) : covList)
-        : covList.filter(function (k) { return k !== covKey; });
-      commit(); return;
+      if (covList.indexOf(el.value) === -1) { covTier.covers = covList.concat([el.value]); commit(); }
+      else render(); // already covered — just reset the select
+      return;
     }
     if (ch === 'rsvp-adults') {
       var rEv = state.rsvps[el.dataset.key];
