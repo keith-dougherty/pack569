@@ -5198,6 +5198,8 @@
   /* ----- Scouts tab ----- */
   function renderScouts() {
     var totals = computeScoutTotals();
+    // Wave 21 — built once here, not per row.
+    var covered = packCoverageByScout();
     var h = '';
     if (canEdit()) {
       h += '<div class="card"><h2 class="section display">Add a scout</h2>' +
@@ -5235,7 +5237,7 @@
 
     h += '<div class="card"><h2 class="section display">Roster <span class="pill navy">' + shown.length +
       (scopeDens.length ? ' in ' + esc(scopeDens.join(' / ')) : ' active') + '</span></h2>';
-    shown.forEach(function (s) { h += renderScoutRow(s, totals[s.id]); });
+    shown.forEach(function (s) { h += renderScoutRow(s, totals[s.id], covered); });
     if (!shown.length) {
       h += '<p class="small muted">' + (scopeDens.length
         ? 'Nobody in that den yet — choose <strong>All dens</strong> above to see the rest of the pack.'
@@ -5246,14 +5248,17 @@
     if (archived.length) {
       h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Archived <span class="pill navy">' + archived.length + '</span></h2>' +
         '<button type="button" class="btn small ghost" data-act="toggle-archived">' + (ui.showArchived ? 'Hide' : 'Show') + '</button></div>';
-      if (ui.showArchived) archived.forEach(function (s) { h += renderScoutRow(s, totals[s.id]); });
+      if (ui.showArchived) archived.forEach(function (s) { h += renderScoutRow(s, totals[s.id], covered); });
       h += '</div>';
     }
     return h;
   }
 
-  function renderScoutRow(s, t) {
+  // covered = packCoverageByScout() from the caller, so the coverage map is built once per
+  // render rather than once per row.
+  function renderScoutRow(s, t, covered) {
     var open = !!ui.expandedScouts[s.id];
+    var coveredCents = (covered || {})[s.id] || 0;
     var h = '<div class="list-row" data-act="toggle-scout" data-id="' + s.id + '" role="button" tabindex="0" aria-expanded="' + open + '">' +
       // Wave 19(23) — the den pill shows the free-text den label when set ("Wolf — Mrs. K");
       // s.den (the rank) still drives advancement/meetings/advance-dens everywhere.
@@ -5266,7 +5271,14 @@
         // Wave 18(13) — bad: money owed is a negative status, not gold.
         if (s.archived) return '';
         var owe = scoutOwesCents(s.id);
-        return owe > 0 ? ' <span class="pill bad">owes ' + fmt(owe) + '</span>' : '';
+        var pills = '';
+        // Wave 21 — a reward tier the scout earned is already subtracted from what they
+        // owe. Say so: without this the roster just shows a smaller number with no reason,
+        // and the pack covering someone's dues is the good news worth surfacing.
+        if (coveredCents > 0) pills += ' <span class="pill">pack covers ' + fmt(coveredCents) + '</span>';
+        if (owe > 0) pills += ' <span class="pill bad">owes ' + fmt(owe) + '</span>';
+        else if (coveredCents > 0) pills += ' <span class="pill navy">paid up</span>';
+        return pills;
       })() + '</div>' +
       // Wave 19(24) — private roster note; deliberately NEVER on public sheets/exports.
       (s.note ? '<div class="small muted">' + esc(s.note) + '</div>' : '') +
@@ -5281,6 +5293,21 @@
       '<div class="stat"><span class="v money">' + fmt(t.wagonS + t.wagonD) + '</span><span class="l">Wagon</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(t.onS + t.onD) + '</span><span class="l">Online</span></div>' +
       '</div>';
+
+    // Wave 21 — what a reward tier is picking up for this scout, itemised. The collapsed
+    // row only has space for the total, and "pack covers $95.00" invites the question of
+    // which charges — this is where a parent asking gets answered.
+    if (coveredCents > 0) {
+      var covMap = tierCoverageConfigured() ? packCoverage() : {};
+      var covLines = perScoutCharges().filter(function (c) { return (covMap[c.key] || {})[s.id]; });
+      h += '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Covered by a reward tier</p>' +
+        covLines.map(function (c) {
+          return '<div class="assign-row"><span class="assign-name">' + esc(c.item.name || ('Untitled ' + c.kind)) + '</span>' +
+            '<span class="money">' + fmt(c.item.estCents || 0) + '</span></div>';
+        }).join('') +
+        '<p class="small muted" style="margin:8px 0 0">The pack pays these, so ' + esc(s.name || 'this scout') +
+        '’s family isn’t billed for them. <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="rewards">Reward tiers</button></p></div>';
+    }
 
     // Wave 19(4/23/24) — per-scout roster fields: renewal month (drives the amber pill +
     // the digest), a display-only den label, and a private one-line note.
