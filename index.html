@@ -1492,6 +1492,14 @@
       tier.name = typeof tier.name === 'string' ? tier.name : '';
       tier.reward = typeof tier.reward === 'string' ? tier.reward : '';
       tier.thresholdCents = (typeof tier.thresholdCents === 'number' && isFinite(tier.thresholdCents) && tier.thresholdCents > 0) ? Math.round(tier.thresholdCents) : 0;
+      // Wave 21 — which per-scout charges this tier covers, as collect keys (bare id for an
+      // expense, 'act:'+id for an activity — the same convention state.collected uses).
+      // Empty is a perfectly good tier: prizes, a pack shirt, a patch. Those carry a reward
+      // description and no budget line, and cost the budget nothing.
+      // Stale keys (a deleted budget line) are filtered where they're read, not here —
+      // normalizeState never resolves references.
+      if (!Array.isArray(tier.covers)) tier.covers = [];
+      else tier.covers = tier.covers.filter(function (k) { return typeof k === 'string' && !!k; });
       return true;
     });
     // Wave 14: Inventory — Trail's End popcorn order (ordered / on-hand / handed out).
@@ -1945,12 +1953,23 @@
     // state.collected are prefixed 'act:'; expense keys stay bare (legacy data).
     var feeIncomeExpected = 0, feeIncomeCollected = 0;
     var feeRoster = activeScouts();
+    // Wave 21 — reward tiers. A scout who earned coverage for a charge means the PACK is
+    // paying it, so the family never owes it. The line's own cost is already counted in
+    // planned/actual above (est × roster), so nothing is added here — the pack absorbing a
+    // fee shows up correctly as income it no longer expects. `feesAbsorbed` is that figure,
+    // reported for display only.
+    var coverage = tierCoverageConfigured() ? packCoverage() : {};
+    var feesAbsorbed = 0;
     function addFeeItem(item, colKey) {
       if (!(item.perScout && item.familyPays)) return;
       var each = item.estCents || 0;
-      feeIncomeExpected += each * scouts;
       var cm = state.collected[colKey] || {};
-      feeRoster.forEach(function (s) { if (cm[s.id]) feeIncomeCollected += each; });
+      var cov = coverage[colKey] || {};
+      feeRoster.forEach(function (s) {
+        if (cov[s.id]) { feesAbsorbed += each; return; } // pack pays it; not family income
+        feeIncomeExpected += each;
+        if (cm[s.id]) feeIncomeCollected += each;
+      });
     }
     b.expenses.forEach(function (e) { addFeeItem(e, e.id); });
     b.activities.forEach(function (a) { addFeeItem(a, 'act:' + a.id); });
@@ -1959,11 +1978,13 @@
     state.fundraisers.forEach(function (fr) {
       if (fr.countInFunds) otherFundraiserIn += fundraiserTotals(fr).total;
     });
-    // Wave 8: dues the pack covers for scouts who reached the reward tier. Zero unless tiers
-    // are configured AND a dues amount is set, so existing ledgers see no change. Separate
-    // from the per-scout fees grid to avoid double-counting the same dues.
+    // Wave 8 legacy: a single typed "dues amount" the pack covers for scouts past the
+    // lowest tier, added as a lump to actual spent because it wasn't tied to a budget line.
+    // Wave 21 replaced it with per-tier coverage of REAL budget lines (above), which needs
+    // no lump — the cost is already in planned/actual. The old lump is only still applied
+    // while no tier names a line, so an existing ledger is untouched until it's configured.
     var reward = rewardTierSummary();
-    var rewardDues = reward.rewardDues;
+    var rewardDues = tierCoverageConfigured() ? 0 : reward.rewardDues;
     actual += rewardDues;
     var pack = computePackTotals();
     var commission = pack.commission || 0;
@@ -1988,6 +2009,7 @@
       startingBalance: startingBalance, cashGoal: cashGoal, teNeed: teNeed,
       fundsIn: fundsIn, balance: fundsIn - actual,
       rewardDues: rewardDues, rewardCovered: reward.coveredCount, rewardDuesEach: reward.duesCents,
+      feesAbsorbed: feesAbsorbed, coverageOn: tierCoverageConfigured(),
       feeIncomeExpected: feeIncomeExpected, feeIncomeCollected: feeIncomeCollected,
       otherFundraiserIn: otherFundraiserIn,
       pct: pct, salesGoal: salesGoal, perScoutGoal: perScoutGoal
@@ -2159,7 +2181,12 @@
   }
   function scoutOwesCents(scoutId) {
     var owe = 0;
+    // Wave 21 — a charge a reward tier covers for this scout is the pack's, not the
+    // family's, so it isn't owed. Without this the covered scout still reads "owes $80",
+    // and ticking them paid would book the pack's own money as family income.
+    var coverage = tierCoverageConfigured() ? packCoverage() : {};
     perScoutCharges().forEach(function (c) {
+      if ((coverage[c.key] || {})[scoutId]) return;
       var cm = state.collected[c.key] || {};
       if (!cm[scoutId]) owe += c.item.estCents || 0;
     });
@@ -2174,9 +2201,16 @@
     // Active scouts; anyone already marked stays visible even if archived since.
     var roster = state.scouts.filter(function (s) { return cm[s.id] || !s.archived; });
     var activeRoster = activeScouts();
-    var count = activeRoster.filter(function (s) { return cm[s.id]; }).length;
-    var outstanding = (activeRoster.length - count) * (e.estCents || 0);
-    var label = 'Collected ' + count + ' of ' + activeRoster.length +
+    // Wave 21 — scouts whose reward tier covers THIS charge. The pack is paying, so they
+    // are neither owing nor collectable: they come out of the denominator entirely rather
+    // than sitting in the list as a permanently unticked row.
+    var covered = (tierCoverageConfigured() ? packCoverage() : {})[colKey] || {};
+    var owingRoster = activeRoster.filter(function (s) { return !covered[s.id]; });
+    var coveredCount = activeRoster.length - owingRoster.length;
+    var count = owingRoster.filter(function (s) { return cm[s.id]; }).length;
+    var outstanding = (owingRoster.length - count) * (e.estCents || 0);
+    var label = 'Collected ' + count + ' of ' + owingRoster.length +
+      (coveredCount ? ' · ' + coveredCount + ' covered by the pack' : '') +
       (outstanding > 0 ? ' · ' + fmt(outstanding) + ' outstanding' : '');
     var h = '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
       '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + colKey + '" aria-expanded="' + open + '">' +
@@ -2185,10 +2219,18 @@
       h += '<div class="rsvp-list">';
       if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on Scouts · Roster first.</p>';
       roster.forEach(function (s) {
+        var dens = (s.den ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') +
+          (s.archived ? ' <span class="pill navy">archived</span>' : '');
+        // Wave 21 — a scout the pack is covering isn't collectable: no checkbox, because
+        // ticking one would record the pack's own money as family income.
+        if (covered[s.id]) {
+          h += '<div class="att-row" style="padding-left:26px"><span>' + esc(s.name) + dens +
+            ' <span class="pill">paid by the pack</span></span></div>';
+          return;
+        }
         h += '<label class="att-row"><input type="checkbox" data-ch="collect-mark" data-id="' + colKey + '" data-scout="' + s.id + '"' +
           (cm[s.id] ? ' checked' : '') + ' aria-label="' + esc((e.name || 'Fee') + ' collected from ' + s.name) + '"><span>' + esc(s.name) +
-          (s.den ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') +
-          (s.archived ? ' <span class="pill navy">archived</span>' : '') + '</span></label>';
+          dens + '</span></label>';
       });
       h += '</div>';
     }
@@ -5337,6 +5379,40 @@
       perTierCounts: perTierCounts, activeCount: roster.length
     };
   }
+  // Wave 21 — which per-scout charges the PACK picks up for which scouts, derived live from
+  // sales. Returns { collectKey: { scoutId: true } }.
+  //
+  // Cumulative by design: a scout who reaches tier 3 gets everything tiers 1–3 cover, so a
+  // top seller can never end up with less than a lower seller. Tiers carrying no budget
+  // lines (a prize, a pack shirt, a patch) simply contribute nothing here — they're a
+  // reward description, not a charge.
+  //
+  // Derived, never stored: if a sale is corrected later, coverage follows it, and this can
+  // never disagree with the standings. Nothing writes to state.collected — the collect grids
+  // stay a record of what FAMILIES paid, which is what keeps the two from double-counting.
+  function packCoverage() {
+    var tiers = sortedTiers();
+    var out = {};
+    if (!tiers.length) return out;
+    var totals = computeScoutTotals();
+    activeScouts().forEach(function (s) {
+      var base = goalBaseOf({ t: totals[s.id] });
+      tiers.forEach(function (t) {
+        if (base < t.thresholdCents) return; // every tier reached, not just the highest
+        arrOf(t.covers).forEach(function (k) {
+          if (!out[k]) out[k] = {};
+          out[k][s.id] = true;
+        });
+      });
+    });
+    return out;
+  }
+  // True once any tier names a budget line. Until then the legacy single "dues amount"
+  // lump (Wave 8) keeps working exactly as it did, so an existing ledger sees no change
+  // until someone configures coverage.
+  function tierCoverageConfigured() {
+    return sortedTiers().some(function (t) { return arrOf(t.covers).length > 0; });
+  }
   // Standings badges for one row: earned-tier name (navy) + gold "dues covered" marker.
   function tierBadgesFor(r, tiers, duesTier) {
     if (!tiers.length || r.archived) return '';
@@ -5419,8 +5495,15 @@
           : '';
       })() +
       // Wave 8 — dues the pack absorbs for scouts who earned the reward tier (in "Actual spent").
-      (bud.rewardDues > 0
-        ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">🎟 Rewards</span> Dues covered by pack: <strong>' + bud.rewardCovered +
+      // Wave 21 — reward-tier coverage. Under per-tier coverage the pack absorbing a fee is
+      // income it no longer expects, not a new cost: the charge's own value is already in
+      // planned/actual above. The legacy lump is the second branch.
+      (bud.coverageOn && bud.feesAbsorbed > 0
+        ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Rewards</span> Family fees the pack is covering: <strong class="money">' +
+          fmt(bud.feesAbsorbed) + '</strong> <span class="muted">(those scouts don’t owe it, so it isn’t collected — set tiers on Popcorn · Standings)</span></p>'
+        : '') +
+      (!bud.coverageOn && bud.rewardDues > 0
+        ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Rewards</span> Dues covered by pack: <strong>' + bud.rewardCovered +
           '</strong> × <span class="money">' + fmt(bud.rewardDuesEach) + '</span> = <strong class="money">' + fmt(bud.rewardDues) +
           '</strong> <span class="muted">(included in actual spent; set tiers on Popcorn · Standings)</span></p>'
         : '') +
@@ -6748,33 +6831,69 @@
     var rt = state.rewardTiers;
     var sum = rewardTierSummary();
     var baseLabel = 'sales + online donations' + (state.cashThroughTrailsEnd ? ' + cash donations' : '');
-    var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
-      '<p class="small muted" style="margin:0 0 10px">Scouts earn a reward tier by their <strong>' + baseLabel +
-      '</strong> total — the same figure as the goal standings above. Reaching the lowest tier means ' +
-      '<strong>the pack covers that scout’s dues</strong>; that cost is recorded on the Budget. Higher tiers are bonus rewards. ' +
-      'These are pack rewards — separate from Trail’s End’s own reward program in their app.</p>';
+    // Wave 21 — every per-scout "families pay" line is something a tier can cover.
+    var coverable = perScoutCharges().filter(function (c) { return c.item.familyPays; });
+    var coverage = packCoverage();
+    var configured = tierCoverageConfigured();
 
-    // Dues amount the pack absorbs per scout who reaches the first tier.
-    h += '<label class="fld" style="margin:0 0 4px">Dues the pack covers per scout who reaches the first tier ($)' +
-      '<input class="money-in" inputmode="decimal" data-ch="tier-dues" value="' + dollars(rt.duesCents) + '" placeholder="0.00"></label>' +
-      '<p class="small muted" style="margin:0 0 10px">If you also list dues as a per-scout expense on the Budget, don’t add it there too — this reward line books it, so you won’t double-count. ' +
-      'And if the pack covers dues for tier winners, don’t also mark that expense “families pay” for those scouts — or expect the difference.</p>';
+    var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">Scouts earn a tier by their <strong>' + baseLabel +
+      '</strong> total — the same figure as the goal standings above. Each tier can cover any of the pack’s ' +
+      '<strong>per-scout “families pay”</strong> charges, and tiers <strong>stack</strong>: reaching tier 3 also ' +
+      'gets you what tiers 1 and 2 cover. A tier that covers nothing is fine too — that’s how you record a prize, ' +
+      'a pack shirt or a patch. These are pack rewards, separate from Trail’s End’s own program in their app.</p>';
 
     if (sum.tiers.length) {
-      sum.tiers.forEach(function (t) {
-        var isDues = sum.duesTier && t.id === sum.duesTier.id;
+      sum.tiers.forEach(function (t, i) {
         var k = sum.perTierCounts[t.id] || 0;
-        h += '<div class="tier-row">' +
+        var covers = arrOf(t.covers);
+        h += '<div class="block-card" style="margin-top:8px">' +
+          '<div class="tier-row" style="margin:0">' +
+          '<span class="flow-n" aria-hidden="true">' + (i + 1) + '</span>' +
           '<input class="tname" data-ch="tier-name" data-id="' + t.id + '" value="' + esc(t.name) + '" placeholder="Tier name" aria-label="Tier name">' +
           '<input class="money-in" inputmode="decimal" data-ch="tier-threshold" data-id="' + t.id + '" value="' + dollars(t.thresholdCents) + '" placeholder="0.00" aria-label="Reach amount">' +
-          '<input class="treward" data-ch="tier-reward" data-id="' + t.id + '" value="' + esc(t.reward) + '" placeholder="Reward" aria-label="Reward">' +
-          (isDues ? '<span class="pill navy">pays dues</span>' : '') +
+          '<input class="treward" data-ch="tier-reward" data-id="' + t.id + '" value="' + esc(t.reward) + '" placeholder="Reward (e.g. pack t-shirt)" aria-label="Reward">' +
           '<span class="small muted">' + k + ' scout' + (k === 1 ? '' : 's') + '</span>' +
           tinyDangerBtn('del-tier:' + t.id, 'Remove ' + (t.name || 'tier')) +
           '</div>';
+        // What this tier picks up. Checkboxes, because a tier covers a whole line for
+        // whoever reaches it — there's no per-scout choice to make here.
+        if (coverable.length) {
+          h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p><div class="rsvp-list">' +
+            coverable.map(function (c) {
+              var on = covers.indexOf(c.key) !== -1;
+              return '<label class="att-row"><input type="checkbox" data-ch="tier-cover" data-id="' + t.id +
+                '" data-name="' + esc(c.key) + '"' + (on ? ' checked' : '') +
+                ' aria-label="' + esc((t.name || 'This tier') + ' covers ' + (c.item.name || c.kind)) + '">' +
+                '<span>' + esc(c.item.name || ('Untitled ' + c.kind)) +
+                ' <span class="small muted">' + esc(c.kind) + ' · ' + fmt(c.item.estCents || 0) + ' each</span></span></label>';
+            }).join('') + '</div>';
+          if (!covers.length) {
+            h += '<p class="small muted" style="margin:6px 0 0">Covers no charges — a reward in its own right.</p>';
+          }
+        }
+        h += '</div>';
       });
     } else {
-      h += '<div class="empty" style="margin:4px 0 6px">No reward tiers yet. Add a first tier (for example, reach $600 → the pack pays dues) to reward scouts by how much they sell. The pack’s cost of covering dues will appear on the Budget.</div>';
+      h += '<div class="empty" style="margin:4px 0 6px">No reward tiers yet. Add one below — for example, reach $600 and the pack covers that scout’s dues.</div>';
+    }
+
+    if (!coverable.length) {
+      h += '<p class="small muted" style="margin:10px 0 0">Nothing is chargeable to families yet. Mark a budget line ' +
+        '<strong>per scout</strong> and <strong>families pay</strong> on ' +
+        '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="budget">Money · Budget</button> ' +
+        'and it becomes something a tier can cover.</p>';
+    }
+
+    // Legacy Wave 8 lump: a single typed dues figure, still honoured until coverage is
+    // configured so an existing ledger's numbers don't move on their own.
+    if (rt.duesCents > 0 && !configured) {
+      h += '<div class="warn" style="margin-top:12px"><p class="small" style="margin:0 0 6px">' +
+        'This pack still uses the old single dues figure (<strong class="money">' + fmt(rt.duesCents) + '</strong> per scout past the lowest tier), ' +
+        'booked as a lump on the budget. Tick the real budget line a tier covers above and it switches to the per-scout version — ' +
+        'the covered scouts stop showing as owing, and the lump goes away.</p>' +
+        '<label class="fld" style="margin:0">Old dues figure ($)' +
+        '<input class="money-in" inputmode="decimal" data-ch="tier-dues" value="' + dollars(rt.duesCents) + '" placeholder="0.00"></label></div>';
     }
 
     // Add-tier mini-form.
@@ -6785,22 +6904,36 @@
       '<button class="btn primary small" type="submit" style="align-self:flex-end">Add tier</button>' +
       '</form>';
 
-    // Live coverage summary.
-    if (sum.tiers.length) {
+    // Live coverage summary — who the pack is actually picking up, and for how much.
+    if (sum.tiers.length && configured) {
+      var bud = computeBudget();
+      var lines = [];
+      coverable.forEach(function (c) {
+        var n = Object.keys(coverage[c.key] || {}).length;
+        if (n) lines.push({ name: c.item.name || ('Untitled ' + c.kind), n: n, cents: n * (c.item.estCents || 0) });
+      });
+      h += '<hr class="divider"><p class="eyebrow">What the pack is covering</p>';
+      if (lines.length) {
+        lines.forEach(function (l) {
+          h += '<div class="assign-row"><span class="assign-name">' + esc(l.name) +
+            ' <span class="small muted">' + l.n + ' scout' + (l.n === 1 ? '' : 's') + '</span></span>' +
+            '<span class="money">' + fmt(l.cents) + '</span></div>';
+        });
+        h += '<p class="small muted" style="margin:8px 0 0">Those scouts no longer show as owing, and the pack absorbs the cost — ' +
+          'it stops being income the budget expects from families.</p>' +
+          handoffCard('Popcorn', 'Money', 'budget', fmt(bud.feesAbsorbed),
+            'of family fees is absorbed by the pack instead of being collected.');
+      } else {
+        h += '<p class="small muted" style="margin:0">Nobody has reached a tier that covers a charge yet.</p>';
+      }
+    } else if (sum.tiers.length && sum.duesCents > 0) {
       var haveWord = sum.coveredCount === 1 ? 'has' : 'have';
       var scoutWord = sum.activeCount === 1 ? 'scout' : 'scouts';
-      if (sum.duesCents > 0) {
-        h += '<p class="small" style="margin:10px 0 0"><strong>' + sum.coveredCount + '</strong> of <strong>' + sum.activeCount +
-          '</strong> active ' + scoutWord + ' ' + haveWord + ' earned dues coverage — the pack covers <strong class="money">' + fmt(sum.rewardDues) +
-          '</strong> (' + sum.coveredCount + ' × ' + fmt(sum.duesCents) + ').</p>' +
-          // Seam: reward tiers are configured here but book straight into the budget's
-          // ACTUAL SPENT, which was previously only a sentence at the end of a card.
-          handoffCard('Popcorn', 'Money', 'budget', fmt(sum.rewardDues),
-            'of covered dues is booked as actual spending on the budget.');
-      } else {
-        h += '<p class="small muted" style="margin:10px 0 0"><strong>' + sum.coveredCount + '</strong> of ' + sum.activeCount +
-          ' active ' + scoutWord + ' ' + haveWord + ' reached the dues tier. Set a dues amount above to record the pack’s cost on the Budget.</p>';
-      }
+      h += '<p class="small" style="margin:10px 0 0"><strong>' + sum.coveredCount + '</strong> of <strong>' + sum.activeCount +
+        '</strong> active ' + scoutWord + ' ' + haveWord + ' earned dues coverage — the pack covers <strong class="money">' + fmt(sum.rewardDues) +
+        '</strong> (' + sum.coveredCount + ' × ' + fmt(sum.duesCents) + ').</p>' +
+        handoffCard('Popcorn', 'Money', 'budget', fmt(sum.rewardDues),
+          'of covered dues is booked as actual spending on the budget.');
     }
     return h + '</div>';
   }
@@ -10241,6 +10374,18 @@
       else tier.thresholdCents = toCents(el.value);
       commit(); return;
     }
+    // Wave 21 — tick a per-scout charge this tier covers. data-name carries the collect key
+    // ('act:'+id for an activity, the bare id for an expense).
+    if (ch === 'tier-cover') {
+      var covTier = state.rewardTiers.tiers.find(function (t) { return t.id === el.dataset.id; });
+      if (!covTier) return;
+      var covKey = el.dataset.name;
+      var covList = arrOf(covTier.covers);
+      covTier.covers = el.checked
+        ? (covList.indexOf(covKey) === -1 ? covList.concat([covKey]) : covList)
+        : covList.filter(function (k) { return k !== covKey; });
+      commit(); return;
+    }
     if (ch === 'rsvp-adults') {
       var rEv = state.rsvps[el.dataset.key];
       var rRec = rEv && rEv[el.dataset.scout];
@@ -10531,7 +10676,9 @@
       var tThresh = toCents(fd.get('threshold'));
       var tReward = String(fd.get('reward') || '').trim();
       if (!tName && !tThresh && !tReward) return;
-      state.rewardTiers.tiers.push({ id: uid(), name: tName, thresholdCents: tThresh, reward: tReward });
+      // Wave 21 — covers nothing until someone ticks a charge for it, which is also the
+      // right default for a prize/shirt tier.
+      state.rewardTiers.tiers.push({ id: uid(), name: tName, thresholdCents: tThresh, reward: tReward, covers: [] });
       commit(); return;
     }
     if (kind === 'add-fundraiser-sale') {

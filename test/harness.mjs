@@ -617,6 +617,78 @@ test('deleting a leader no longer cascades into storefronts', () => {
   ok(!/storefronts/.test(fn[0]), 'deleting a leader still walks the storefronts');
 });
 
+/* ================================================================
+   Wave 21 — per-tier reward coverage
+   ================================================================ */
+test('coverage stacks up the tiers a scout has reached', () => {
+  // A top seller must never end up with less than a lower seller, so a scout at tier 3
+  // gets everything tiers 1-3 cover — not just tier 3's own list.
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `${slice('packCoverage')}
+     var TIERS = [
+       { id:'t1', thresholdCents: 30000, covers:['x1'] },
+       { id:'t2', thresholdCents: 45000, covers:['act:a3'] },
+       { id:'t3', thresholdCents: 90000, covers:[] }
+     ];
+     var SALES = { top: 50000, mid: 35000, low: 1000 };
+     function sortedTiers() { return TIERS; }
+     function arrOf(v) { return Array.isArray(v) ? v : []; }
+     function computeScoutTotals() { return SALES; }
+     function goalBaseOf(r) { return r.t; }
+     function activeScouts() { return [{id:'top'},{id:'mid'},{id:'low'}]; }
+     var RESULT = packCoverage();`, ctx);
+  const r = ctx.RESULT;
+  eq(Object.keys(r.x1).sort(), ['mid', 'top'], 'tier-1 charge covers everyone past tier 1');
+  eq(Object.keys(r['act:a3']), ['top'], 'tier-2 charge covers only the scout past tier 2');
+  ok(r.x1.top, 'the tier-2 scout must ALSO get what tier 1 covers');
+  ok(!r.x1.low, 'a scout below every tier is covered for nothing');
+});
+
+test('a tier covering nothing is valid', () => {
+  // Prizes, a pack shirt, a patch: a reward description with no budget line behind it.
+  ok(/if \(!Array\.isArray\(tier\.covers\)\) tier\.covers = \[\]/.test(SCRIPT),
+    'tier.covers is not defaulted in the normalizer');
+  const add = /state\.rewardTiers\.tiers\.push\(\{[^}]*\}\)/.exec(SCRIPT);
+  ok(add && add[0].includes('covers: []'), 'a new tier is not seeded with an empty covers list');
+});
+
+test('the pack covering a fee is lost income, not a new cost', () => {
+  // The charge's own value is already in planned/actual (est x roster), so adding a lump
+  // on top would double-count it. What changes is that the family no longer reimburses.
+  const fn = /function addFeeItem\(item, colKey\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(fn, 'addFeeItem() not found');
+  ok(/if \(cov\[s\.id\]\) \{ feesAbsorbed \+= each; return; \}/.test(fn[0]),
+    'a covered scout is not excluded from expected fee income');
+  ok(!/actual \+= feesAbsorbed/.test(SCRIPT), 'absorbed fees are being double-counted into actual spent');
+});
+
+test('the legacy dues lump switches off once coverage is configured', () => {
+  // Both applying at once would count the same dues twice.
+  ok(/var rewardDues = tierCoverageConfigured\(\) \? 0 : reward\.rewardDues/.test(SCRIPT),
+    'the old lump is still added after per-tier coverage is set up');
+  const fn = /function tierCoverageConfigured\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn && /arrOf\(t\.covers\)\.length > 0/.test(fn[0]), 'tierCoverageConfigured() does not test for covers');
+});
+
+test('a covered scout neither owes nor is collectable', () => {
+  const owes = /function scoutOwesCents\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/coverage\[c\.key\] \|\| \{\}\)\[scoutId\]\) return;/.test(owes[0]),
+    'scoutOwesCents still charges a scout the pack is covering');
+  const grid = /function renderCollectBlock\(e, colKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/paid by the pack/.test(grid[0]), 'the collect grid does not mark pack-covered scouts');
+  ok(/if \(covered\[s\.id\]\) \{/.test(grid[0]),
+    'the collect grid still renders a checkbox for a covered scout — ticking one would book pack money as family income');
+});
+
+test('coverage is derived, never written into state.collected', () => {
+  // The collect grids stay a record of what FAMILIES paid. Mixing the two is what would
+  // let the same dues be counted as both a pack cost and family income.
+  const fn = /function packCoverage\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'packCoverage() not found');
+  ok(!/state\.collected/.test(fn[0]), 'packCoverage writes or reads state.collected');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
