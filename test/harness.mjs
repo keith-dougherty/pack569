@@ -802,6 +802,7 @@ test('reconciling compares the TICKED entries to the statement', () => {
 // rather than through a reimplementation of it.
 const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
+  'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
@@ -1039,7 +1040,11 @@ test('Phase 2: attendance is repointed onto the event, not lost', () => {
   const ctx = sandbox(NORMALIZE_FNS);
   const after = ctx.normalizeState(preSplitState());
   const den = after.events.find(e => e.kind === 'den');
-  eq(after.attendance[den.id], { s1: true, s2: true }, 'attendance followed the meeting');
+  // Phase 2b turned each tick into a head count of one; the point here is that the marks
+  // followed the meeting onto its new event id at all.
+  eq(after.attendance[den.id],
+    { s1: { scout: 1, adults: 0, siblings: 0 }, s2: { scout: 1, adults: 0, siblings: 0 } },
+    'attendance followed the meeting');
   eq(Object.keys(after.attendance).length, 1, 'a stale meeting-keyed entry was left behind');
 });
 
@@ -1120,6 +1125,97 @@ test('the parent view publishes the calendar and no money', () => {
   ok(/state\.events\.forEach/.test(fn[0]), 'the parent view does not read events[]');
   ok(!/estCents|lineForEvent|budget\.activities/.test(fn[0]),
     'the parent view reads budget data — cost could leak into the published copy');
+});
+
+/* ================================================================
+   Money redesign — Phase 2b: attendance is a head count (DESIGN-money.md 3.1).
+   ================================================================ */
+
+const ATT_FNS = ['ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals'];
+
+test('Phase 2b: the old boolean tick becomes a head count of one', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = preSplitState();
+  const after = ctx.normalizeState(d);
+  const den = after.events.find(e => e.kind === 'den');
+  eq(after.attendance[den.id].s1, { scout: 1, adults: 0, siblings: 0 }, 'migrated mark');
+});
+
+test('Phase 2b: head counts are clamped to sane whole numbers', () => {
+  const { attHeads } = sandbox(ATT_FNS);
+  eq(attHeads(2), 2, 'plain number');
+  eq(attHeads('3'), 3, 'string from a number input');
+  eq(attHeads(-4), 0, 'negative heads are nonsense');
+  eq(attHeads(2.7), 2, 'fractional people are nonsense');
+  eq(attHeads('abc'), 0, 'garbage');
+  eq(attHeads(1e9), 99, 'clamped to ATT_MAX_HEADS');
+});
+
+test('Phase 2b: a family of zeros is pruned, not stored', () => {
+  // "Absent from the map" has to keep meaning "did not come", exactly as the boolean did —
+  // otherwise every scout who was ever unticked would read as a family that turned up with
+  // nobody in it.
+  const { attEmpty, attTotals } = sandbox(ATT_FNS);
+  ok(attEmpty({ scout: 0, adults: 0, siblings: 0 }), 'all-zero is empty');
+  ok(attEmpty(null), 'missing is empty');
+  ok(!attEmpty({ scout: 0, adults: 2, siblings: 0 }), 'adults alone still counts as attendance');
+  eq(attTotals({ s1: { scout: 0, adults: 0, siblings: 0 } }).heads, 0, 'a zero row contributes nothing');
+});
+
+test('Phase 2b: totals count families, scouts and heads separately', () => {
+  // The worked example in DESIGN-money.md 3.4: 8 scouts, 13 adults, 5 siblings = 26 heads.
+  const { attTotals } = sandbox(ATT_FNS);
+  const marked = {};
+  for (let i = 0; i < 8; i++) marked['s' + i] = { scout: 1, adults: 0, siblings: 0 };
+  marked.s0.adults = 2; marked.s0.siblings = 1;
+  marked.s1.adults = 2; marked.s1.siblings = 1;
+  marked.s2.adults = 2; marked.s2.siblings = 1;
+  marked.s3.adults = 2; marked.s3.siblings = 1;
+  marked.s4.adults = 2; marked.s4.siblings = 1;
+  marked.s5.adults = 1;
+  marked.s6.adults = 1;
+  marked.s7.adults = 1;
+  const t = attTotals(marked);
+  eq(t.scouts, 8, 'scouts');
+  eq(t.adults, 13, 'adults');
+  eq(t.siblings, 5, 'siblings');
+  eq(t.heads, 26, 'heads');
+  eq(t.families, 8, 'families');
+});
+
+test('Phase 2b: an unreadable attendance value is dropped, not coerced to a phantom head', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = preSplitState();
+  d.attendance.m1.s2 = 'yes';       // garbage
+  d.attendance.m1.s1 = { scout: 1, adults: '2', siblings: -3 };
+  const after = ctx.normalizeState(d);
+  const den = after.events.find(e => e.kind === 'den');
+  ok(!after.attendance[den.id].s2, 'a garbage value became a head count');
+  eq(after.attendance[den.id].s1, { scout: 1, adults: 2, siblings: 0 }, 'coerced in place');
+});
+
+test('Phase 2b: attendance migration runs once', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const once = ctx.normalizeState(preSplitState());
+  const twice = ctx.normalizeState(JSON.parse(JSON.stringify(once)));
+  const den = twice.events.find(e => e.kind === 'den');
+  eq(twice.attendance[den.id].s1, { scout: 1, adults: 0, siblings: 0 }, 'stable across re-normalize');
+});
+
+test('a roster attendance percentage counts scouts, never total heads', () => {
+  // Counting the parents who came would push the close-out average past 100%.
+  const fn = /\/\/ Average attendance across[\s\S]*?\n    \}\);/.exec(SCRIPT);
+  ok(fn, 'the close-out attendance average not found');
+  ok(/attTotals\(state\.attendance\[m\.id\]\)\.scouts/.test(fn[0]),
+    'the close-out average is not counting scouts');
+});
+
+test('the head-count grid is only asked for where heads cost something', () => {
+  // A weekly den meeting keeps its plain roll-call; an activity is where the money is.
+  const fn = /function renderAttendanceBlock\(m\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderAttendanceBlock() not found');
+  ok(/var heads = m\.kind === 'activity'/.test(fn[0]), 'the grid does not distinguish activities from meetings');
+  ok(/data-ch="att-adults"/.test(fn[0]) && /data-ch="att-siblings"/.test(fn[0]), 'head-count inputs missing');
 });
 
 /* ---------------- report ---------------- */

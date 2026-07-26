@@ -1,8 +1,8 @@
 # Design — separating the plan, the money, and the calendar
 
-**Status:** Written 2026-07-26. **Phases 0, 1 and 2 are built** (2026-07-26) — the ledger,
-bank reconciliation, `actual = Σ ledger`, and the calendar split out into `state.events[]`.
-Phase 2b (attendance head counts) and Phases 3–4 remain proposal.
+**Status:** Written 2026-07-26. **Phases 0, 1, 2 and 2b are built** (2026-07-26) — the ledger,
+bank reconciliation, `actual = Σ ledger`, the calendar split out into `state.events[]`, and
+attendance as a head count. Phases 3–4 remain proposal.
 **Problem:** budgeting and spending are the same record, so neither can be done properly.
 
 > **Naming note.** `state.ledger` is the transaction register described in §3.3. The word
@@ -722,11 +722,25 @@ Decisions made while building it:
 - **`meetings[]` is emptied rather than deleted**, and a budget line pointing at a vanished event is
   unlinked rather than left dangling.
 
-**Phase 2b — attendance head counts.** *(Next.)* Widen `attendance[eventId][scoutId]` from `true`
-to `{ scout, adults, siblings }`, migrating existing marks to `{ scout: 1, adults: 0, siblings: 0 }`.
-Add the post-event entry grid. Useful on its own even before charges exist — the pack finally
-knows how many people actually came to Blue & Gold. Phase 2 already did the hard half: attendance
-is keyed on `event.id`, so this is a value-shape change on a key that no longer has to move.
+**Phase 2b — attendance head counts. ✅ BUILT.** `attendance[eventId][scoutId]` is now
+`{ scout, adults, siblings }`; every existing tick migrated to `{ scout: 1, adults: 0, siblings: 0 }`
+and keeps working unchanged. Phase 2 had already done the hard half — attendance was keyed on
+`event.id` — so this was a value-shape change on a key that no longer had to move.
+
+- **The grid is only asked for where heads cost something.** An activity gets the full
+  scout/adults/siblings entry; a den meeting keeps the plain roll-call it has always had, because
+  heads other than the scout cost nothing there and a weekly register should stay one tap per scout.
+- **A family of zeros is pruned, not stored.** "Absent from the map" has to keep meaning "did not
+  come", exactly as the boolean did — otherwise every scout ever unticked would read as a family
+  that turned up with nobody in it.
+- **A parent who came without their scout is recordable** (`scout: 0, adults: 2`). It happens, and
+  from Phase 3 it is chargeable.
+- **Roster percentages count scouts, never heads.** The close-out average would otherwise sail past
+  100% as soon as the parents were counted.
+
+Still deferred to Phase 3, because it needs `fundedBy` to know which lines care: the Home nag for
+*"a past event with attendance but no spend, or spend but no attendance"* (§3.5). Firing it on
+every pack-funded line would be noise.
 
 **Phase 3 — fundedBy, charges and family accounts.** Introduce `fundedBy`, migrating
 `familyPays: true` → `'families'` and `false` → `'pack'` (no line gets a `paidDirectTo`

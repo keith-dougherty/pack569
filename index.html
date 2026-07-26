@@ -585,6 +585,20 @@
   }
   .att-row:last-child { border-bottom: none; }
   .att-row input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
+  /* Phase 2b — head counts. The row wraps on a phone so the two number fields drop under
+     the name rather than squeezing it to nothing. */
+  .att-row .att-name { flex: 1 1 auto; min-width: 0; }
+  .att-row.att-heads { flex-wrap: wrap; cursor: default; }
+  .att-heads-in { display: flex; gap: 8px; flex: 0 0 auto; margin-left: auto; }
+  .att-mini {
+    display: inline-flex; flex-direction: column; gap: 2px; cursor: text;
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--ink-soft);
+  }
+  .att-mini input {
+    width: 58px; min-height: 36px; padding: 4px 6px;
+    text-align: center; font-variant-numeric: tabular-nums;
+  }
 
   /* ---------- Wave 3: dues collection, advancement, Scout Shop list ---------- */
   /* No new tokens — done/awarded fills reuse --accent/--good with the same dark-ink
@@ -1222,6 +1236,50 @@
   // today's split between attendance[meetingId] and rsvps['act:'+id].
   // ---------------------------------------------------------------------------
   var EVENT_KINDS = ['pack', 'den', 'activity'];
+  // ---------------------------------------------------------------------------
+  // Phase 2b — attendance is a HEAD COUNT, not a tick (DESIGN-money.md §3.1).
+  //
+  // A scout does not arrive alone, and does not arrive with a predictable number of people.
+  // Both parents often come; siblings usually do. So attendance per family is
+  //     state.attendance[eventId][scoutId] = { scout: 0|1, adults: 0..n, siblings: 0..n }
+  //
+  // One record doing three jobs: who was there (program), how many heads to cost (budget),
+  // and — from Phase 3 — what to charge which family.
+  //
+  // A den meeting simply leaves adults/siblings at zero: heads other than the scout cost
+  // nothing there, so its screen keeps the plain tick it has always had.
+  // ---------------------------------------------------------------------------
+  var ATT_MAX_HEADS = 99;
+  function attHeads(v) {
+    var n = (typeof v === 'number' && isFinite(v)) ? Math.floor(v) : parseInt(v, 10);
+    if (!isFinite(n) || n <= 0) return 0;
+    return Math.min(ATT_MAX_HEADS, n);
+  }
+  function freshAttendance() { return { scout: 0, adults: 0, siblings: 0 }; }
+  // Nobody at all — the record is pruned rather than stored as a row of zeros, so "absent
+  // from the map" keeps meaning "did not come", exactly as the boolean did.
+  function attEmpty(r) { return !r || (!r.scout && !r.adults && !r.siblings); }
+  // Pure (takes the map) so the Node harness can exercise it.
+  function attTotals(marked) {
+    var t = { families: 0, scouts: 0, adults: 0, siblings: 0, heads: 0 };
+    Object.keys(marked || {}).forEach(function (sid) {
+      var r = marked[sid];
+      if (attEmpty(r)) return;
+      t.families += 1;
+      t.scouts += r.scout ? 1 : 0;
+      t.adults += r.adults || 0;
+      t.siblings += r.siblings || 0;
+    });
+    t.heads = t.scouts + t.adults + t.siblings;
+    return t;
+  }
+  function attSummaryLine(t) {
+    if (!t.heads) return 'nobody recorded yet';
+    var bits = [t.scouts + ' scout' + (t.scouts === 1 ? '' : 's')];
+    if (t.adults) bits.push(t.adults + ' adult' + (t.adults === 1 ? '' : 's'));
+    if (t.siblings) bits.push(t.siblings + ' sibling' + (t.siblings === 1 ? '' : 's'));
+    return bits.join(' · ') + ' — ' + t.heads + ' head' + (t.heads === 1 ? '' : 's');
+  }
   function freshEvent(patch) {
     var e = {
       id: uid(), kind: 'activity',
@@ -1659,12 +1717,22 @@
       });
       if (!Object.keys(ev).length) delete d.rsvps[k];
     });
-    // Wave 2: attendance — { meetingId: { scoutId: true } }
+    // Wave 2 / Phase 2b: attendance — { eventId: { scoutId: { scout, adults, siblings } } }.
+    // The old boolean tick migrates to a head count of one and keeps working unchanged: for
+    // a den meeting the extra fields simply stay zero.
     if (!d.attendance || typeof d.attendance !== 'object' || Array.isArray(d.attendance)) d.attendance = {};
     Object.keys(d.attendance).forEach(function (k) {
       var mv = d.attendance[k];
       if (!mv || typeof mv !== 'object' || Array.isArray(mv)) { delete d.attendance[k]; return; }
-      Object.keys(mv).forEach(function (sid) { if (mv[sid] !== true) delete mv[sid]; });
+      Object.keys(mv).forEach(function (sid) {
+        var r = mv[sid];
+        if (r === true) { mv[sid] = { scout: 1, adults: 0, siblings: 0 }; return; }
+        if (!r || typeof r !== 'object' || Array.isArray(r)) { delete mv[sid]; return; }
+        r.scout = r.scout ? 1 : 0;
+        r.adults = attHeads(r.adults);
+        r.siblings = attHeads(r.siblings);
+        if (attEmpty(r)) delete mv[sid];
+      });
       if (!Object.keys(mv).length) delete d.attendance[k];
     });
     // Wave 3: collected — { expenseId: { scoutId: true } } for per-scout expenses
@@ -2530,32 +2598,59 @@
     var open = !!ui.attOpen[m.id];
     var marked = state.attendance[m.id] || {};   // Phase 2 — keyed by event id
     var denFiltered = m.kind === 'den' && !!m.den;
+    // Phase 2b — heads beyond the scout only cost something at an activity, so that is the
+    // only place the extra fields are asked for. A den meeting keeps its plain roll-call.
+    var heads = m.kind === 'activity';
     // Den meetings show that den's active scouts; anyone already marked stays visible.
     var roster = state.scouts.filter(function (s) {
       if (marked[s.id]) return true;
       if (s.archived) return false;
       return !denFiltered || s.den === m.den;
     });
-    var count = roster.filter(function (s) { return marked[s.id]; }).length;
+    var tot = attTotals(marked);
+    var label = heads
+      ? 'Who came: ' + (tot.heads ? attSummaryLine(tot) : 'nobody recorded yet')
+      : 'Attendance: ' + tot.scouts + ' of ' + roster.length;
     var h = '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
       '<button type="button" class="exp-toggle" data-act="toggle-att" data-id="' + m.id + '" aria-expanded="' + open + '">' +
-      '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>Attendance: ' + count + ' of ' + roster.length + '</button>';
+      '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' + esc(label) + '</button>';
     if (open) {
+      if (heads) {
+        h += '<p class="small muted" style="margin:6px 0 4px">After the event, record who actually came. ' +
+          'A scout rarely arrives alone — count the adults and younger brothers and sisters too, ' +
+          'because that is what the day really cost.</p>';
+      }
       h += '<div class="rsvp-list">';
       if (!roster.length) {
         h += '<p class="small muted" style="margin:6px 0 0">' +
           (denFiltered ? 'No active scouts in the ' + esc(m.den) + ' den.' : 'Add scouts on Scouts · Roster first.') + '</p>';
       }
       roster.forEach(function (s) {
-        h += '<label class="att-row"><input type="checkbox" data-ch="att-mark" data-id="' + m.id + '" data-scout="' + s.id + '"' +
-          (marked[s.id] ? ' checked' : '') + '><span>' + esc(s.name) +
-          (s.den && !denFiltered ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') + '</span></label>';
+        var r = marked[s.id] || freshAttendance();
+        h += '<label class="att-row' + (heads ? ' att-heads' : '') + '">' +
+          '<input type="checkbox" data-ch="att-mark" data-id="' + m.id + '" data-scout="' + s.id + '"' +
+          (r.scout ? ' checked' : '') + '><span class="att-name">' + esc(s.name) +
+          (s.den && !denFiltered ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') + '</span>' +
+          (heads
+            ? '<span class="att-heads-in">' +
+              '<label class="att-mini">adults<input type="number" min="0" max="' + ATT_MAX_HEADS + '" step="1" inputmode="numeric"' +
+                ' data-ch="att-adults" data-id="' + m.id + '" data-scout="' + s.id + '" value="' + (r.adults || '') + '" placeholder="0"></label>' +
+              '<label class="att-mini">siblings<input type="number" min="0" max="' + ATT_MAX_HEADS + '" step="1" inputmode="numeric"' +
+                ' data-ch="att-siblings" data-id="' + m.id + '" data-scout="' + s.id + '" value="' + (r.siblings || '') + '" placeholder="0"></label>' +
+              '</span>'
+            : '') +
+          '</label>';
       });
       h += '</div>';
+      if (heads && tot.heads) {
+        h += '<p class="small" style="margin:8px 0 0"><strong>' + esc(attSummaryLine(tot)) + '</strong>' +
+          ' <span class="muted">across ' + tot.families + ' famil' + (tot.families === 1 ? 'y' : 'ies') + '</span></p>';
+      }
     }
     h += '</div>';
     return h;
   }
+
 
   /* ---------------- Wave 3: dues / fee collection ---------------- */
   // state.collected = { expenseId: { scoutId: true } } — only meaningful for perScout expenses.
@@ -5163,9 +5258,8 @@
       if (m.adventure) h += line('Adventure', esc(m.adventure));
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(m.id))));
-      var marked = state.attendance[m.id] || {};
-      var attN = Object.keys(marked).filter(function (k) { return marked[k]; }).length;
-      if (attN) h += line('Attendance', attN + ' checked in');
+      var attT = attTotals(state.attendance[m.id]);
+      if (attT.scouts) h += line('Attendance', attT.scouts + ' checked in');
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this meeting</button></div>';
     } else {
@@ -5193,6 +5287,9 @@
       var aActual = aLine ? lineActual(aLine.id) : 0;
       if (aActual) h += line('Actual', '<span class="money">' + fmt(aActual) + '</span> <span class="muted">recorded in the ledger</span>');
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(ev.id))));
+      // Phase 2b — what actually turned up, which is a different question from who replied.
+      var evAtt = attTotals(state.attendance[ev.id]);
+      h += line('Who came', evAtt.heads ? esc(attSummaryLine(evAtt)) : '<span class="muted">not recorded yet</span>');
       h += '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this activity</button>' +
         (aLine ? '<button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button>' : '') + '</div>';
@@ -5404,7 +5501,8 @@
             '</div>' +
             '<input data-ch="ev-location" data-id="' + ev.id + '" value="' + esc(ev.location || '') + '" placeholder="Location (optional)" aria-label="Location" style="width:100%;margin-top:6px">' +
             '<textarea class="notes-in" data-ch="ev-note" data-id="' + ev.id + '" rows="3" placeholder="Details / notes (optional)" aria-label="Details or notes" style="margin-top:6px">' + esc(ev.note || '') + '</textarea>' +
-            '<div style="margin-top:8px">' + renderRsvpBlock(ev.id) + '</div></div>';
+            '<div class="row" style="margin-top:8px;align-items:flex-start">' +
+            renderRsvpBlock(ev.id) + renderAttendanceBlock(ev) + '</div></div>';
         });
       } else {
         h += '<p class="small muted">Nothing scheduled yet.</p>';
@@ -5507,7 +5605,7 @@
     if (!advName) return '';
     advName = ADV_RENAMES[advName] || advName;
     var marked = state.attendance[m.id] || {};
-    var checked = Object.keys(marked).filter(function (sid) { return marked[sid] === true && getScout(sid); });
+    var checked = Object.keys(marked).filter(function (sid) { return marked[sid] && marked[sid].scout && getScout(sid); });
     if (!checked.length) return '';
     var pending = checked.filter(function (sid) {
       return !advStatus(sid, advKindFor(getScout(sid), advName), advName);
@@ -10008,8 +10106,9 @@
     var attSum = 0, attN = 0;
     state.events.forEach(function (m) {
       if (!eventIsMeeting(m)) return;
-      var marked = state.attendance[m.id];
-      var n = marked ? Object.keys(marked).length : 0;
+      // Phase 2b — scouts present, not total heads: this is a roster percentage, and
+      // counting the parents who came would push it past 100%.
+      var n = attTotals(state.attendance[m.id]).scouts;
       if (n > 0 && rosterN > 0) { attSum += Math.min(100, Math.round(n / rosterN * 100)); attN += 1; }
     });
     var fees = feesTotals();
@@ -11162,7 +11261,7 @@
       var mamMarked = state.attendance[mam.id] || {};
       var mamDid = 0, mamHad = 0;
       Object.keys(mamMarked).forEach(function (sid) {
-        if (mamMarked[sid] !== true) return;
+        if (!mamMarked[sid] || !mamMarked[sid].scout) return;
         var mamScout = getScout(sid);
         if (!mamScout) return;
         if (advMarkDone(sid, advKindFor(mamScout, mamAdv), mamAdv)) mamDid += 1;
@@ -11446,15 +11545,20 @@
       }
       return;
     }
-    if (ch === 'att-mark') {
-      var aMap = state.attendance[el.dataset.id];
-      if (el.checked) {
-        if (!aMap) aMap = state.attendance[el.dataset.id] = {};
-        aMap[el.dataset.scout] = true;
-      } else if (aMap) {
-        delete aMap[el.dataset.scout];
-        if (!Object.keys(aMap).length) delete state.attendance[el.dataset.id];
-      }
+    // Phase 2b — one handler for the tick and both head counts. A family whose every field
+    // is back to zero is REMOVED rather than stored as a row of zeros, so "absent from the
+    // map" keeps meaning "did not come" exactly as the old boolean did.
+    if (ch === 'att-mark' || ch === 'att-adults' || ch === 'att-siblings') {
+      var aEvId = el.dataset.id, aSid = el.dataset.scout;
+      var aMap = state.attendance[aEvId] || (state.attendance[aEvId] = {});
+      var aRec = aMap[aSid] || freshAttendance();
+      if (ch === 'att-mark') aRec.scout = el.checked ? 1 : 0;
+      else if (ch === 'att-adults') aRec.adults = attHeads(el.value);
+      else aRec.siblings = attHeads(el.value);
+      if (attEmpty(aRec)) {
+        delete aMap[aSid];
+        if (!Object.keys(aMap).length) delete state.attendance[aEvId];
+      } else aMap[aSid] = aRec;
       commit(); return;
     }
     if (ch === 'collect-mark') {
