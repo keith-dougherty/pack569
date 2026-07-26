@@ -385,7 +385,7 @@ test('the printable money map lists the same seams the UI does', () => {
   // is all a new treasurer gets. If they drift, the handoff document lies.
   const fn = /function renderPackSeason\(\) \{[\s\S]*?<\/ul><\/div>'/.exec(SCRIPT);
   ok(fn, 'the "Where the money lives" list was not found in renderPackSeason');
-  for (const seam of ['Dues &amp; fees', 'Other fundraisers', 'Past seasons']) {
+  for (const seam of ['Dues &amp; fees', 'Fundraisers', 'Past seasons']) {
     ok(fn[0].includes(seam), `the printable money map no longer mentions ${seam}`);
   }
 });

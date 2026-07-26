@@ -4064,9 +4064,12 @@
       { id: 'rewards', label: 'Rewards' },
       { id: 'inventory', label: 'Inventory' }
     ] },
+    // Wave 21 — "Other fundraisers" lives here, not under Popcorn: it is defined as the
+    // money that ISN'T popcorn, and its only systemic effect is on the budget's funds-in.
     { id: 'money', label: 'Money', sections: [
       { id: 'budget', label: 'Budget' },
-      { id: 'dues', label: 'Dues & fees' }
+      { id: 'dues', label: 'Dues & fees' },
+      { id: 'fundraisers', label: 'Fundraisers' }
     ] },
     // Wave 21 — the old Pack tab was a twelve-card junk drawer covering three unrelated
     // jobs. Split by the Committee Chair moment each one belongs to: let someone in /
@@ -4274,6 +4277,7 @@
     else if (sec === 'advancement') v.innerHTML = renderAdvancement();
     else if (sec === 'budget') v.innerHTML = renderBudget();
     else if (sec === 'dues') v.innerHTML = renderDues();
+    else if (sec === 'fundraisers') v.innerHTML = renderFundraisers();
     else if (sec === 'rewards') v.innerHTML = renderRewardTiers();
     else if (sec === 'inventory') v.innerHTML = renderInventory();
     else if (sec === 'sharing') v.innerHTML = renderPackSharing();
@@ -5541,12 +5545,12 @@
       // planned/actual above. The legacy lump is the second branch.
       (bud.coverageOn && bud.feesAbsorbed > 0
         ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Rewards</span> Family fees the pack is covering: <strong class="money">' +
-          fmt(bud.feesAbsorbed) + '</strong> <span class="muted">(those scouts don’t owe it, so it isn’t collected — set tiers on Popcorn · Standings)</span></p>'
+          fmt(bud.feesAbsorbed) + '</strong> <span class="muted">(those scouts don’t owe it, so it isn’t collected — set tiers on Popcorn · Rewards)</span></p>'
         : '') +
       (!bud.coverageOn && bud.rewardDues > 0
         ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Rewards</span> Dues covered by pack: <strong>' + bud.rewardCovered +
           '</strong> × <span class="money">' + fmt(bud.rewardDuesEach) + '</span> = <strong class="money">' + fmt(bud.rewardDues) +
-          '</strong> <span class="muted">(included in actual spent; set tiers on Popcorn · Standings)</span></p>'
+          '</strong> <span class="muted">(included in actual spent; set tiers on Popcorn · Rewards)</span></p>'
         : '') +
       '<hr class="divider">' +
       '<div class="row">' +
@@ -6549,7 +6553,7 @@
       '<li><strong>Money · Budget</strong> — the year plan, plus Season setup (commission rate, goals, cash routing) and the funds-in math.</li>' +
       '<li><strong>Popcorn · Inventory</strong> — the popcorn <em>order</em> and its projected earnings; never added to funds-in.</li>' +
       '<li><strong>Dues &amp; fees</strong> — collect grids on Money · Budget; fees marked “families pay” join funds-in as they’re collected.</li>' +
-      '<li><strong>Other fundraisers</strong> — a side-ledger on Popcorn · Standings; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
+      '<li><strong>Money · Fundraisers</strong> — the non-popcorn side-ledger; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
       '<li><strong>Past seasons</strong> — read-only archives; never counted.</li>' +
       '</ul></div>';
 
@@ -6790,9 +6794,9 @@
         '<p class="small muted" style="margin:8px 0 0">Everything a scout brought in, however it was paid. Reward tiers are earned on the Trail’s End figure, not this one.</p></div>';
     }
 
-    // Wave 4: other fundraisers — a standalone side-ledger below the popcorn content.
-    // (Wave 17 — the Share & backup card moved to the Pack tab, next to the sync card.)
-    h += renderFundraisers();
+    // Wave 21 — "Other fundraisers" moved to Money · Fundraisers. It sat at the bottom of
+    // this page from Wave 4, but it is by definition the money that ISN'T popcorn, so a
+    // Popcorn workspace was the one place it couldn't belong.
     return h;
   }
 
@@ -6901,8 +6905,10 @@
       '</p>';
     // Seam: this checkbox silently moves the budget's funds-in. Say so, but only while
     // it's actually ticked AND there's money behind it.
+    // Wave 21 — both ends now sit inside Money, so the card names the two SECTIONS rather
+    // than claiming a hop between workspaces it no longer makes.
     if (fr.countInFunds && ft.total) {
-      h += handoffCard('Popcorn', 'Money', 'budget', fmt(ft.total),
+      h += handoffCard('Fundraisers', 'Budget', 'budget', fmt(ft.total),
         'from ' + (fr.name || 'this fundraiser') + ' counts as funds in on the budget.');
     }
     return h + '</div>';
