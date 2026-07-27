@@ -2497,16 +2497,96 @@
       cashGoal: state.cashGoalCents, activeCount: activeCount
     };
   }
+  // Normalized match key for a location. Case, punctuation and spacing drift between a
+  // leader typing "Kroger — Main St" one year and "Kroger Main St." the next, and Trail's
+  // End spells its own sites differently again. Grouping on this while DISPLAYING the name
+  // as typed is what makes a year-over-year comparison possible at all.
+  function locationKey(name) {
+    return String(name == null ? '' : name).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  // Every location the pack has ever recorded, current spellings first. Feeds the
+  // new-storefront datalist, so a leader PICKS last year's name instead of retyping it —
+  // which is the difference between a comparison that lines up and one full of near
+  // duplicates. It used to offer only the current season's storefronts, and rollover clears
+  // those, so in September (when it matters most) the list was empty.
+  function knownLocationNames() {
+    var seen = {}, out = [];
+    function add(name) {
+      var k = locationKey(name);
+      if (!k || seen[k]) return;
+      seen[k] = 1; out.push(String(name).trim());
+    }
+    state.storefronts.forEach(function (sf) { add(sf.name); });
+    // Newest archives first, so the most recent spelling of a place wins the display.
+    state.archives.slice().sort(function (a, b) { return (b.year || 0) - (a.year || 0); })
+      .forEach(function (a) {
+        if (a.kind === 'trails-end') arrOf(a.locations).forEach(function (l) { add(l.name); });
+        else if (a.kind === 'season' && a.fundraising) arrOf(a.fundraising.locations).forEach(function (l) { add(l.name); });
+      });
+    return out;
+  }
   function locationComparison() {
-    var map = {};
+    var map = {}, order = [];
     state.storefronts.forEach(function (sf) {
-      var key = sf.name.trim();
-      if (!map[key]) map[key] = { name: sf.name, events: 0, sales: 0, don: 0 };
+      var key = locationKey(sf.name);
+      if (!key) return;   // an unnamed storefront cannot be compared to anything
+      if (!map[key]) { map[key] = { key: key, name: String(sf.name).trim(), events: 0, sales: 0, don: 0 }; order.push(key); }
       var m = map[key], t = storefrontTotals(sf);
       m.events += 1; m.sales += t.sales; m.don += t.don;
     });
-    return Object.keys(map).map(function (k) { return map[k]; })
+    return order.map(function (k) { return map[k]; })
       .sort(function (a, b) { return (b.sales + b.don) - (a.sales + a.don); });
+  }
+  // Season over season, by location. Pure (takes the archives) so the harness can exercise
+  // the matching without a DOM.
+  //
+  // Each source knows a different amount, and the table must not pretend otherwise:
+  //   season      a close-out — Trail's End sales AND cash donations, counted per storefront date
+  //   trails-end  a Trail's End sales import — TE storefront sales only, counted per transaction
+  //   live        this season so far
+  //
+  // Because the UNITS differ (transactions vs storefront dates), this reports MONEY only and
+  // names each year's source. An "average per event" column across them would be comparing
+  // per-transaction to per-shift-day, which is the sort of number that looks fine and isn't.
+  function locationHistoryFrom(archives, liveLocs, programYear) {
+    var yearSource = {}, rows = {}, order = [];
+    function put(year, source, name, cents) {
+      var k = locationKey(name);
+      if (!k || typeof year !== 'number') return;
+      if (!rows[k]) { rows[k] = { key: k, name: String(name).trim(), newest: -Infinity, by: {} }; order.push(k); }
+      var r = rows[k];
+      r.by[year] = (r.by[year] || 0) + (cents || 0);
+      if (year >= r.newest) { r.newest = year; r.name = String(name).trim(); }
+      // A close-out is richer than a Trail's End import for the same year, and the live
+      // season is the one we are actually in — so those win the label.
+      if (source === 'live' || !yearSource[year] ||
+        (yearSource[year] === 'trails-end' && source === 'season')) yearSource[year] = source;
+    }
+    (archives || []).forEach(function (a) {
+      if (!a) return;
+      if (a.kind === 'trails-end') {
+        arrOf(a.locations).forEach(function (l) { put(a.year, 'trails-end', l.name, l.cents); });
+      } else if (a.kind === 'season' && a.fundraising) {
+        arrOf(a.fundraising.locations).forEach(function (l) {
+          put(a.year, 'season', l.name, (l.salesCents || 0) + (l.donCents || 0));
+        });
+      }
+    });
+    (liveLocs || []).forEach(function (m) { put(programYear, 'live', m.name, m.sales + m.don); });
+    var years = Object.keys(yearSource).map(Number).sort(function (a, b) { return a - b; });
+    var latest = years.length ? years[years.length - 1] : null;
+    var list = order.map(function (k) {
+      var r = rows[k];
+      r.total = Object.keys(r.by).reduce(function (n, y) { return n + r.by[y]; }, 0);
+      return r;
+    });
+    list.sort(function (a, b) {
+      return ((b.by[latest] || 0) - (a.by[latest] || 0)) || (b.total - a.total) || a.name.localeCompare(b.name);
+    });
+    return { years: years, sources: yearSource, rows: list, latest: latest };
+  }
+  function locationHistory() {
+    return locationHistoryFrom(state.archives, locationComparison(), state.budget.programYear);
   }
   function storefrontTotals(sf) {
     var sales = 0, don = 0;
@@ -5563,8 +5643,7 @@
       '<p class="small muted" style="margin:8px 0 0">Nothing you’ve entered is overwritten — you preview and confirm before anything is saved.</p></div>';
   }
   function renderStorefrontList() {
-    var locations = {};
-    state.storefronts.forEach(function (sf) { locations[sf.name.trim()] = 1; });
+    var knownLocs = knownLocationNames();
     // Wave 19(15b) — always visible at the top of the list (empty state included).
     var h = '<div class="row no-print" style="margin:0 0 12px">' +
       '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button></div>';
@@ -5572,7 +5651,7 @@
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
       '<form data-form="add-storefront" class="row">' +
       '<label class="fld">Store / location<input id="sfNameInput" name="name" data-ch="sf-new-name" placeholder="Kroger on Main St" list="locList" value="' + esc(ui.sfDraft.name) + '" style="width:200px"></label>' +
-      '<datalist id="locList">' + Object.keys(locations).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>' +
+      '<datalist id="locList">' + knownLocs.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>' +
       '<label class="fld">Date<input type="date" id="sfDateInput"></label>' +
       '<button type="button" class="btn small ghost" data-act="sf-add-date" style="align-self:flex-end">+ Add date</button>' +
       '<label class="fld">Weeks<input type="number" id="sfWeeks" min="1" max="20" value="4" style="width:64px"></label>' +
@@ -8379,6 +8458,66 @@
           '<td class="num">' + fmt(Math.round(combined / m.events)) + '</td></tr>';
       });
       h += '</tbody></table></div></div>';
+
+    // Season over season, by location. Only worth showing once there is more than one year
+    // to compare — before that it is the table above with fewer columns.
+    var hist = locationHistory();
+    if (hist.years.length > 1 && hist.rows.length) {
+      var SRC = {
+        season: 'close-out · sales + cash',
+        'trails-end': 'Trail’s End import · sales only',
+        live: 'this season so far'
+      };
+      h += '<div class="card"><h2 class="section display">Season over season</h2>' +
+        '<p class="small muted" style="margin:0 0 8px">The same store across years, matched on its name however it was spelled. ' +
+        'Money only: the sources count differently — a Trail’s End import counts transactions, a close-out counts storefront dates — ' +
+        'so an average per event across them would be comparing two different things.</p>' +
+        '<div class="tbl-wrap"><table><caption class="visually-hidden">Location totals by program year</caption>' +
+        '<thead><tr><th scope="col">Location</th>' +
+        hist.years.map(function (y) { return '<th scope="col" class="num">' + y + '</th>'; }).join('') +
+        '<th scope="col" class="num">Change</th></tr></thead><tbody>';
+      var latestIsLive = hist.sources[hist.latest] === 'live';
+      hist.rows.forEach(function (r) {
+        h += '<tr><td>' + esc(r.name) + '</td>' +
+          hist.years.map(function (y) {
+            var v = r.by[y];
+            return '<td class="num"' + (y === hist.latest ? ' style="font-weight:650"' : '') + '>' +
+              (v == null ? '<span class="muted">—</span>' : fmt(v)) + '</td>';
+          }).join('');
+        // Compare to the most recent year this store ACTUALLY RAN, not simply to last year.
+        // A store skipped for a season is not "new" the year it comes back.
+        var now = r.by[hist.latest], wasYear = null;
+        for (var wi = hist.years.length - 2; wi >= 0; wi--) {
+          if (r.by[hist.years[wi]] != null) { wasYear = hist.years[wi]; break; }
+        }
+        var was = wasYear == null ? null : r.by[wasYear];
+        var chg = '<span class="muted">—</span>';
+        if (now != null && was != null && was > 0) {
+          var d = now - was;
+          var pct = Math.round(d / was * 100);
+          // Say which year is being compared when it is not simply the one before, and say
+          // "so far" when the latest column is a season still running — otherwise a
+          // part-year against a full one reads as a collapse.
+          var against = (wasYear === hist.years[hist.years.length - 2]) ? '' : ' vs ' + wasYear;
+          chg = '<span style="color:' + (d >= 0 ? 'var(--good)' : 'var(--bad)') + '">' +
+            (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + ' (' + (d >= 0 ? '+' : '−') + Math.abs(pct) + '%)</span>' +
+            (against ? '<span class="muted">' + esc(against) + '</span>' : '') +
+            (latestIsLive ? '<span class="muted"> so far</span>' : '');
+        } else if (now != null && was == null) {
+          chg = '<span class="muted">first year</span>';
+        } else if (now == null) {
+          chg = '<span class="muted">not run</span>';
+        }
+        h += '<td class="num">' + chg + '</td></tr>';
+      });
+      h += '</tbody></table></div>' +
+        '<p class="small muted" style="margin:8px 0 0">Where each year came from: ' +
+        hist.years.map(function (y) { return '<strong>' + y + '</strong> ' + esc(SRC[hist.sources[y]] || 'unknown'); }).join(' · ') +
+        '.</p>' +
+        '<p class="small muted" style="margin:6px 0 0">Names are matched ignoring case, spacing and punctuation, so ' +
+        '“Kroger — Main St” and “kroger main st” count as one store. Pick a previous name from the list when adding a ' +
+        'storefront and it lines up on its own.</p></div>';
+    }
     }
 
     // Wave 21 — three boards, in the order the money makes sense: what went through

@@ -1771,6 +1771,122 @@ test('a ledger entry can be dated freely, forwards or back', () => {
     });
 });
 
+/* ================================================================
+   Season-over-season location comparison.
+   ================================================================ */
+
+const LOC_FNS = ['locationKey', 'arrOf', 'locationHistoryFrom'];
+
+test('location names match across years despite case, spacing and punctuation', () => {
+  // The join key is the name. A leader types "Kroger — Main St" one year and "kroger main
+  // st." the next, and Trail's End spells its own sites differently again.
+  const { locationKey } = sandbox(['locationKey']);
+  const same = ['Kroger — Main St', 'kroger main st.', 'KROGER   MAIN ST', 'Kroger, Main St!'];
+  const keys = new Set(same.map(locationKey));
+  eq(keys.size, 1, 'these should all be one store: ' + [...keys].join(' | '));
+  ok(locationKey('Kroger Main St') !== locationKey('Kroger Oak Ave'), 'two real stores collapsed into one');
+  eq(locationKey('   '), '', 'whitespace is not a location');
+  eq(locationKey(null), '', 'null is not a location');
+});
+
+test('a Trail’s End import and a close-out line up on the same store', () => {
+  const { locationHistoryFrom } = sandbox(LOC_FNS);
+  const h = locationHistoryFrom([
+    { kind: 'trails-end', year: 2024, locations: [{ name: 'Kroger — Main St', tx: 40, cents: 124000 }] },
+    { kind: 'season', year: 2025, fundraising: { locations: [{ name: 'kroger main st', salesCents: 140000, donCents: 18000 }] } }
+  ], [{ name: 'Kroger Main St.', sales: 61000, don: 0 }], 2026);
+  eq(h.years, [2024, 2025, 2026], 'years');
+  eq(h.rows.length, 1, 'the same store came out as ' + h.rows.length + ' rows');
+  eq(h.rows[0].by, { 2024: 124000, 2025: 158000, 2026: 61000 }, 'per-year money');
+  eq(h.rows[0].name, 'Kroger Main St.', 'the newest spelling should be the one displayed');
+});
+
+test('each year is labelled with what its source actually knew', () => {
+  // A close-out has sales AND cash; a Trail's End import has TE storefront sales only.
+  // Reporting them as one number without saying which is how a pack concludes cash "fell".
+  const { locationHistoryFrom } = sandbox(LOC_FNS);
+  const h = locationHistoryFrom([
+    { kind: 'trails-end', year: 2024, locations: [{ name: 'A', cents: 100 }] },
+    { kind: 'season', year: 2025, fundraising: { locations: [{ name: 'A', salesCents: 100, donCents: 5 }] } }
+  ], [{ name: 'A', sales: 10, don: 0 }], 2026);
+  eq(h.sources, { 2024: 'trails-end', 2025: 'season', 2026: 'live' }, 'sources');
+});
+
+test('a close-out outranks a Trail’s End import for the same year', () => {
+  // Both can exist for one year. The close-out knows more, so it names the year.
+  const { locationHistoryFrom } = sandbox(LOC_FNS);
+  const a = locationHistoryFrom([
+    { kind: 'trails-end', year: 2025, locations: [{ name: 'A', cents: 100 }] },
+    { kind: 'season', year: 2025, fundraising: { locations: [{ name: 'A', salesCents: 100, donCents: 5 }] } }
+  ], [], 2026);
+  eq(a.sources[2025], 'season', 'import order should not decide the label');
+  const b = locationHistoryFrom([
+    { kind: 'season', year: 2025, fundraising: { locations: [{ name: 'A', salesCents: 100, donCents: 5 }] } },
+    { kind: 'trails-end', year: 2025, locations: [{ name: 'A', cents: 100 }] }
+  ], [], 2026);
+  eq(b.sources[2025], 'season', 'the other order gives a different answer');
+});
+
+test('the comparison survives junk archives without inventing a year', () => {
+  const { locationHistoryFrom } = sandbox(LOC_FNS);
+  const h = locationHistoryFrom([
+    null,
+    { kind: 'trails-end', year: null, locations: [{ name: 'A', cents: 100 }] },
+    { kind: 'season', year: 2025, fundraising: null },
+    { kind: 'season', year: 2025, fundraising: { locations: [{ name: '  ', salesCents: 900, donCents: 0 }] } }
+  ], [], 2026);
+  eq(h.years, [], 'a yearless or nameless row should contribute nothing');
+  eq(h.rows.length, 0, 'rows');
+});
+
+test('the new-storefront list offers previous years, not just this one', () => {
+  // Rollover clears storefronts, so before this the list was empty every September — the
+  // one moment where picking last year's exact name matters most.
+  const fn = /function knownLocationNames\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'knownLocationNames() not found');
+  ok(/state\.storefronts/.test(fn[0]), 'this season is not offered');
+  ok(/a\.kind === 'trails-end'/.test(fn[0]), "Trail's End imports are not offered");
+  ok(/a\.kind === 'season'/.test(fn[0]), 'close-outs are not offered');
+  ok(/id="locList">' \+ knownLocs/.test(SCRIPT), 'the datalist is not fed from knownLocationNames()');
+  ok(!/state\.storefronts\.forEach\(function \(sf\) \{ locations\[sf\.name\.trim\(\)\] = 1; \}\);/.test(SCRIPT),
+    'the old current-season-only list is still there');
+});
+
+test('a store skipped for a season is not "new" when it comes back', () => {
+  // The change column compared the latest year to the year immediately before it, so a
+  // store that ran in 2024, sat out 2025 and returned in 2026 was labelled new.
+  const i = SCRIPT.indexOf('Compare to the most recent year this store ACTUALLY RAN');
+  ok(i !== -1, 'the change column still compares only to last year');
+  const blk = SCRIPT.slice(i, i + 1600);
+  ok(/for \(var wi = hist\.years\.length - 2; wi >= 0; wi--\)/.test(blk),
+    'it does not walk back to find the last year the store ran');
+  ok(/first year/.test(blk), '"first year" should replace the misleading "new"');
+  ok(/' vs ' \+ wasYear/.test(blk), 'a non-adjacent comparison does not say which year it is against');
+});
+
+test('a part-season is never compared to a full one without saying so', () => {
+  // The live column is a season still running. Against a completed year it looks like a
+  // collapse — the sort of number that is arithmetically right and reads as a lie.
+  ok(/var latestIsLive = hist\.sources\[hist\.latest\] === 'live';/.test(SCRIPT),
+    'the table does not know whether its latest column is still running');
+  ok(/latestIsLive \? '<span class="muted"> so far<\/span>' : ''/.test(SCRIPT),
+    'a change against a live season is not marked "so far"');
+});
+
+test('season-over-season reports money only, and says why', () => {
+  // The units differ — a Trail's End import counts transactions, a close-out counts
+  // storefront dates — so an average-per-event column would compare two different things.
+  ok(SCRIPT.indexOf('Season over season') !== -1, 'the season-over-season card not found');
+  ok(/hist\.years\.length > 1/.test(SCRIPT), 'the card shows with only one year of data');
+  ok(/average per event across them would be comparing two different things/.test(SCRIPT),
+    'the card does not explain why there is no per-event column');
+  ok(/Where each year came from/.test(SCRIPT), 'the card does not name each year’s source');
+  // And the model must not offer one either.
+  const model = /function locationHistoryFrom\(archives, liveLocs, programYear\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(model && !/events|perEvent|avg/i.test(model[0].replace(/\/\/[^\n]*/g, '')),
+    'locationHistoryFrom exposes an event count that could be averaged across mismatched units');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
