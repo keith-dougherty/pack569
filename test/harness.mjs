@@ -1648,28 +1648,54 @@ test('AUDIT: the Budget card and the worksheet cannot disagree about family inco
 });
 
 test('Home answers "what is coming" in exactly one place', () => {
-  // There used to be two: a bare-date stat with no clue what the date belonged to, showing
-  // "—" whenever nothing was scheduled, and a proper card below it. They never appeared
-  // together, so the stat was only ever visible in the state where it said least.
+  // Home used to carry two: a bare date in the stat row with no clue what it belonged to,
+  // and a proper card below. They never appeared together, so the stat was only ever visible
+  // in the state where it said least.
   const fn = /function renderHome\(\) \{[\s\S]*?\n    h \+= packFlow\(\);/.exec(SCRIPT);
   ok(fn, 'renderHome() not found');
-  const labels = fn[0].match(/<span class="l">Next up<\/span>/g) || [];
-  eq(labels.length, 0, 'the bare-date "Next up" stat is back');
-  const cards = fn[0].match(/<h2 class="section display">Next up<\/h2>/g) || [];
-  eq(cards.length, 1, 'Home should carry exactly one Next up surface');
+  eq((fn[0].match(/<span class="l">Next up<\/span>/g) || []).length, 0, 'the bare-date stat is back');
+  eq((fn[0].match(/<h2 class="section display" style="margin-bottom:0">This week<\/h2>/g) || []).length, 1,
+    'Home should carry exactly one week card');
 });
 
-test('the Next up card always renders, and says something when it is empty', () => {
-  // An empty calendar is worth saying out loud — it is the state every pack is in each
-  // September, once the rollover has kept the plan and dropped last year's dates.
-  const fn = /\/\/ Next up — the ONE place[\s\S]*?\n    h \+= '<\/div>';/.exec(SCRIPT);
-  ok(fn, 'the Next up card not found');
-  ok(!/if \(nextUp\.length\) \{\s*\n\s*h \+= '<div class="card">/.test(fn[0]),
-    'the card is still gated on there being something to show');
-  ok(/Nothing on the calendar yet/.test(fn[0]), 'no empty state');
-  ok(/no date yet/.test(fn[0]), 'the empty state does not mention activities waiting for dates');
+test('the week card always renders, and degrades in three useful steps', () => {
+  const fn = /\/\/ This week — Monday to Sunday[\s\S]*?\n    h \+= '<\/div>';/.exec(SCRIPT);
+  ok(fn, 'the week card not found');
+  ok(/Nothing on the calendar this week/.test(fn[0]), 'no empty state');
+  ok(/Next: <strong>/.test(fn[0]), 'an empty week does not say what IS coming');
+  ok(/no date yet/.test(fn[0]), 'an empty calendar does not mention activities awaiting dates');
   ok(/data-tab="program" data-section="calendar"/.test(fn[0]), 'the empty state offers no way to fix it');
+  ok(/wk-past/.test(fn[0]), 'days already past this week are not marked as done');
 });
+
+test('the week runs Monday to Sunday, and a Sunday belongs to the week that started', () => {
+  // Sunday is the classic off-by-one: getDay() calls it 0, but in a Monday-start week it is
+  // day SIX, so the week began six days ago rather than tomorrow.
+  const { weekBounds } = sandbox(['pad2', 'weekBounds']);
+  eq(weekBounds('2026-07-26'), { start: '2026-07-20', end: '2026-07-26' }, 'a Sunday');
+  eq(weekBounds('2026-07-20'), { start: '2026-07-20', end: '2026-07-26' }, 'the Monday of that week');
+  eq(weekBounds('2026-07-23'), { start: '2026-07-20', end: '2026-07-26' }, 'a Thursday mid-week');
+});
+
+test('a week straddling a month or a year still resolves', () => {
+  const { weekBounds } = sandbox(['pad2', 'weekBounds']);
+  eq(weekBounds('2026-09-01'), { start: '2026-08-31', end: '2026-09-06' }, 'across a month end');
+  eq(weekBounds('2027-01-01'), { start: '2026-12-28', end: '2027-01-03' }, 'across a year end');
+  eq(weekBounds('2028-02-29'), { start: '2028-02-28', end: '2028-03-05' }, 'a leap day');
+  eq(weekBounds(''), { start: '', end: '' }, 'garbage in');
+  eq(weekBounds('not-a-date'), { start: '', end: '' }, 'more garbage in');
+});
+
+test('the week list is ordered the way the week happens', () => {
+  const fn = /function datedThingsInRange\(from, to\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'datedThingsInRange() not found');
+  ok(/a\.date\.localeCompare\(b\.date\) \|\|/.test(fn[0]), 'not sorted by day first');
+  ok(/a\.time \|\| '99:99'/.test(fn[0]),
+    'an untimed thing sorts before timed ones — it should fall to the end of its day');
+  ok(/state\.storefronts/.test(fn[0]) && /state\.events/.test(fn[0]),
+    'the week must include storefronts as well as events');
+});
+
 
 /* ---------------- report ---------------- */
 if (fails.length) {

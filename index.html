@@ -607,6 +607,9 @@
   .lrates .att-mini input:not(.money-in) { width: 74px; }
   .lrates .att-mini > input[data-ch="line-direct"] { width: 200px; max-width: 100%; text-align: left; }
   .lrate-note { flex: 1 1 100%; }
+  /* A day earlier in this week that has already happened — still listed, because "what is on
+     this week" includes what already was, but visibly done rather than pending. */
+  .list-row.wk-past { opacity: 0.55; }
   /* Phase 4 — the 510-278 A/B/C worksheet. */
   .fund-tbl { width: 100%; margin: 4px 0 0; font-size: 0.86rem; }
   .fund-tbl td { padding: 4px 0; border-bottom: 1px dashed var(--line); }
@@ -5646,6 +5649,40 @@
 
   // Wave 19(16) — the next 1–2 upcoming dated things (storefront / meeting / dated
   // activity), soonest first. Pure read; [] hides the card entirely.
+  // The Monday–Sunday week containing `iso`. Pure, so the harness can exercise the cases
+  // week maths usually gets wrong: a Sunday (which belongs to the week that STARTED six days
+  // ago, not the one beginning tomorrow), and weeks that straddle a month or a year.
+  function weekBounds(iso) {
+    var p = String(iso || '').split('-');
+    if (p.length !== 3) return { start: '', end: '' };
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    if (isNaN(d.getTime())) return { start: '', end: '' };
+    var back = (d.getDay() + 6) % 7;   // Sun(0) → 6, Mon(1) → 0
+    var mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - back);
+    var sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6);
+    function asISO(x) { return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); }
+    return { start: asISO(mon), end: asISO(sun) };
+  }
+  // Everything dated in [from, to], storefronts and events together, in the order a week
+  // actually happens: by day, then by start time.
+  function datedThingsInRange(from, to) {
+    var out = [];
+    if (!from || !to) return out;
+    state.storefronts.forEach(function (sf) {
+      if (!sf.date || sf.date < from || sf.date > to) return;
+      var start = '';
+      (sf.blocks || []).forEach(function (b) { if (b.start && (!start || b.start < start)) start = b.start; });
+      out.push({ type: 'storefront', date: sf.date, time: start, sf: sf });
+    });
+    state.events.forEach(function (ev) {
+      if (!ev.date || ev.date < from || ev.date > to) return;
+      out.push({ type: 'event', date: ev.date, time: ev.time || '', ev: ev });
+    });
+    out.sort(function (a, b) {
+      return a.date.localeCompare(b.date) || String(a.time || '99:99').localeCompare(String(b.time || '99:99'));
+    });
+    return out;
+  }
   function nextUpEvents() {
     var today = todayISO();
     var evs = [];
@@ -7750,28 +7787,50 @@
       h += '</div>';
     }
 
-    // Next up — the ONE place Home answers "what is coming". Always rendered: an empty
-    // calendar is a thing worth saying out loud, and it is the state a pack is in every
-    // September, when the rollover has kept the plan and dropped last year's dates.
-    var nextUp = nextUpEvents();
-    h += '<div class="card"><h2 class="section display">Next up</h2>';
-    if (nextUp.length) {
-      nextUp.forEach(function (e) {
-        var title = e.type === 'storefront' ? (e.sf.name || 'Storefront') : eventLabel(e.ev);
-        h += '<div class="list-row" role="button" tabindex="0" data-act="goto" data-tab="' +
+    // This week — Monday to Sunday, the way a pack actually talks about its calendar.
+    // Deliberately includes days that have already passed: "what is on this week" is a
+    // different question from "what is next", and seeing Monday's meeting greyed out is how
+    // you know it was there. Home still carries exactly one of these.
+    var todayIso = todayISO();
+    var wk = weekBounds(todayIso);
+    var week = datedThingsInRange(wk.start, wk.end);
+    h += '<div class="card"><div class="spread">' +
+      '<h2 class="section display" style="margin-bottom:0">This week</h2>' +
+      '<span class="small muted">' + esc(fmtDate(wk.start)) + ' – ' + esc(fmtDate(wk.end)) + '</span></div>';
+    if (week.length) {
+      var wkDay = '';
+      week.forEach(function (e) {
+        if (e.date !== wkDay) {
+          wkDay = e.date;
+          h += '<p class="mo-day">' + esc(fmtDate(e.date)) +
+            (e.date === todayIso ? ' · Today' : '') + '</p>';
+        }
+        var title = e.type === 'storefront' ? ('Storefront' + (e.sf.name ? ' · ' + e.sf.name : '')) : eventLabel(e.ev);
+        var when = e.type === 'storefront'
+          ? (e.time ? fmtClock(e.time) : '')
+          : fmtTimeRange(e.ev.time, e.ev.endTime);
+        h += '<div class="list-row' + (e.date < todayIso ? ' wk-past' : '') + '" role="button" tabindex="0" data-act="goto" data-tab="' +
           (e.type === 'storefront' ? 'popcorn" data-section="storefronts' : 'program" data-section="calendar') + '">' +
           '<div style="min-width:0"><div class="lr-name">' + esc(title) + '</div>' +
-          '<div class="small muted">' + esc(fmtDate(e.date)) + '</div></div>' +
+          (when ? '<div class="small muted">' + esc(when) + '</div>' : '') + '</div>' +
           '<span class="mo-chev" aria-hidden="true">›</span></div>';
       });
     } else {
+      // Nothing this week is common for a small pack, so say what IS coming rather than
+      // leaving a dead card — and if the calendar is empty altogether, say that instead.
+      var ahead = nextUpEvents();
       var toSchedule = state.events.filter(function (e) { return e.kind === 'activity' && !e.date; }).length;
-      h += '<div class="empty" style="margin:0">Nothing on the calendar yet.</div>' +
-        (toSchedule
-          ? '<p class="small muted" style="margin:8px 0 0">' + toSchedule + ' activit' +
-            (toSchedule === 1 ? 'y is planned but has' : 'ies are planned but have') + ' no date yet.</p>'
-          : '<p class="small muted" style="margin:8px 0 0">Add a den or pack meeting, a storefront, or an activity to a day.</p>') +
-        '<div class="row no-print" style="margin-top:10px">' +
+      h += '<div class="empty" style="margin:0">Nothing on the calendar this week.</div>';
+      if (ahead.length) {
+        var aTitle = ahead[0].type === 'storefront' ? (ahead[0].sf.name || 'Storefront') : eventLabel(ahead[0].ev);
+        h += '<p class="small muted" style="margin:8px 0 0">Next: <strong>' + esc(aTitle) + '</strong>, ' + esc(fmtDate(ahead[0].date)) + '.</p>';
+      } else if (toSchedule) {
+        h += '<p class="small muted" style="margin:8px 0 0">' + toSchedule + ' activit' +
+          (toSchedule === 1 ? 'y is planned but has' : 'ies are planned but have') + ' no date yet.</p>';
+      } else {
+        h += '<p class="small muted" style="margin:8px 0 0">Add a den or pack meeting, a storefront, or an activity to a day.</p>';
+      }
+      h += '<div class="row no-print" style="margin-top:10px">' +
         '<button type="button" class="btn" data-act="goto" data-tab="program" data-section="calendar">Open the calendar</button></div>';
     }
     h += '</div>';
