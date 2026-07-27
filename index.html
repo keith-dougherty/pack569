@@ -1479,7 +1479,8 @@
   ];
   function freshState() {
     return {
-      version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, goalIsDerived: true, cashGoalCents: 0,
+      version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, goalIsDerived: true,
+      stretchGoalCents: 0, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
       events: [],                      // Phase 2 — the calendar record; meetings[] is legacy
@@ -1625,6 +1626,9 @@
     // one keeps it (and can switch); a pack that never did gets the derived figure.
     if (typeof d.goalIsDerived !== 'boolean') d.goalIsDerived = !(d.goalCents > 0);
     if (typeof d.cashGoalCents !== 'number') d.cashGoalCents = 0;
+    // A stretch goal the pack aims for, above what the plan actually needs.
+    d.stretchGoalCents = (typeof d.stretchGoalCents === 'number' && isFinite(d.stretchGoalCents) && d.stretchGoalCents > 0)
+      ? Math.round(d.stretchGoalCents) : 0;
     if (typeof d.cashThroughTrailsEnd !== 'boolean') {
       // Migrate the older twin flags: cash counted anywhere ⇒ ran through Trail's End.
       d.cashThroughTrailsEnd = !!(d.cashInCommission || d.cashInGoal);
@@ -2520,12 +2524,15 @@
     var commission = isFinite(pct) ? Math.round(teEligible * pct / 100) : null;
     var activeCount = activeScouts().length;
     var teGoalNow = packGoalCents();   // Phase 4 — from the plan unless overridden
+    var stretchNow = stretchGoalOf(state.stretchGoalCents || 0, teGoalNow);
     var teTarget = teGoalNow > 0 && activeCount > 0 ? Math.round(teGoalNow / activeCount) : null;
     return {
       sales: sales, don: don, combined: sales + don, commission: commission, pct: pct,
       onlineDon: onlineDon, cashDon: cashDon, eligible: teEligible, teEligible: teEligible,
       cashKept: cashKept, retainedCash: cashKept, viaTE: viaTE,
       teGoal: teGoalNow, goal: teGoalNow, target: teTarget, teTarget: teTarget,
+      // The minimum is what the plan needs; the stretch is what the pack is reaching for.
+      stretch: stretchNow,
       cashGoal: state.cashGoalCents, activeCount: activeCount
     };
   }
@@ -2684,6 +2691,12 @@
   }
   // The pack's Trail's End goal: derived from the plan by default, or whatever the pack
   // typed if they chose to set it by hand.
+  // A stretch goal only means something ABOVE what the plan needs. At or below the minimum
+  // it is a typo, not an ambition, and showing it would make the pack look further along
+  // than it is. Pure, so the harness can pin the boundary.
+  function stretchGoalOf(stretchCents, minCents) {
+    return (stretchCents > minCents && stretchCents > 0) ? stretchCents : 0;
+  }
   function packGoalCents() {
     if (!state.goalIsDerived) return state.goalCents || 0;
     var g = fundingSummary().salesGoal;
@@ -6727,8 +6740,18 @@
       (state.goalIsDerived
         ? '<label class="fld">Trail’s End goal ($)<input class="money-in" value="' + dollars(packT.teGoal) + '" disabled aria-label="Trail\u2019s End goal, from the plan"></label>'
         : '<label class="fld">Trail’s End goal ($)<input class="money-in" inputmode="decimal" data-ch="goal" value="' + dollars(state.goalCents) + '" placeholder="e.g. 5000"></label>') +
+      '<label class="fld">Stretch goal ($)<input class="money-in" inputmode="decimal" data-ch="stretch-goal" value="' + dollars(state.stretchGoalCents) + '" placeholder="optional"></label>' +
       '<label class="fld">Cash donations goal ($)<input class="money-in" inputmode="decimal" data-ch="cash-goal" value="' + dollars(packT.cashGoal) + '" placeholder="e.g. 500"></label>' +
       '</div>' +
+      // The question this field kept raising: is it commission, or what we ring up?
+      '<p class="small muted" style="margin:6px 0 0">The Trail’s End goal is <strong>what the pack sells</strong>, not what it keeps — ' +
+      'sell ' + fmt(packT.teGoal) + ' and ' + esc(state.commissionPct || '—') + '% commission covers the plan. ' +
+      'It is the <strong>minimum</strong>: it is worked out as exactly what the budget needs, with nothing spare. ' +
+      'A stretch goal is whatever you want to aim past it for' +
+      (packT.stretch ? '' : ' — leave it blank if you don’t have one') + '.' +
+      (state.stretchGoalCents > 0 && !packT.stretch
+        ? ' <strong>Your stretch goal is below the minimum, so it’s ignored.</strong>'
+        : '') + '</p>' +
       '<div class="row" style="margin-top:6px">' +
       '<label class="perscout"><input type="checkbox" data-ch="cash-via-te"' + (packT.viaTE ? ' checked' : '') + '> Run cash donations through Trail’s End (Heroes &amp; Helpers)</label>' +
       '</div>' +
@@ -8525,9 +8548,22 @@
       var tePct = Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100));
       h += '<hr class="divider"><p class="eyebrow">Trail’s End goal</p>' +
         '<div class="bar" role="img" aria-label="Trail\'s End goal ' + tePct + ' percent"><div class="bar-fill" style="width:' + tePct + '%"></div></div>' +
-        '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teGoal) + '</span> (' + tePct + '%)' +
+        '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teGoal) + '</span> needed (' + tePct + '%)' +
         (pack.teTarget != null ? ' · per-scout target <span class="money">' + fmt(pack.teTarget) + '</span> across ' + pack.activeCount + ' active scouts' : '') +
         '</p>';
+      // The stretch gets its own bar rather than a marker on the first one: two scales on
+      // one bar is how "we're at 100%" and "we're at 76%" end up meaning the same picture.
+      if (pack.stretch > 0) {
+        var stPct = Math.min(100, Math.round(pack.teEligible / pack.stretch * 100));
+        var stLeft = Math.max(0, pack.stretch - pack.teEligible);
+        h += '<p class="eyebrow" style="margin-top:12px">Stretch goal</p>' +
+          '<div class="bar" role="img" aria-label="Stretch goal ' + stPct + ' percent"><div class="bar-fill" style="width:' + stPct + '%"></div></div>' +
+          '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.stretch) + '</span> (' + stPct + '%)' +
+          (stLeft > 0
+            ? ' · <span class="money">' + fmt(stLeft) + '</span> to go'
+            : ' · <strong>reached</strong>') +
+          '<span class="muted"> — ' + fmt(pack.stretch - pack.teGoal) + ' beyond what the budget needs</span></p>';
+      }
     }
     // Cash donations goal progress
     if (pack.cashGoal > 0) {
@@ -12596,6 +12632,7 @@
     if (ch === 'commission') { state.commissionPct = el.value; commit(); return; }
     if (ch === 'goal') { state.goalCents = toCents(el.value); commit(); return; }
     if (ch === 'cash-goal') { state.cashGoalCents = toCents(el.value); commit(); return; }
+    if (ch === 'stretch-goal') { state.stretchGoalCents = toCents(el.value); commit(); return; }
     if (ch === 'cash-via-te') { state.cashThroughTrailsEnd = el.checked; commit(); return; }
     if (ch === 'pack-name') { state.packName = el.value.trim(); commit(); return; }
     if (ch === 'fr-goal') {

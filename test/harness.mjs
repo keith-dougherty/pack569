@@ -2024,6 +2024,63 @@ test('a toast wraps instead of running off both edges of a phone', () => {
   ok(/max-width:/.test(rule), 'the toast has no width ceiling, so it can still overflow');
 });
 
+/* ================================================================
+   Stretch goal — an aim above the minimum the plan already needs.
+   ================================================================ */
+
+test('a stretch goal only counts when it is above the minimum', () => {
+  // At or below what the plan needs it is a typo, not an ambition — and showing it would
+  // make the pack look further along than it is.
+  const { stretchGoalOf } = sandbox(['stretchGoalOf']);
+  eq(stretchGoalOf(800000, 607813), 800000, 'above the minimum');
+  eq(stretchGoalOf(500000, 607813), 0, 'below the minimum is ignored');
+  eq(stretchGoalOf(607813, 607813), 0, 'equal to the minimum is not a stretch');
+  eq(stretchGoalOf(0, 607813), 0, 'unset');
+  eq(stretchGoalOf(100, 0), 100, 'any stretch counts when no minimum is derived yet');
+});
+
+test('the stretch is reported apart from the minimum, never merged', () => {
+  const fn = /function computePackTotals\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'computePackTotals() not found');
+  ok(/stretchGoalOf\(state\.stretchGoalCents \|\| 0, teGoalNow\)/.test(fn[0]),
+    'the stretch is not validated against the minimum');
+  ok(/stretch: stretchNow/.test(fn[0]), 'the stretch is not reported');
+  ok(/teGoal: teGoalNow/.test(fn[0]), 'the minimum stopped being the goal everything else uses');
+});
+
+test('the two goals get separate bars, on their own scales', () => {
+  // Two scales on one bar is how "we are at 100%" and "we are at 76%" end up looking the same.
+  // Anchor on the stretch bar itself — the "Trail's End goal" eyebrow appears in more than
+  // one screen, and the first match was a different block entirely.
+  const i = SCRIPT.indexOf('aria-label="Stretch goal ');
+  ok(i !== -1, 'the stretch progress bar not found');
+  const blk = SCRIPT.slice(Math.max(0, i - 1400), i + 900);
+  ok(/pack\.teEligible \/ pack\.teGoal/.test(blk), 'the minimum bar is not measured against the minimum');
+  ok(/pack\.teEligible \/ pack\.stretch/.test(blk), 'the stretch bar is not measured against the stretch');
+  ok(/beyond what the budget needs/.test(blk), 'the stretch does not say how far past the plan it reaches');
+  ok(/of <span class="money">' \+ fmt\(pack\.teGoal\) \+ '<\/span> needed/.test(blk),
+    'the minimum bar does not say the figure is what is NEEDED');
+});
+
+test('the stretch goal stays with the leaders', () => {
+  // Chosen scope: it must not reach the published parent document or the family digest.
+  const pv = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(pv, 'buildParentView() not found');
+  ok(!/stretch/i.test(pv[0]), 'the stretch goal leaked into the parent view');
+  const dg = /function monthlyDigest\(mk\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(dg, 'monthlyDigest() not found');
+  ok(!/stretch/i.test(dg[0]), 'the stretch goal leaked into the family digest');
+});
+
+test('Season setup says what the Trail’s End goal actually is', () => {
+  // The question it kept raising: is this commission, or what we ring up?
+  ok(/is <strong>what the pack sells<\/strong>, not what it keeps/.test(SCRIPT),
+    'nothing explains that the goal is gross sales rather than commission');
+  ok(/It is the <strong>minimum<\/strong>/.test(SCRIPT), 'nothing says the derived goal has no margin in it');
+  ok(/stretch goal is below the minimum, so it’s ignored/.test(SCRIPT),
+    'a stretch below the minimum is silently dropped with no explanation');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
