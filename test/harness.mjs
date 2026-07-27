@@ -1999,7 +1999,7 @@ test('a leader who has moved on stops costing the pack money', () => {
   // Every place that asks "how many leaders" must count the ACTIVE ones. (The raw list is
   // still fine as a loop bound, an "any data at all" check, or a splice index — this checks
   // the three places where the number is a HEAD COUNT.)
-  ['function computeBudget', 'function fundingSummary', 'function lineMoneyControls'].forEach(function (fname) {
+  ['function computeBudget', 'function fundingSummary', 'function lineOptionControls'].forEach(function (fname) {
     const re = new RegExp(fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}');
     const fn = re.exec(SCRIPT);
     ok(fn, fname + '() not found');
@@ -2224,6 +2224,52 @@ test('the program-year constants are declared before load() reads them', () => {
     ok(i !== -1, decl + ' not found');
     ok(i < load, decl + ' is declared after load() runs — it will be undefined during normalizeState');
   });
+});
+
+test('a budget row leads with the name and the money, not the settings', () => {
+  // Every row used to lay eight controls of equal weight across two wrapped lines, so a
+  // month of activities read as a wall of repeated "Flat cost / Other / Pack pays".
+  const fn = /function budgetLineRow\(l, scoutN, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'budgetLineRow() not found');
+  // The primary line runs from brow-main to the line that closes it. `money` is built just
+  // above and dropped in, so check the variable lands there and that it carries bmoney.
+  const main = /brow-main[\s\S]*?\n      '<\/div>'/.exec(fn[0]);
+  ok(main, 'the row has no primary line');
+  ok(/class="bname"/.test(main[0]), 'the name is not on the primary line');
+  ok(/\n\s*money \+/.test(main[0]), 'the money is not on the primary line');
+  ok(/class="bmoney"|bmoney money/.test(fn[0]), 'nothing is marked up as the row money');
+  ok(!/line-category|line-funded|line-basis/.test(main[0]),
+    'a settings drop-down is back on the primary line');
+});
+
+test('the settings are still reachable, one tap away', () => {
+  // Quieter must not mean gone.
+  const fn = /function budgetLineRow\(l, scoutN, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/data-act="line-options"/.test(fn[0]), 'no disclosure for the settings');
+  ok(/open \? lineOptionControls/.test(fn[0]), 'the settings never render');
+  const opt = /function lineOptionControls\(l, scoutN, collectKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(opt, 'lineOptionControls() not found');
+  ['line-basis', 'line-category', 'line-funded', 'line-scout-rate', 'line-adults-from', 'line-direct']
+    .forEach(function (ch) { ok(opt[0].indexOf('data-ch="' + ch + '"') !== -1, ch + ' is no longer editable'); });
+  ok(/act === 'line-options'/.test(SCRIPT), 'the disclosure has no handler');
+});
+
+test('activities and expenses share one row shape', () => {
+  // They had two near-identical renderers that drifted apart.
+  ok(!/function lineMoneyControls/.test(SCRIPT), 'the old split renderer is still here');
+  const rb = /function renderBudget\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(rb, 'renderBudget() not found');
+  ok(/budgetLineRow\(e, bud\.scouts/.test(rb[0]), 'expenses do not use the shared row');
+  ok(/function activityLineRow\(a, scoutN\) \{[\s\S]*?budgetLineRow\(a, scoutN/.test(SCRIPT),
+    'activities do not use the shared row');
+});
+
+test('the row does not repeat the month its group already states', () => {
+  const fn = /function activityLineRow\(a, scoutN\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'activityLineRow() not found');
+  ok(!/slotLabel\(ev\.slot\)/.test(fn[0]),
+    'the row still prints "September 2026" under a heading that already says it');
+  ok(/no date yet/.test(fn[0]), 'the row no longer says when there is no date');
 });
 
 /* ---------------- report ---------------- */

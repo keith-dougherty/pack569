@@ -369,6 +369,72 @@
   .erow input.money-in { width: 92px; min-height: 36px; }
   .erow .perscout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
   .erow .perscout input { min-height: auto; width: auto; }
+  /* ---------- Budget line rows ----------
+     The old row laid eight controls of equal weight across two wrapped lines with a dashed
+     rule between activities, so a month read as a wall of repeated "Flat cost / Other /
+     Pack pays". Now: NAME and MONEY on the first line, because those are what gets scanned;
+     everything else as a sentence underneath that opens on demand. */
+  .brow {
+    padding: 9px 11px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+  }
+  .brow + .brow { margin-top: 4px; }
+  .brow:hover, .brow:focus-within { background: var(--surface-2); border-color: var(--line); }
+  .brow.open { background: var(--surface-2); border-color: var(--line); }
+  .brow-main { display: flex; align-items: center; gap: 10px; }
+  /* The name gets the room. It used to sit in a fixed 140–180px box and truncate on almost
+     every seeded activity — "School Night — join & recruitin". */
+  .brow .bname {
+    flex: 1 1 auto; min-width: 0; min-height: 38px;
+    font-size: 0.95rem; font-weight: 600;
+  }
+  .brow .bmoney {
+    flex: 0 0 auto; width: 108px; text-align: right;
+    font-variant-numeric: tabular-nums; font-weight: 650;
+  }
+  span.bmoney { padding-right: 11px; font-size: 0.95rem; }
+  .brow-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 5px; padding-left: 2px; }
+  .brow-meta .bsum {
+    flex: 1 1 140px; min-width: 0;
+    font-size: 0.78rem; color: var(--ink-soft);
+  }
+  .brow-meta .bdot { opacity: 0.5; margin: 0 1px; }
+  .brow-meta .bwhen { min-height: 26px; padding: 2px 8px; font-size: 0.78rem; }
+  /* Both of these sit on the quiet line, so neither should shout. Options is a disclosure,
+     not an action; "Record actual" only earns emphasis once there IS an actual to read. */
+  .brow-meta .bopts {
+    flex: 0 0 auto; font-size: 0.78rem;
+    background: transparent; border-color: transparent;
+    padding-left: 4px; padding-right: 4px; color: var(--ink-soft);
+  }
+  .brow-meta .bopts:hover { color: var(--ink); border-color: var(--line); }
+  .brow-meta .lpost {
+    flex: 0 0 auto; font-size: 0.78rem;
+    border-color: transparent; color: var(--ink-soft); padding-left: 6px; padding-right: 6px;
+  }
+  .brow-meta .lpost:hover { color: var(--accent-text); border-color: var(--line); }
+  /* …unless something has actually been spent against it, which is worth seeing. */
+  .brow-meta .lpost .money { color: var(--ink); font-weight: 650; }
+  /* Options, revealed. Kept inside the row's own surface so it is obvious which line they
+     belong to — the previous layout let sub-rows drift visually into the next activity. */
+  .brow-opts {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+    margin-top: 8px; padding-top: 9px; border-top: 1px dashed var(--line);
+  }
+  .brow-opts .att-mini select { min-height: 34px; }
+  .brow-opts .att-mini input.money-in { width: 78px; text-align: right; }
+  .brow-opts .att-mini > input[data-ch="line-direct"] { width: 210px; max-width: 100%; text-align: left; }
+  .brow-break { flex: 1 1 100%; height: 0; }
+  .brow-note { flex: 1 1 100%; }
+  /* On a phone the summary wraps to two lines and shoves the actions onto a third, so they
+     end up scattered. Give it the whole line and let the actions sit together under it. */
+  @media (max-width: 520px) {
+    .brow-meta .bsum { flex: 1 1 100%; }
+    .brow-meta .lpost { margin-left: -6px; }
+  }
+
   /* Money · Ledger (Phase 0) — same wrapping-row idiom as .erow, with a left rule that
      tells money in from money out at a glance without relying on colour alone. */
   .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
@@ -2297,6 +2363,7 @@
     // The new-entry draft. Held here rather than in the DOM so a re-render (which this app
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
+    lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     budgetShowPast: false,  // Budget — reveal the already-gone months that carry no lines
     forgiveFor: null,   // Phase 3b — charge id showing the inline "why" form
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
@@ -6831,31 +6898,41 @@
   // Phase 3a — the pricing controls, shared by activity and expense rows. `basis` decides
   // whether one flat amount or three per-head rates are asked for; `fundedBy` decides
   // whether a payee and a collect grid appear at all.
-  function lineMoneyControls(l, scoutN, collectKey) {
+  function lineCategoryLabel(key) {
+    for (var i = 0; i < LINE_CATEGORIES.length; i++) if (LINE_CATEGORIES[i][0] === key) return LINE_CATEGORIES[i][1];
+    return 'Other';
+  }
+  // How a line is set up, as a sentence rather than three drop-downs. Every row showed
+  // "Flat cost / Other / Pack pays" as controls of the same visual weight as the name and
+  // the money, so a month of activities read as a wall of repeated defaults. The controls
+  // are still one tap away; they are just not the loudest thing on the row any more.
+  function lineSummaryText(l) {
+    var bits = [linePerHead(l) ? 'Per head' : 'Flat'];
+    bits.push(lineFamilyFunded(l)
+      ? (l.paidDirectTo ? 'families pay ' + l.paidDirectTo : 'families pay')
+      : 'pack pays');
+    bits.push(lineCategoryLabel(l.category));
+    return bits.join(' · ');
+  }
+  // The settings themselves, shown only when the row is expanded.
+  function lineOptionControls(l, scoutN, collectKey) {
     var perHead = linePerHead(l);
     var leaderN = activeLeaders().length;
-    var h = '<select data-ch="line-basis" data-id="' + l.id + '" aria-label="How this is priced">' +
-      '<option value="flat"' + (perHead ? '' : ' selected') + '>Flat cost</option>' +
-      '<option value="per-head"' + (perHead ? ' selected' : '') + '>Per head</option>' +
-      '</select>';
-    if (!perHead) {
-      h += '<input class="money-in" inputmode="decimal" data-ch="line-flat" data-id="' + l.id + '" value="' +
-        dollars(l.flatCents) + '" placeholder="Cost" aria-label="Flat cost">';
-    } else {
-      h += '<span class="small muted money" title="Planned = rates × the assumed head count">' + fmt(linePlanned(l)) + ' planned</span>';
-    }
-    h += '<select data-ch="line-category" data-id="' + l.id + '" aria-label="510-278 category">' +
-      LINE_CATEGORIES.map(function (c) {
-        return '<option value="' + c[0] + '"' + (l.category === c[0] ? ' selected' : '') + '>' + esc(c[1]) + '</option>';
-      }).join('') + '</select>';
-    h += '<select data-ch="line-funded" data-id="' + l.id + '" aria-label="Whose money is it">' +
-      '<option value="pack"' + (lineFamilyFunded(l) ? '' : ' selected') + '>Pack pays</option>' +
-      '<option value="families"' + (lineFamilyFunded(l) ? ' selected' : '') + '>Families pay</option>' +
-      '</select>';
-    // The per-head rates get their own wrapped line — three rates and an assumption do not
-    // fit beside a name, and cramming them there is how the old single "Est." box happened.
+    var h = '<div class="brow-opts">' +
+      '<label class="att-mini">priced<select data-ch="line-basis" data-id="' + l.id + '" aria-label="How this is priced">' +
+        '<option value="flat"' + (perHead ? '' : ' selected') + '>Flat cost</option>' +
+        '<option value="per-head"' + (perHead ? ' selected' : '') + '>Per head</option>' +
+        '</select></label>' +
+      '<label class="att-mini">category<select data-ch="line-category" data-id="' + l.id + '" aria-label="510-278 category">' +
+        LINE_CATEGORIES.map(function (c) {
+          return '<option value="' + c[0] + '"' + (l.category === c[0] ? ' selected' : '') + '>' + esc(c[1]) + '</option>';
+        }).join('') + '</select></label>' +
+      '<label class="att-mini">paid by<select data-ch="line-funded" data-id="' + l.id + '" aria-label="Whose money is it">' +
+        '<option value="pack"' + (lineFamilyFunded(l) ? '' : ' selected') + '>Pack pays</option>' +
+        '<option value="families"' + (lineFamilyFunded(l) ? ' selected' : '') + '>Families pay</option>' +
+        '</select></label>';
     if (perHead) {
-      h += '<div class="lrates">' +
+      h += '<span class="brow-break"></span>' +
         '<label class="att-mini">scout<input class="money-in" inputmode="decimal" data-ch="line-scout-rate" data-id="' + l.id + '" value="' + dollars(l.scoutRateCents) + '" placeholder="0.00"></label>' +
         '<label class="att-mini">adult<input class="money-in" inputmode="decimal" data-ch="line-adult-rate" data-id="' + l.id + '" value="' + dollars(l.adultRateCents) + '" placeholder="0.00"></label>' +
         '<label class="att-mini">sibling<input class="money-in" inputmode="decimal" data-ch="line-sibling-rate" data-id="' + l.id + '" value="' + dollars(l.siblingRateCents) + '" placeholder="0.00"></label>' +
@@ -6868,7 +6945,7 @@
         // Only mention adults where an adult rate is actually charged — otherwise a youth
         // registration line reads "10 scouts + 10 adults assumed" and invites the question
         // of who those adults are and why they are free.
-        '<span class="small muted lrate-note">' +
+        '<span class="small muted brow-note">' +
           (l.adultsFrom === 'leaders'
             ? leaderN + ' registered leader' + (leaderN === 1 ? '' : 's') +
               ' — counted from Pack · People, so this moves as leaders join and leave' +
@@ -6877,39 +6954,64 @@
               ? scoutN + ' scouts + ' + linePlannedHeads(l, scoutN, leaderN).adults +
                 ' adults assumed — nobody has RSVP\u2019d, this is a planning figure'
               : scoutN + ' active scout' + (scoutN === 1 ? '' : 's') + ' — this follows the roster')) +
-        '</span></div>';
+        '</span>';
     }
-    // Whose money, and whether it touches our account at all.
     if (lineFamilyFunded(l)) {
-      h += '<div class="lrates">' +
-        '<label class="att-mini" style="text-transform:none;letter-spacing:0">Paid directly to (leave blank if the pack collects it)' +
+      h += '<span class="brow-break"></span>' +
+        '<label class="att-mini" style="text-transform:none;letter-spacing:0">Paid directly to (blank if the pack collects it)' +
         '<input data-ch="line-direct" data-id="' + l.id + '" value="' + esc(l.paidDirectTo) + '" placeholder="e.g. Council, Scout Shop" aria-label="Paid directly to"></label>' +
+        '<span class="small muted brow-note">' +
         (l.paidDirectTo
-          ? '<span class="small muted lrate-note">Never enters the pack\u2019s books — no charge, no ledger entry, no effect on the balance. It still counts toward what the year costs a family.</span>'
-          : '<span class="small muted lrate-note">The pack fronts it and is paid back by families.</span>') +
-        '</div>';
+          ? 'Never enters the pack\u2019s books — no charge, no ledger entry, no effect on the balance. It still counts toward what the year costs a family.'
+          : 'The pack fronts it and is paid back by families.') + '</span>';
     }
-    if (collectKey && lineRaisesCharges(l)) h += '<div class="lrates">' + lineChargeSummary(l) + '</div>';
-    return h;
+    if (collectKey && lineRaisesCharges(l)) h += '<span class="brow-break"></span>' + lineChargeSummary(l);
+    return h + '</div>';
   }
-  // Phase 2 — the DATE is not here: it belongs to the linked event, and is shown read-only
-  // with a way to go and change it where it lives. Two fields editing one date from two
-  // screens is how they drift.
-  function activityLineRow(a, scoutN) {
-    var ev = eventForLine(a);
-    var when = ev
-      ? (ev.date
-        ? '<button type="button" class="btn small ghost" data-act="cal-jump-day" data-date="' + esc(ev.date) + '" title="Show this day on the calendar">' + esc(fmtDate(ev.date)) + '</button>'
-        : '<span class="small muted">' + esc(slotLabel(ev.slot)) + ' · no date yet</span>')
-      : '<span class="small muted">not scheduled</span>';
-    return '<div class="arow">' +
-      '<input class="aname" data-ch="line-name" data-id="' + a.id + '" value="' + esc(a.name) + '" placeholder="Activity name">' +
-      when +
-      lineMoneyControls(a, scoutN, 'act:' + a.id) +
-      actualBtn(a.id) +
-      tinyDangerBtn('del-activity:' + a.id, 'Remove activity') +
+  // One row shape for every budget line, activity or expense.
+  //
+  // Name and money on the first line, because those are what a treasurer scans. Everything
+  // else — how it is priced, which 510-278 category, whose money — reads as a sentence
+  // underneath and opens on demand. Before this the row was eight controls of equal weight
+  // wrapped over two lines with only a dashed rule between one activity and the next.
+  function budgetLineRow(l, scoutN, opts) {
+    var open = !!ui.lineOpen[l.id];
+    var perHead = linePerHead(l);
+    var money = perHead
+      ? '<span class="bmoney money" title="Planned — set the rates in Options">' + fmt(linePlanned(l)) + '</span>'
+      : '<input class="money-in bmoney" inputmode="decimal" data-ch="line-flat" data-id="' + l.id + '" value="' +
+        dollars(l.flatCents) + '" placeholder="Cost" aria-label="Cost">';
+    return '<div class="brow' + (open ? ' open' : '') + '">' +
+      '<div class="brow-main">' +
+        '<input class="bname" data-ch="line-name" data-id="' + l.id + '" value="' + esc(l.name) + '" placeholder="' + esc(opts.placeholder) + '">' +
+        money +
+      '</div>' +
+      '<div class="brow-meta">' +
+        '<span class="bsum">' + (opts.when ? opts.when + ' <span class="bdot">·</span> ' : '') + esc(lineSummaryText(l)) + '</span>' +
+        actualBtn(l.id) +
+        '<button type="button" class="exp-toggle bopts" data-act="line-options" data-id="' + l.id + '" aria-expanded="' + open + '">' +
+          '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>Options</button>' +
+        tinyDangerBtn(opts.delAct, opts.delLabel) +
+      '</div>' +
+      (open ? lineOptionControls(l, scoutN, opts.collectKey) : '') +
       '</div>';
   }
+  function activityLineRow(a, scoutN) {
+    var ev = eventForLine(a);
+    // The group heading already says which month, so the row only says what it adds: a real
+    // date, or that there isn't one yet.
+    var when = ev
+      ? (ev.date
+        ? '<button type="button" class="btn small ghost bwhen" data-act="cal-jump-day" data-date="' + esc(ev.date) + '" title="Show this day on the calendar">' + esc(fmtDate(ev.date)) + '</button>'
+        : 'no date yet')
+      : 'not scheduled';
+    return budgetLineRow(a, scoutN, {
+      when: when, placeholder: 'Activity name',
+      delAct: 'del-activity:' + a.id, delLabel: 'Remove activity',
+      collectKey: 'act:' + a.id
+    });
+  }
+
 
   function renderBudget() {
     var b = state.budget;
@@ -7152,12 +7254,11 @@
           '<strong>' + esc(cat[1]) + '</strong>' +
           '<span class="small muted money">' + fmt(sub) + '</span></div>';
         rows.forEach(function (e) {
-          h += '<div class="erow">' +
-            '<input class="ename" data-ch="line-name" data-id="' + e.id + '" value="' + esc(e.name) + '" placeholder="Expense name">' +
-            lineMoneyControls(e, bud.scouts, e.id) +
-            actualBtn(e.id) +
-            tinyDangerBtn('del-expense:' + e.id, 'Remove ' + (e.name || 'expense')) +
-            '</div>';
+          h += budgetLineRow(e, bud.scouts, {
+            when: '', placeholder: 'Expense name',
+            delAct: 'del-expense:' + e.id, delLabel: 'Remove ' + (e.name || 'expense'),
+            collectKey: e.id
+          });
         });
         h += '</div>';
       });
@@ -12131,6 +12232,7 @@
     }
     if (act === 'direct-prompt-done') { state.budget.directPrompted = true; commit(); return; }
     if (act === 'budget-toggle-past') { ui.budgetShowPast = !ui.budgetShowPast; render(); return; }
+    if (act === 'line-options') { ui.lineOpen[el.dataset.id] = !ui.lineOpen[el.dataset.id]; render(); return; }
     // Phase 4 — the goal follows the plan, or it doesn't. Switching to manual seeds the box
     // with what the plan currently says, so nobody starts from zero.
     if (act === 'goal-manual') {
