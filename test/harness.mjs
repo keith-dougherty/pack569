@@ -769,7 +769,8 @@ test('reconciling compares the TICKED entries to the statement', () => {
 
 // normalizeState is the single migration seam, so the migration is tested through it
 // rather than through a reimplementation of it.
-const NORMALIZE_FNS = ['defaultProgramYear', 'freshBudget', 'programYearStartISO',
+const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
+  'defaultProgramYear', 'freshBudget', 'programYearStartISO',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
@@ -1050,8 +1051,10 @@ test('Phase 2: a meeting keeps its den, adventure and note', () => {
 test('Phase 2: a dated event takes its month from the date, an undated one keeps its slot', () => {
   const ctx = sandbox(NORMALIZE_FNS);
   const after = ctx.normalizeState(preSplitState());
-  eq(after.events.find(e => e.name === 'Fall campout').slot, 1, 'October is slot 1');
-  eq(after.events.find(e => e.name === 'Blue & Gold').slot, 5, 'undated keeps its planning slot');
+  eq(after.events.find(e => e.name === 'Fall campout').slot, 3, 'October is slot 3 in a July-start year');
+  // The fixture's slots are pre-July-rebase, so the undated one is remapped: old 5 (February
+  // under a September start) becomes new 7 (February under a July one). Same month either way.
+  eq(after.events.find(e => e.name === 'Blue & Gold').slot, 7, 'undated keeps its planning MONTH');
 });
 
 test('Phase 2: migration runs once', () => {
@@ -1704,10 +1707,10 @@ test('a month heading never claims a year the event is not in', () => {
   // program year would be filed under a heading two years off with nothing to say so. The
   // realistic way to hit it is planning September before closing out the year in August.
   const { dateInProgramYear } = sandbox(['programYearStartISO', 'programYearEndISO', 'dateInProgramYear']);
-  eq(dateInProgramYear('2025-09-01', 2025), true, 'first day of the program year');
-  eq(dateInProgramYear('2026-08-31', 2025), true, 'last day of the program year');
-  eq(dateInProgramYear('2025-08-31', 2025), false, 'the day before it starts');
-  eq(dateInProgramYear('2026-09-01', 2025), false, 'next September, planned before the rollover');
+  eq(dateInProgramYear('2025-07-01', 2025), true, 'first day of the program year');
+  eq(dateInProgramYear('2026-06-30', 2025), true, 'last day of the program year');
+  eq(dateInProgramYear('2025-06-30', 2025), false, 'the day before it starts');
+  eq(dateInProgramYear('2026-07-01', 2025), false, 'next July, planned before the rollover');
   eq(dateInProgramYear('', 2025), false, 'undated');
 });
 
@@ -2090,6 +2093,137 @@ test('re-seeding never plans the same activity twice', () => {
     'event names are not checked');
   ok(/state\.budget\.activities\.forEach\(function \(a\) \{ existing\[/.test(fn[0]),
     'a budget line whose event was deleted would be seeded again — the same money twice');
+});
+
+/* ================================================================
+   The program year starts in JULY, not September.
+   ================================================================ */
+
+const YEAR_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH', 'pad2',
+  'defaultProgramYear', 'programYearStartISO', 'programYearEndISO', 'dateToSlot',
+  'slotMonthNumber'];
+
+test('the twelve slots run July to June', () => {
+  const { PROGRAM_MONTHS, slotMonthNumber } = sandbox(YEAR_FNS);
+  eq(PROGRAM_MONTHS[0], 'July', 'slot 0');
+  eq(PROGRAM_MONTHS[11], 'June', 'slot 11');
+  eq(PROGRAM_MONTHS.length, 12, 'still twelve months');
+  eq(PROGRAM_MONTHS.slice().sort().length, 12, 'no month repeated or dropped');
+  // Slot → calendar month, across the turn of the calendar year.
+  eq([0, 5, 6, 11].map(slotMonthNumber), [7, 12, 1, 6], 'Jul, Dec, Jan, Jun');
+});
+
+test('a date maps to its slot, and back, for every month', () => {
+  const { dateToSlot, slotMonthNumber } = sandbox(YEAR_FNS);
+  for (let m = 1; m <= 12; m++) {
+    const iso = '2025-' + String(m).padStart(2, '0') + '-15';
+    const slot = dateToSlot(iso);
+    ok(slot >= 0 && slot <= 11, 'month ' + m + ' gave slot ' + slot);
+    eq(slotMonthNumber(slot), m, 'month ' + m + ' did not round-trip');
+  }
+  eq(dateToSlot('2025-07-01'), 0, 'July is the first slot');
+  eq(dateToSlot('2026-06-30'), 11, 'June is the last');
+});
+
+test('the program year window is July 1 to June 30', () => {
+  const { programYearStartISO, programYearEndISO } = sandbox(YEAR_FNS);
+  eq(programYearStartISO(2026), '2026-07-01', 'start');
+  eq(programYearEndISO(2026), '2027-06-30', 'end');
+});
+
+test('the default program year turns over in July, not September', () => {
+  // A pack opening the app in July is planning the year that starts NOW, not the one that
+  // started eleven months ago.
+  const ctx = sandbox(YEAR_FNS);
+  const realDate = Date;
+  function at(y, mZeroBased, d) {
+    ctx.Date = class extends realDate {
+      constructor() { super(); return new realDate(y, mZeroBased, d); }
+    };
+    const got = ctx.defaultProgramYear();
+    ctx.Date = realDate;
+    return got;
+  }
+  eq(at(2026, 6, 15), 2026, 'mid-July starts the new program year');
+  eq(at(2026, 5, 30), 2025, 'the end of June is still the old one');
+  eq(at(2026, 11, 1), 2026, 'December sits in the year that began in July');
+  eq(at(2027, 0, 5), 2026, 'January belongs to the year before it');
+});
+
+test('an existing pack’s stored slots are rebased once, keeping their month', () => {
+  // Slot 0 used to mean September and now means July, so every stored slot is two months
+  // out. Rebasing twice would shift by four and nothing would look obviously wrong.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = {
+    version: 1, scouts: [],
+    // Pre-rebase: 0=Sep, 3=Dec, 4=Jan, 11=Aug. No slotsRebased flag.
+    events: [
+      { id: 'a', kind: 'activity', name: 'Sep', date: '', slot: 0 },
+      { id: 'b', kind: 'activity', name: 'Dec', date: '', slot: 3 },
+      { id: 'c', kind: 'activity', name: 'Jan', date: '', slot: 4 },
+      { id: 'e', kind: 'activity', name: 'Aug', date: '', slot: 11 }
+    ],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  };
+  const once = ctx.normalizeState(JSON.parse(JSON.stringify(d)));
+  const slots = {};
+  once.events.forEach(e => { slots[e.name] = e.slot; });
+  eq(slots, { Sep: 2, Dec: 5, Jan: 6, Aug: 1 }, 'every slot should keep its calendar month');
+  eq(once.budget.slotsRebased, true, 'the rebase is not marked done');
+  const twice = ctx.normalizeState(JSON.parse(JSON.stringify(once)));
+  const again = {};
+  twice.events.forEach(e => { again[e.name] = e.slot; });
+  eq(again, slots, 'the rebase ran a second time and shifted everything again');
+});
+
+test('a dated event ignores the rebase — its date already decides', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState({
+    version: 1, scouts: [],
+    events: [{ id: 'a', kind: 'activity', name: 'Campout', date: '2025-10-18', slot: 0 }],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(after.events[0].slot, 3, 'October is slot 3, whatever was stored');
+});
+
+test('a brand new pack is born July-based and never rebases', () => {
+  const { freshBudget } = sandbox(['PROGRAM_START_MONTH', 'defaultProgramYear', 'freshBudget']);
+  eq(freshBudget().slotsRebased, true, 'a fresh budget would be rebased on first load');
+});
+
+test('the seeded slate keeps every activity in the month it was always in', () => {
+  const { SEED_ACTIVITIES, PROGRAM_MONTHS } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN',
+    'PROGRAM_START_MONTH', 'SA_FEES', 'SEED_EXPENSES', 'SEED_ACTIVITIES']);
+  const month = n => PROGRAM_MONTHS[SEED_ACTIVITIES.filter(a => a.name.indexOf(n) === 0)[0].slot];
+  eq(month('School Night'), 'September', 'School Night');
+  eq(month('Popcorn kickoff'), 'September', 'Popcorn kickoff');
+  eq(month('Fall family campout'), 'October', 'campout');
+  eq(month('Holiday pack party'), 'December', 'holiday party');
+  eq(month('Pinewood Derby'), 'January', 'derby');
+  eq(month('Blue & Gold'), 'February', 'Blue & Gold');
+  eq(month('Crossover'), 'May', 'crossover');
+  eq(month('Day camp'), 'June', 'day camp');
+  // The one deliberate move: a straight remap would have put resident camp in July, the
+  // very month a pack is doing this planning.
+  eq(month('Resident camp'), 'June', 'resident camp should sit at the END of the year');
+  SEED_ACTIVITIES.forEach(a => ok(a.slot >= 0 && a.slot <= 11, a.name + ' has slot ' + a.slot));
+});
+
+test('the program-year constants are declared before load() reads them', () => {
+  // This is the one the sliced-eval sandbox cannot catch, because it evaluates declarations
+  // in whatever order the test lists them. In the real file `var` hoists the NAME but not
+  // the VALUE, and both defaultProgramYear and dateToSlot run inside load() → normalizeState
+  // while the page is initialising. Declared too far down, they were undefined at that
+  // moment: dateToSlot returned NaN for every dated event (stored as null) and
+  // defaultProgramYear quietly answered a year early.
+  const at = (needle) => SCRIPT.indexOf(needle);
+  const load = at('  var state = load();');
+  ok(load !== -1, 'the load() call not found');
+  ['var PROGRAM_MONTHS', 'var PROGRAM_TURN', 'var PROGRAM_START_MONTH'].forEach(function (decl) {
+    const i = at('  ' + decl);
+    ok(i !== -1, decl + ' not found');
+    ok(i < load, decl + ' is declared after load() runs — it will be undefined during normalizeState');
+  });
 });
 
 /* ---------------- report ---------------- */

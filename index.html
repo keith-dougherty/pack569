@@ -1248,16 +1248,35 @@
   // free text, exact match). Future handbook renames are one-line 'old': 'new' additions
   // here — nothing else to touch. Must be defined BEFORE `var state = load()` runs.
   var ADV_RENAMES = { 'Lion Roar': "Lion's Roar" };
+  // The program year runs JULY → JUNE, because July is when this pack starts planning the
+  // year ahead. Scouting America's own "Ideal Year of Scouting" worksheet runs September →
+  // August; a pack that plans in the summer would spend two months with no year to plan
+  // into. Slot 0 is July and slot 11 is June.
+  var PROGRAM_MONTHS = ['July', 'August', 'September', 'October', 'November', 'December',
+    'January', 'February', 'March', 'April', 'May', 'June'];
+  // The slot at which the calendar year rolls over: slots 0–5 (Jul–Dec) are the program
+  // year itself, slots 6–11 (Jan–Jun) are the year after.
+  var PROGRAM_TURN = 5;
+  var PROGRAM_START_MONTH = 7;   // July
+  // DECLARED HERE, not beside the other calendar code further down, because defaultProgramYear
+  // and dateToSlot both read them and both run inside load() → normalizeState() while the
+  // page is still initialising. `var` hoists the name but not the value, so from down there
+  // they were undefined at that moment: dateToSlot returned NaN for every dated event and
+  // defaultProgramYear quietly answered a year early. The old code used bare literals and
+  // never had the problem.
   function defaultProgramYear() {
     var d = new Date();
-    return d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
+    return d.getMonth() >= (PROGRAM_START_MONTH - 1) ? d.getFullYear() : d.getFullYear() - 1;
   }
   function freshBudget() {
-    return { programYear: defaultProgramYear(), startingBalance: 0, activities: [], expenses: [] };
+    return {
+      programYear: defaultProgramYear(), startingBalance: 0, activities: [], expenses: [],
+      slotsRebased: true   // born July-based; nothing to migrate
+    };
   }
-  // The program year runs Sept 1 → Aug 31, exactly as slotYear/PROGRAM_MONTHS assume.
-  function programYearStartISO(py) { return py + '-09-01'; }
-  function programYearEndISO(py) { return (py + 1) + '-08-31'; }
+  // The program year runs July 1 → June 30, exactly as slotYear/PROGRAM_MONTHS assume.
+  function programYearStartISO(py) { return py + '-07-01'; }
+  function programYearEndISO(py) { return (py + 1) + '-06-30'; }
   // ---------------------------------------------------------------------------
   // MONEY REDESIGN, Phase 2 — events split out of the budget (DESIGN-money.md §3.1).
   //
@@ -1883,6 +1902,23 @@
       // Wave 15 — handbook renames apply to the free-text adventure field (exact match).
       if (e.adventure && ADV_RENAMES[e.adventure]) e.adventure = ADV_RENAMES[e.adventure];
     });
+    // -----------------------------------------------------------------------
+    // The program year moved from a September start to a JULY one, because July is when
+    // this pack starts planning. Slot 0 used to mean September; it now means July, so every
+    // stored slot is two months out and has to be rebased once:
+    //
+    //     newSlot = (oldSlot + 2) % 12     Sep 0→2, Dec 3→5, Jan 4→6, Aug 11→1
+    //
+    // Only UNDATED events need it. A dated one has its slot recomputed from its date a few
+    // lines above, so it corrects itself. The flag is the marker — remapping twice would
+    // shift everything by four months and nothing would look obviously wrong.
+    // -----------------------------------------------------------------------
+    if (d.budget.slotsRebased !== true) {
+      d.events.forEach(function (e) {
+        if (!e.date) e.slot = (e.slot + 2) % 12;
+      });
+      d.budget.slotsRebased = true;
+    }
     // A budget line whose event was deleted is unlinked rather than left dangling — it
     // still holds its money, it just has no place on the calendar.
     var evIds = {};
@@ -2634,9 +2670,6 @@
   }
 
   /* ---------------- Budget ---------------- */
-  // Program year runs September → August (Scouting America "Ideal Year of Scouting").
-  var PROGRAM_MONTHS = ['September', 'October', 'November', 'December', 'January', 'February',
-    'March', 'April', 'May', 'June', 'July', 'August'];
   // Phase 4 — the 510-278 worksheet, A − B = C. Deliberately does NOT call
   // computePackTotals: the goal derives from the PLAN and the commission rate, never from
   // what has been sold, and letting it depend on sales would be circular (the goal feeds
@@ -2702,7 +2735,7 @@
     var g = fundingSummary().salesGoal;
     return g == null ? 0 : g;
   }
-  function slotYear(slot) { return slot <= 3 ? state.budget.programYear : state.budget.programYear + 1; }
+  function slotYear(slot) { return slot <= PROGRAM_TURN ? state.budget.programYear : state.budget.programYear + 1; }
   function slotLabel(slot) { return PROGRAM_MONTHS[slot] + ' ' + slotYear(slot); }
   function computeBudget() {
     var b = state.budget;
@@ -3685,19 +3718,23 @@
     { name: 'Unit charter fee', category: 'charter', basis: 'flat',
       flatCents: SA_FEES.unitCharterCents }
   ];
+  // Slots are July-based (0 = July). Every item sits in the same CALENDAR month it always
+  // did — only the slot number moved. The exception is resident camp: under a September
+  // start it was the last month of the year, and a straight remap would have put it in the
+  // very month a pack is doing this planning. It sits with day camp at the end instead.
   var SEED_ACTIVITIES = [
-    { slot: 0, name: 'School Night — join & recruiting' },
-    { slot: 0, name: 'Popcorn kickoff' },
-    { slot: 1, name: 'Fall family campout' },
-    { slot: 2, name: 'Scouting for Food' },
-    { slot: 3, name: 'Holiday pack party' },
-    { slot: 4, name: 'Pinewood Derby' },
-    { slot: 5, name: 'Blue & Gold banquet' },
-    { slot: 6, name: 'Raingutter Regatta' },
-    { slot: 7, name: 'Spring hike / service project' },
-    { slot: 8, name: 'Crossover & graduation' },
-    { slot: 9, name: 'Day camp week' },
-    { slot: 10, name: 'Resident camp' }
+    { slot: 2, name: 'School Night — join & recruiting' },   // September
+    { slot: 2, name: 'Popcorn kickoff' },                    // September
+    { slot: 3, name: 'Fall family campout' },                // October
+    { slot: 4, name: 'Scouting for Food' },                  // November
+    { slot: 5, name: 'Holiday pack party' },                 // December
+    { slot: 6, name: 'Pinewood Derby' },                     // January
+    { slot: 7, name: 'Blue & Gold banquet' },                // February
+    { slot: 8, name: 'Raingutter Regatta' },                 // March
+    { slot: 9, name: 'Spring hike / service project' },      // April
+    { slot: 10, name: 'Crossover & graduation' },            // May
+    { slot: 11, name: 'Day camp week' },                     // June
+    { slot: 11, name: 'Resident camp' }                      // June
   ];
   function seedStandardYear() {
     var existing = {};
@@ -4845,7 +4882,7 @@
     if (src) state = src;
     try {
       var py = state.budget.programYear;
-      // Program year runs September → August.
+      // Program year runs July → June.
       var winStart = py + '-09-01', winEnd = (py + 1) + '-08-31';
       function inYear(d) { return typeof d === 'string' && d >= winStart && d <= winEnd; }
 
@@ -5836,12 +5873,18 @@
   }
 
   // Calendar month a program slot maps to (Sept=slot0 → month 09, … Aug=slot11 → month 08).
-  function slotMonthKey(slot) { return slotYear(slot) + '-' + pad2(slot <= 3 ? slot + 9 : slot - 3); }
-  // Inverse: which program slot a real date lands in (Sep=0..Dec=3, Jan=4..Aug=11; empty=0).
+  function slotMonthKey(slot) { return slotYear(slot) + '-' + pad2(slotMonthNumber(slot)); }
+  // Calendar month (1–12) for a program slot, and the inverse.
+  function slotMonthNumber(slot) {
+    // Slots 0–5 are Jul–Dec (slot + 7). Slots 6–11 are Jan–Jun (slot − 5), because slot 6
+    // is January, the first month after the turn.
+    return slot <= PROGRAM_TURN ? slot + PROGRAM_START_MONTH : slot - PROGRAM_TURN;
+  }
+  // Inverse: which program slot a real date lands in (Jul=0..Dec=5, Jan=6..Jun=11; empty=0).
   function dateToSlot(iso) {
     var m = +(iso || '').slice(5, 7); // 1..12
     if (!m) return 0;
-    return m >= 9 ? m - 9 : m + 3;    // Sep=0..Dec=3, Jan=4..Aug=11
+    return m >= PROGRAM_START_MONTH ? m - PROGRAM_START_MONTH : m + PROGRAM_TURN;
   }
   // Meetings split by kind: den = blue, pack = purple.
   function dotClass(e) {
@@ -6906,7 +6949,7 @@
         : '') +
       '<hr class="divider">' +
       '<div class="row">' +
-      '<label class="fld">Program year (Sept start)<input class="weight-in" type="number" step="1" inputmode="numeric" data-ch="bud-year" value="' + esc(b.programYear) + '"></label>' +
+      '<label class="fld">Program year (July start)<input class="weight-in" type="number" step="1" inputmode="numeric" data-ch="bud-year" value="' + esc(b.programYear) + '"></label>' +
       '<label class="fld">Starting funds — carryover from last year ($)<input class="money-in" inputmode="decimal" data-ch="bud-start" value="' + dollars(b.startingBalance) + '" placeholder="0.00"></label>' +
       '</div>' +
       '<div class="row" style="margin-top:10px">' + seedBtn() + '</div>' +
@@ -10881,7 +10924,7 @@
     var m = teMatchScouts(arc.scouts);
     // Same-kind replacement only — a Wave 7 'season' close-out for the same year coexists.
     var existsYear = state.archives.some(function (a) { return a.kind === 'trails-end' && a.year === arc.year; });
-    // Wave 16 — the program year (Sept start) spans two calendar years, so a report whose
+    // Wave 16 — the program year (July start) spans two calendar years, so a report whose
     // transactions land in either calendar year belongs to the current season.
     var py = state.budget.programYear;
     var isCurrentSeason = arc.year === py || arc.year === py + 1;
