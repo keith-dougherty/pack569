@@ -2226,6 +2226,7 @@
     // The new-entry draft. Held here rather than in the DOM so a re-render (which this app
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
+    budgetShowPast: false,  // Budget — reveal the already-gone months that carry no lines
     forgiveFor: null,   // Phase 3b — charge id showing the inline "why" form
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
     parentTab: 'schedule',    // 'schedule' | 'standings'
@@ -6808,8 +6809,15 @@
         (clrArmed ? 'Tap again to clear every date' : 'Clear all activity dates') + '</button></div>' +
         '<p class="small muted" style="margin:0 0 6px">Resets seeded activities that picked up today’s date — set real dates from the calendar.</p>';
     }
+    // Months that have already gone by are hidden unless they carry a line. A budget is a
+    // plan for what is still ahead; by February, seven empty month headings with "+ Add
+    // activity" under each are just noise to scroll past. Anything that already HAPPENED
+    // belongs in the ledger with its real date, which is what the note below points at.
+    var nowMk = monthKey(todayISO());
+    var hiddenPast = 0;
     for (var slot = 0; slot < 12; slot++) {
       var acts = activitiesInSlot(slot);
+      if (!acts.length && slotMonthKey(slot) < nowMk && !ui.budgetShowPast) { hiddenPast += 1; continue; }
       var mp = 0, ma = 0;
       // Wave 17 — month subtotals honor per-scout multiplication so they match the overview.
       acts.forEach(function (a) {
@@ -6821,6 +6829,18 @@
         '<span class="small muted money">' + (acts.length ? 'planned ' + fmt(mp) + ' · actual ' + fmt(ma) : '') + '</span></div>';
       acts.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
       h += '<button type="button" class="btn small ghost" data-act="add-activity" data-slot="' + slot + '">+ Add activity</button></div>';
+    }
+    if (hiddenPast || ui.budgetShowPast) {
+      h += '<div class="row no-print" style="margin-top:8px">' +
+        '<button type="button" class="btn small ghost" data-act="budget-toggle-past">' +
+        (ui.budgetShowPast
+          ? 'Hide earlier months'
+          : 'Show ' + hiddenPast + ' earlier month' + (hiddenPast === 1 ? '' : 's')) +
+        '</button></div>' +
+        (ui.budgetShowPast ? '' :
+          '<p class="small muted" style="margin:6px 0 0">Empty months that have already gone by are hidden. ' +
+          'Money the pack has already spent goes in <strong>Money · Ledger</strong> with the date it actually moved — ' +
+          'you can back-date an entry as far as you like.</p>');
     }
     // Dated outside the program year. Grouped by the month they are ACTUALLY in, because
     // the grid above takes its year from the program year and would mislabel them. Nearly
@@ -11759,6 +11779,7 @@
       commit(); return;
     }
     if (act === 'direct-prompt-done') { state.budget.directPrompted = true; commit(); return; }
+    if (act === 'budget-toggle-past') { ui.budgetShowPast = !ui.budgetShowPast; render(); return; }
     // Phase 4 — the goal follows the plan, or it doesn't. Switching to manual seeds the box
     // with what the plan currently says, so nobody starts from zero.
     if (act === 'goal-manual') {

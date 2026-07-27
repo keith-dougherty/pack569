@@ -1732,6 +1732,45 @@ test('an out-of-year line appears exactly once', () => {
   ok(/lineSlot\(a\) === -1/.test(loose), 'unscheduledActivities would catch dated lines too');
 });
 
+test('the budget hides gone-by months, but never one that carries a line', () => {
+  // A budget is a plan for what is ahead. By February, seven empty month headings with
+  // "+ Add activity" under each are noise. A month with a line in it always shows.
+  const fn = /function renderBudget\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderBudget() not found');
+  ok(/if \(!acts\.length && slotMonthKey\(slot\) < nowMk && !ui\.budgetShowPast\) \{ hiddenPast \+= 1; continue; \}/.test(fn[0]),
+    'past months are not hidden, or a month with lines could be hidden');
+  ok(/var nowMk = monthKey\(todayISO\(\)\)/.test(fn[0]), 'past is not measured against the current month');
+});
+
+test('nothing becomes unreachable — the hidden months can be shown again', () => {
+  const fn = /function renderBudget\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(/data-act="budget-toggle-past"/.test(fn[0]), 'no way to reveal the hidden months');
+  ok(/Hide earlier months/.test(fn[0]), 'the toggle does not reverse');
+  ok(/act === 'budget-toggle-past'/.test(SCRIPT), 'the toggle has no handler');
+});
+
+test('the budget points past spending at the ledger, where it can be back-dated', () => {
+  const fn = /function renderBudget\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT);
+  ok(/back-date an entry/.test(fn[0]),
+    'hiding past months without saying where already-spent money goes');
+});
+
+test('a ledger entry can be dated freely, forwards or back', () => {
+  // The budget now hides gone-by months, so the ledger is the only route to recording
+  // something that already happened. Nothing may constrain its date.
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(add, 'the ledger-add handler not found');
+  ok(/if \(!dr\.date\)/.test(add[0]), 'a date is not required');
+  ok(!/dr\.date >=|dr\.date <=|min="/.test(add[0]), 'the new-entry date is range-restricted');
+  // Both the draft field and the per-entry field must be plain, unbounded date inputs.
+  [/(<input type="date" data-ch="ledn-date"[^>]*>)/, /(<input type="date" data-ch="led-date"[^>]*>)/]
+    .forEach(function (re) {
+      const m = re.exec(SCRIPT);
+      ok(m, 'a ledger date input is missing');
+      ok(!/\bmin=|\bmax=/.test(m[1]), 'a ledger date input is bounded: ' + m[1]);
+    });
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
