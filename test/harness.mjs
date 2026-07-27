@@ -771,6 +771,8 @@ test('reconciling compares the TICKED entries to the statement', () => {
 // rather than through a reimplementation of it.
 const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'defaultProgramYear', 'freshBudget', 'programYearStartISO',
+  // DENS: the event coercion rebuilds `dens` in rank order against it.
+  'DENS',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
@@ -1245,7 +1247,8 @@ test('Phase 3a: a per-scout line becomes a per-head line priced on the scout rat
   eq(dues.scoutRateCents, 8000, 'the estimate became the SCOUT rate');
   eq(dues.adultRateCents, 0, 'no adult rate is invented');
   eq(dues.siblingRateCents, 0, 'no sibling rate is invented');
-  eq(dues.adultsPerScout, 1, 'the planning assumption defaults to one adult per scout');
+  eq(dues.includeLeaders, false, 'the pack is not signed up to pay for leaders by default');
+  eq(dues.leaderRateCents, 0, 'no leader rate is invented');
   eq(dues.fundedBy, 'families', 'familyPays became fundedBy');
   const charter = d.budget.expenses.find(e => e.id === 'e2');
   eq(charter.basis, 'flat', 'basis');
@@ -1257,31 +1260,38 @@ test('Phase 3a: a per-scout line becomes a per-head line priced on the scout rat
   });
 });
 
-test('Phase 3a: an adult rate of zero means the assumption changes nothing', () => {
-  // adultsPerScout defaults to 1, so a migrated line multiplies one adult by a rate of
-  // zero. If that default ever started costing money, every pack's plan would jump on
-  // upgrade — which is exactly what the totals test above exists to prevent.
-  const { linePlannedCents, freshLine } = sandbox(PRICE_FNS);
-  const l = freshLine({ basis: 'per-head', scoutRateCents: 4000, adultRateCents: 0, adultsPerScout: 1 });
-  eq(linePlannedCents(l, 10), 40000, 'planned');
-});
-
-test('Phase 3a: planned is rates x an assumed head count, stated openly', () => {
-  // DESIGN-money.md 3.2: one adult per scout and no siblings is the honest default — the
-  // minimum the pack is on the hook for.
+test('a family rate never reaches the pack’s plan', () => {
+  // OWNER RULING 2026-07-27: the pack covers scouts and registered leaders, nobody else.
+  // Parents and siblings pay their own way, so an adult or sibling rate is a BILLING rate —
+  // it must not add a cent to what the pack plans to spend. This replaces the old
+  // adultsPerScout assumption, which invented one parent per scout and charged the pack for
+  // every one of them.
   const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
   const bg = freshLine({ basis: 'per-head', scoutRateCents: 1500, adultRateCents: 1500, siblingRateCents: 800 });
-  eq(linePlannedHeads(bg, 10), { scouts: 10, adults: 10, siblings: 0 }, 'assumed heads');
-  eq(linePlannedCents(bg, 10), 30000, 'the 3.4 worked example plans to $300');
-  bg.adultsPerScout = 2;
-  eq(linePlannedCents(bg, 10), 45000, 'two parents always come on this one');
+  eq(linePlannedHeads(bg, 10, 4), { scouts: 10, leaders: 0 }, 'planned heads');
+  eq(linePlannedCents(bg, 10, 4), 15000, 'ten scouts at $15 — the parents are not the pack’s to plan');
+});
+
+test('the pack plans for leaders only when it is paying for them', () => {
+  // Registration is genuinely two prices, which is why leaders carry their own rate rather
+  // than sharing the scout's.
+  const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
+  const camp = freshLine({ basis: 'per-head', scoutRateCents: 2000 });
+  eq(linePlannedCents(camp, 10, 4), 20000, 'unticked: scouts only');
+  camp.includeLeaders = true; camp.leaderRateCents = 2000;
+  eq(linePlannedHeads(camp, 10, 4), { scouts: 10, leaders: 4 }, 'planned heads');
+  eq(linePlannedCents(camp, 10, 4), 28000, 'ticked: 10 scouts + 4 leaders at $20');
+  const reg = freshLine({ basis: 'per-head', scoutRateCents: 8500, includeLeaders: true, leaderRateCents: 6500 });
+  eq(linePlannedCents(reg, 10, 4), 111000, '$85 a scout and $65 a leader');
+  // A leader count of zero is not a reason to plan nothing for the scouts.
+  eq(linePlannedCents(reg, 10, 0), 85000, 'no leaders on the roster yet');
 });
 
 test('Phase 3a: a flat line ignores the roster entirely', () => {
   const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
   const charter = freshLine({ basis: 'flat', flatCents: 10000, scoutRateCents: 999 });
   eq(linePlannedCents(charter, 50), 10000, 'a charter fee is a charter fee');
-  eq(linePlannedHeads(charter, 50), { scouts: 0, adults: 0, siblings: 0 }, 'no heads are assumed');
+  eq(linePlannedHeads(charter, 50, 9), { scouts: 0, leaders: 0 }, 'no heads are counted');
 });
 
 test('Phase 3a: "the pack pays, but somebody else is paid directly" is not expressible', () => {
@@ -1583,7 +1593,7 @@ test('Phase 4: a family-funded event counts as income before anyone has attended
   // raise money it was never going to spend.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : linePlannedCents\(l, scouts, leaders\)/.test(fn[0]),
+  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : linePlanned\(l\)/.test(fn[0]),
     'a family-funded line with no charges yet contributes nothing to income');
 });
 
@@ -1918,26 +1928,28 @@ test('youth registration follows the roster', () => {
   eq(linePlannedCents(youth, 0, 4), 0, 'an empty roster costs nothing');
 });
 
-test('adult registration follows the LEADER roster, not an assumption', () => {
+test('adult registration follows the LEADER roster', () => {
   // This is the whole reason it can be seeded: the count is a number the pack already
   // keeps, so the line moves on its own as leaders join and leave.
   const { SEED_EXPENSES, freshLine, linePlannedCents, linePlannedHeads } = sandbox(REG_FNS);
   const adult = freshLine(SEED_EXPENSES.filter(e => e.name === 'Adult leader registration')[0]);
-  eq(adult.adultsFrom, 'leaders', 'it is still using the per-scout assumption');
+  eq(adult.includeLeaders, true, 'the seeded line does not include leaders');
+  eq(adult.leaderRateCents, 6500, 'the leader fee is on the LEADER rate, not the family-adult rate');
+  eq(adult.adultRateCents, 0, 'a leader is not a family adult — that rate bills a parent');
   eq(linePlannedCents(adult, 10, 6), 39000, 'six registered leaders at $65');
   eq(linePlannedCents(adult, 10, 7), 45500, 'a seventh leader registers');
   eq(linePlannedCents(adult, 40, 6), 39000, 'the scout count must not affect it');
-  eq(linePlannedHeads(adult, 10, 6).adults, 6, 'head count');
+  eq(linePlannedHeads(adult, 10, 6).leaders, 6, 'head count');
   eq(linePlannedCents(adult, 10, 0), 0, 'no leaders recorded yet');
 });
 
-test('an event line still uses the per-scout assumption', () => {
-  // Adding adultsFrom must not change how an ordinary event plans its adults.
+test('an ordinary event does not pay for the leader roster', () => {
+  // The leader count must never leak into a line that did not ask for it.
   const { freshLine, linePlannedCents, linePlannedHeads } = sandbox(REG_FNS);
-  const bg = freshLine({ basis: 'per-head', scoutRateCents: 1500, adultRateCents: 1500, adultsPerScout: 1 });
-  eq(bg.adultsFrom, 'assumption', 'the default changed');
-  eq(linePlannedHeads(bg, 10, 99).adults, 10, 'the leader roster leaked into an event');
-  eq(linePlannedCents(bg, 10, 99), 30000, 'the 3.4 worked example still plans to $300');
+  const bg = freshLine({ basis: 'per-head', scoutRateCents: 1500, adultRateCents: 1500 });
+  eq(bg.includeLeaders, false, 'the default changed');
+  eq(linePlannedHeads(bg, 10, 99).leaders, 0, 'the leader roster leaked into an event');
+  eq(linePlannedCents(bg, 10, 99), 15000, 'ten scouts at $15, and not one adult');
 });
 
 test('the charter fee is flat — one unit, not one per scout', () => {
@@ -1986,8 +1998,8 @@ test('every planning call passes the leader count', () => {
     if (args.length !== 3) bad.push(NEEDLE + args.join(',') + ')');
   }
   eq(bad, [], 'these calls omit the leader count: ' + bad.join(' | '));
-  ok(/function linePlanned\(l\) \{ return linePlannedCents\(l, activeScouts\(\)\.length, activeLeaders\(\)\.length\); \}/.test(SCRIPT),
-    'the state-reading wrapper does not pass the ACTIVE leader roster');
+  ok(/function linePlanned\(l\) \{ return linePlannedCents\(l, lineRoster\(l\)\.length, activeLeaders\(\)\.length\); \}/.test(SCRIPT),
+    'the state-reading wrapper does not pass the line roster and the ACTIVE leader roster');
 });
 
 test('a leader who has moved on stops costing the pack money', () => {
@@ -1998,8 +2010,22 @@ test('a leader who has moved on stops costing the pack money', () => {
   ok(/l\.archived = l\.archived === true;/.test(SCRIPT), 'leaders cannot be archived');
   // Every place that asks "how many leaders" must count the ACTIVE ones. (The raw list is
   // still fine as a loop bound, an "any data at all" check, or a splice index — this checks
-  // the three places where the number is a HEAD COUNT.)
-  ['function computeBudget', 'function fundingSummary', 'function lineOptionControls'].forEach(function (fname) {
+  // the places where the number is a HEAD COUNT.)
+  //
+  // computeBudget and fundingSummary no longer hold a leader count of their own: both plan
+  // through linePlanned(), which is pinned to activeLeaders() by the test above. That is the
+  // point of the single wrapper — one place to get it right — so what they are checked for
+  // here is that they never went back to counting heads themselves.
+  ['function computeBudget', 'function fundingSummary'].forEach(function (fname) {
+    const re = new RegExp(fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}');
+    const fn = re.exec(SCRIPT);
+    ok(fn, fname + '() not found');
+    ok(!/state\.leaders\.length/.test(fn[0]), fname + ' counts archived leaders');
+    ok(!/linePlannedCents\(/.test(fn[0]),
+      fname + ' prices a line itself instead of going through linePlanned, so a den-limited '
+      + 'event would be planned against the whole pack');
+  });
+  ['function lineOptionControls'].forEach(function (fname) {
     const re = new RegExp(fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}');
     const fn = re.exec(SCRIPT);
     ok(fn, fname + '() not found');
@@ -2249,7 +2275,8 @@ test('the settings are still reachable, one tap away', () => {
   ok(/open \? lineOptionControls/.test(fn[0]), 'the settings never render');
   const opt = /function lineOptionControls\(l, scoutN, collectKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(opt, 'lineOptionControls() not found');
-  ['line-basis', 'line-category', 'line-funded', 'line-scout-rate', 'line-adults-from', 'line-direct']
+  ['line-basis', 'line-category', 'line-funded', 'line-scout-rate', 'line-include-leaders',
+    'line-leader-rate', 'line-adult-rate', 'line-sibling-rate', 'line-direct']
     .forEach(function (ch) { ok(opt[0].indexOf('data-ch="' + ch + '"') !== -1, ch + ' is no longer editable'); });
   ok(/act === 'line-options'/.test(SCRIPT), 'the disclosure has no handler');
 });
@@ -2270,6 +2297,285 @@ test('the row does not repeat the month its group already states', () => {
   ok(!/slotLabel\(ev\.slot\)/.test(fn[0]),
     'the row still prints "September 2026" under a heading that already says it');
   ok(/no date yet/.test(fn[0]), 'the row no longer says when there is no date');
+});
+
+/* ================================================================
+   Den-limited events — Webelos Woods is not a bill for the Tigers
+   ================================================================ */
+// The helper run is a chain of one-line declarations, so slicing the first of them carries
+// the rest through the end of eventRoster. That is how slice() works and it is what we want
+// here: every helper in the group, evaluated together.
+const dens = sandbox(['DENS', 'eventDens', 'denListLabel']);
+
+test('an event is for the whole pack unless it says which dens', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  eq(ctx.freshEvent().dens, [], 'a new event carries an empty den list');
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    events: [{ id: 'ev1', kind: 'activity', name: 'Fall campout', date: '2025-10-04' }],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(d.events[0].dens, [], 'an existing event must migrate to "the whole pack"');
+});
+
+test('only an activity can be limited to dens', () => {
+  // A den meeting already names its den and a pack meeting is everyone, so a den list on
+  // either could only contradict the kind.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    events: [
+      { id: 'ev1', kind: 'den', den: 'Wolf', date: '2025-10-01', dens: ['Tiger'] },
+      { id: 'ev2', kind: 'pack', date: '2025-10-02', dens: ['Lion', 'Tiger'] },
+      { id: 'ev3', kind: 'activity', name: 'Webelos Woods', date: '2025-10-03', dens: ['Webelos'] }
+    ],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(d.events[0].dens, [], 'a den meeting kept a den list');
+  eq(d.events[1].dens, [], 'a pack meeting kept a den list');
+  eq(d.events[2].dens, ['Webelos'], 'an activity lost its den list');
+});
+
+test('a stored den list is rank-ordered, deduped, and free of junk', () => {
+  // It is written from tick boxes in whatever order they were tapped, and it is read back
+  // into printed labels — so one canonical shape, decided on the way in.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    events: [{ id: 'ev1', kind: 'activity', name: 'Woods', date: '2025-10-03',
+      dens: ['Arrow of Light', 'Webelos', 'Webelos', 'Sixth Grade', 42] }],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(d.events[0].dens, ['Webelos', 'Arrow of Light'], 'den list');
+});
+
+test('a den-limited event narrows the roster; everything else does not', () => {
+  const roster = [
+    { id: 's1', name: 'Ada', den: 'Tiger' },
+    { id: 's2', name: 'Ben', den: 'Webelos' },
+    { id: 's3', name: 'Cal', den: 'Arrow of Light' },
+    { id: 's4', name: 'Dee', den: '' }
+  ];
+  eq(dens.scoutsInDens(roster, []).length, 4, 'no restriction means the whole pack');
+  eq(dens.scoutsInDens(roster, ['Webelos', 'Arrow of Light']).map(s => s.id), ['s2', 's3'], 'Webelos Woods');
+  eq(dens.scoutsInDens(roster, ['Tiger']).map(s => s.id), ['s1'], 'Tiger Mania');
+  // A scout with no den is in NO den's event. The UI says so out loud, because the
+  // alternative is a family that quietly never gets billed.
+  eq(dens.scoutsInDens(roster, ['Tiger', 'Webelos', 'Arrow of Light']).map(s => s.id), ['s1', 's2', 's3'],
+    'a scout with no den set must not be swept into a den event');
+});
+
+test('a den list reads as English wherever it is printed', () => {
+  eq(dens.denListLabel([]), '', 'no restriction says nothing');
+  eq(dens.denListLabel(['Tiger']), 'Tiger', 'one den');
+  eq(dens.denListLabel(['Webelos', 'Arrow of Light']), 'Webelos and Arrow of Light', 'two dens');
+  eq(dens.denListLabel(['Tiger', 'Wolf', 'Bear']), 'Tiger, Wolf and Bear', 'three dens');
+});
+
+test('the restriction lives on the event, and the budget line reads it', () => {
+  // Two fields holding "who is this for" is how they drift — the same reason the date left
+  // the budget line in Phase 2.
+  ok(/function lineDens\(l\) \{ return eventDens\(eventForLine\(l\)\); \}/.test(SCRIPT),
+    'the budget line does not read the den list from its event');
+  // The line must not grow a copy. (state.leaders[].dens is a different thing entirely —
+  // which dens a LEADER leads — so this looks at the line's own shape, not at `l.dens`.)
+  const fresh = /function freshLine\(patch\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fresh, 'freshLine() not found');
+  ok(!/dens/.test(fresh[0]), 'a budget line has grown a den list of its own');
+  const mig = /function migrateLineShape\(l\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(mig, 'migrateLineShape() not found');
+  ok(!/dens/.test(mig[0]), 'the line migration has started writing a den list');
+});
+
+test('a den-limited line bills only the dens it is for', () => {
+  // Where the money actually narrows:
+  //   * the plan            linePlanned → lineRoster        (pinned above)
+  //   * expected fee income computeBudget → lineRoster      (what popcorn must cover)
+  //   * raised charges      an EVENT line charges from attendance, and the attendance list
+  //                         is narrowed by eventRoster — see the next test
+  // syncCharges asks each line for its own roster too. For an event line that argument is
+  // unused (charges come from attendance), and a line with no event is the whole roster by
+  // definition — so today it can only ever equal activeScouts(). It is written this way so
+  // that stays true by construction rather than by luck.
+  const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(sc, 'syncCharges() not found');
+  ok(/chargeRowsFor\(r\.line, marked, lineRoster\(r\.line\)\)/.test(sc[0]),
+    'syncCharges raises roster charges against one pack-wide roster');
+  ok(!/var roster = activeScouts\(\);/.test(sc[0]), 'syncCharges still holds one pack-wide roster');
+  const cb = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/lineRoster\(item\)\.forEach/.test(cb[0]),
+    'expected family income is still counted across the whole pack');
+});
+
+test('attendance and RSVP show the dens invited, and never hide a recorded reply', () => {
+  const fn = /function eventRoster\(ev, recorded\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'eventRoster() not found');
+  ok(/if \(recorded && recorded\[s\.id\]\) return true;/.test(fn[0]),
+    'narrowing an event afterwards would hide a reply that was already given');
+  ok(/ev\.kind === 'den' && ev\.den \? \[ev\.den\] : eventDens\(ev\)/.test(fn[0]),
+    'a den meeting and a den-limited activity do not share one narrowing rule');
+  ok(/var roster = eventRoster\(m, marked\);/.test(SCRIPT), 'attendance does not use eventRoster');
+  ok(/var roster = eventRoster\(rsvpEv, map\);/.test(SCRIPT), 'the RSVP list does not use eventRoster');
+  ok(/var roster = eventRoster\(getEvent\(evKey\), map\);/.test(SCRIPT),
+    'the RSVP summary counts "no reply" against scouts who were never asked');
+});
+
+test('the rollover carries which dens an event was for', () => {
+  // Webelos Woods is a Webelos event every year: the restriction is by den, not by the
+  // scouts who happened to be in it. Losing it would quietly re-bill the whole pack.
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'rolloverYear() not found');
+  ok(/dens: ev \? eventDens\(ev\)\.slice\(\) : \[\]/.test(fn[0]), 'the den list is not captured');
+  ok(/freshEvent\(\{ kind: 'activity'[^)]*dens: c\.dens \}\)/.test(fn[0]), 'the den list is not carried');
+});
+
+test('parents are told an activity is not their den, and nothing more', () => {
+  const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'buildParentView() not found');
+  ok(/detail: aDens \? aDens \+ ' only' : ''/.test(fn[0]),
+    'the published activity does not say which dens it is for');
+  ok(!/dens: /.test(fn[0]), 'the published shape grew a field instead of using the detail line');
+});
+
+/* ---------------- Families pay the council: three arrangements, one question ---------- */
+
+test('the funding question offers all three arrangements', () => {
+  // fundedBy + paidDirectTo stay two independent fields (DESIGN-money.md 3.2) — as CONTROLS
+  // they made the commonest case in this pack reachable only by picking "Families pay" and
+  // then noticing a text box appear underneath. Nobody found it.
+  const fn = /function lineOptionControls\(l, scoutN, collectKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'lineOptionControls() not found');
+  ['>Pack pays<', '>Families pay the pack<', '>Families pay Council direct<'].forEach((opt) => {
+    ok(fn[0].includes(opt), 'the paid-by control is missing ' + opt);
+  });
+  ok(/value="direct"/.test(fn[0]), 'there is no way to say families pay somebody directly');
+});
+
+test("'direct' is a control, never a stored fundedBy value", () => {
+  // A third fundedBy value reading 'council' was the wrong fix: it sounds like the council is
+  // paying FOR the camp when the council is the one being paid.
+  const { LINE_FUNDERS } = sandbox(['LINE_FUNDERS']);
+  eq(LINE_FUNDERS, ['pack', 'families'], 'the stored funders');
+  const { lineFundingMode } = sandbox(['lineFamilyFunded', 'lineFundingMode']);
+  eq(lineFundingMode({ fundedBy: 'pack', paidDirectTo: '' }), 'pack', 'pack pays');
+  eq(lineFundingMode({ fundedBy: 'families', paidDirectTo: '' }), 'families', 'families pay the pack');
+  eq(lineFundingMode({ fundedBy: 'families', paidDirectTo: 'Council' }), 'direct', 'families pay the council');
+  // The combination the model refuses to store must not be reachable from the control either.
+  eq(lineFundingMode({ fundedBy: 'pack', paidDirectTo: 'Council' }), 'pack', 'pack-funded is pack-funded');
+});
+
+test('choosing "families pay Council direct" fills the payee in, and clearing it undoes it', () => {
+  const fn = /if \(bk === 'name'\) \{[\s\S]*?\} else if \(bk === 'direct'\)/.exec(SCRIPT);
+  ok(fn, 'the budget-line change handler was not found');
+  ok(/if \(el\.value === 'direct'\) \{\s*\n\s*bl\.fundedBy = 'families';\s*\n\s*if \(!bl\.paidDirectTo\) bl\.paidDirectTo = 'Council';/.test(fn[0]),
+    'picking the third option leaves the line with no payee, so it behaves as if the pack collects it');
+  ok(/bl\.fundedBy = el\.value === 'families' \? 'families' : 'pack';\s*\n(\s*\/\/[^\n]*\n)*\s*bl\.paidDirectTo = '';/.test(fn[0]),
+    'switching away from paid-direct leaves a stale payee behind');
+});
+
+/* ================================================================
+   The pack covers scouts and leaders — owner ruling, 2026-07-27
+   ================================================================ */
+
+test('a per-leader fee migrates onto the leader rate, to the cent', () => {
+  // adultsFrom:'leaders' meant "this adult rate is per REGISTERED LEADER" — the seeded adult
+  // registration line. Moving it must not change a single planned figure.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    budget: { programYear: 2025, activities: [], expenses: [
+      { id: 'e1', name: 'Adult leader registration', basis: 'per-head', category: 'registration',
+        scoutRateCents: 0, adultRateCents: 6500, adultsFrom: 'leaders', adultsPerScout: 1 }
+    ] }
+  });
+  const reg = d.budget.expenses[0];
+  eq(reg.includeLeaders, true, 'the leader box should be ticked');
+  eq(reg.leaderRateCents, 6500, 'the fee moved to the leader rate');
+  eq(reg.adultRateCents, 0, 'it must not also read as a family-adult billing rate');
+  eq(ctx.linePlannedCents(reg, 10, 6), 39000, 'six leaders at $65 — unchanged by the migration');
+});
+
+test('an assumed parent stops being planned, but is still billable', () => {
+  // adultsFrom:'assumption' × adultsPerScout invented one parent per scout and charged the
+  // PACK for every one. The rate survives as what a FAMILY owes; the plan drops it. Planned
+  // figures on these lines fall on upgrade, and that is the correction being asked for.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    budget: { programYear: 2025, activities: [], expenses: [
+      { id: 'e1', name: 'Blue & Gold', basis: 'per-head', category: 'events', fundedBy: 'families',
+        scoutRateCents: 1500, adultRateCents: 1500, siblingRateCents: 800,
+        adultsFrom: 'assumption', adultsPerScout: 1 }
+    ] }
+  });
+  const bg = d.budget.expenses[0];
+  eq(bg.includeLeaders, false, 'a family rate must not become a leader rate');
+  eq(bg.leaderRateCents, 0, 'no leader rate is invented');
+  eq(bg.adultRateCents, 1500, 'the family-adult rate survives — families still owe it');
+  eq(bg.siblingRateCents, 800, 'the sibling rate survives');
+  eq(ctx.linePlannedCents(bg, 10, 4), 15000, 'ten scouts at $15 and nobody else');
+});
+
+test('the old head-count fields are gone, and the migration runs once', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const once = ctx.normalizeState({
+    version: 1, scouts: [],
+    budget: { programYear: 2025, activities: [], expenses: [
+      { id: 'e1', name: 'Camp', basis: 'per-head', scoutRateCents: 4000,
+        adultRateCents: 4000, adultsFrom: 'leaders', adultsPerScout: 2 }
+    ] }
+  });
+  const l1 = once.budget.expenses[0];
+  ok(!('adultsFrom' in l1) && !('adultsPerScout' in l1), 'an old head-count field survived');
+  const twice = ctx.normalizeState(JSON.parse(JSON.stringify(once)));
+  const l2 = twice.budget.expenses[0];
+  eq([l2.includeLeaders, l2.leaderRateCents, l2.adultRateCents], [true, 4000, 0],
+    'running the migration twice moved the rate again');
+});
+
+test('family heads are charged from who came, never from the plan', () => {
+  // The other half of the ruling: taking parents out of the PLAN must not take them out of
+  // the BILL. §3.4's worked example — scout, both parents, one sibling — is unchanged.
+  const { chargeRowsFor } = sandbox(['chargeRowsFor']);
+  const line = { id: 'L1', eventId: 'E1', scoutRateCents: 1500, adultRateCents: 1500, siblingRateCents: 800 };
+  const rows = chargeRowsFor(line, { s1: { scout: 1, adults: 2, siblings: 1 } }, []);
+  eq(rows.length, 4, 'four heads, four charges');
+  eq(rows.reduce((n, r) => n + r.amountCents, 0), 5300, '$15 + 2 × $15 + $8');
+  eq(rows.filter(r => r.who === 'adult').length, 2, 'both parents');
+});
+
+test('ticking "include leaders" starts the leader rate at the scout rate', () => {
+  // A campsite or a plate of food costs the same whoever it is for, so one tick should be
+  // enough. Registration is the exception, and the field is right there.
+  const fn = /if \(bk === 'name'\) \{[\s\S]*?\} else if \(bk === 'direct'\)/.exec(SCRIPT);
+  ok(fn, 'the budget-line change handler was not found');
+  ok(/bl\.includeLeaders = el\.checked;/.test(fn[0]), 'the checkbox does not set the flag');
+  ok(/if \(bl\.includeLeaders && !bl\.leaderRateCents\) bl\.leaderRateCents = bl\.scoutRateCents \|\| 0;/.test(fn[0]),
+    'ticking the box leaves the leader rate at zero, so it silently costs nothing');
+});
+
+test('the editor asks for a per-scout price, not a per-head guess', () => {
+  const fn = /function lineOptionControls\(l, scoutN, collectKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'lineOptionControls() not found');
+  ok(fn[0].includes('>per scout<'), 'the scout rate is not labelled per scout');
+  ok(fn[0].includes('Include registered leaders'), 'there is no way to include leaders');
+  ok(!/adults\/scout|an assumption/.test(fn[0]), 'the invented-parents assumption is still on screen');
+  // The family rates are asked for ONLY where families are billed through the pack.
+  const fam = /if \(mode === 'families'\) \{[\s\S]*?\n    \}/.exec(fn[0]);
+  ok(fam, 'the family-heads group was not found');
+  ok(/data-ch="line-adult-rate"/.test(fam[0]) && /data-ch="line-sibling-rate"/.test(fam[0]),
+    'the family billing rates are outside the families-pay branch');
+});
+
+test('a scout’s name can be corrected', () => {
+  // It was set once at add time and then fixed. A Trail's End import arrives with whatever
+  // the parent typed into their own account, and a typo in a child's name is not something
+  // anybody should have to live with.
+  ok(/data-ch="scout-name"/.test(SCRIPT), 'there is no name field on the roster');
+  ok(/if \(ch === 'scout-name'\) scEd\.name = el\.value\.trim\(\);/.test(SCRIPT),
+    'the name field has no handler, or does not trim like a leader’s does');
+  // Everything keys off the id, so a rename must not need to touch anything else.
+  ok(!/scoutId === .*\.name|name === c\.scoutId/.test(SCRIPT), 'something is matching a scout by name');
 });
 
 /* ---------------- report ---------------- */

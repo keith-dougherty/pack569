@@ -158,13 +158,32 @@ FAMILY ACCOUNT   what each family owes/paid    (Money · Dues & fees)     ← re
 Pure calendar. No money.
 
 ```js
-{ id, kind: 'pack'|'den'|'activity'|'storefront', den, name,
+{ id, kind: 'pack'|'den'|'activity'|'storefront', den, name, dens,
   date, time, endTime, location, note, slot, sourceUid }
 ```
 
 Absorbs today's `meetings[]` and the calendar half of `budget.activities[]`. `sourceUid`
 round-trips ICS. RSVP and attendance key off `event.id` — one mechanism instead of today's split
 between `attendance[meetingId]` (meetings only) and `rsvps['act:'+id]` (activities only).
+
+#### Who an event is for
+
+`dens` is the list of dens an **activity** is for. Empty — the default, and what every existing
+event migrates to — means the whole pack, which is most of what a pack does. Webelos Woods and
+Tiger Mania are the exceptions that need it, and they are not a display nicety: planning a
+four-scout event against a ten-scout roster overstates the plan, and **charging ten families for
+an event six of them were not invited to is a real error, not a rounding one.**
+
+It lives on the event, not on the budget line, because who is invited decides three things at
+once — who is asked to RSVP, who is on the attendance list, and who is billed. One field, read
+in three places, exactly as the date is. The budget line reads it through its event
+(`lineDens` → `eventForLine`), so `linePlanned` and the expected-fee income narrow with it. A
+line with no event — dues, registration — is the whole roster by definition.
+
+A `kind: 'den'` meeting already names its den in `den` and a pack meeting is everyone, so `dens`
+is cleared on those kinds rather than left to contradict the kind. A scout with **no den set** is
+in no den's event; the UI says so out loud, because the alternative is a family that quietly never
+gets billed.
 
 #### Attendance is a head count, not a tick
 
@@ -193,15 +212,45 @@ and the heads are not all the same kind or price.
                                  // |'uniforms'|'reserve'|'other'|'income'
   name,
   basis: 'per-head'|'flat',
-  scoutRateCents,                // per scout
-  adultRateCents,                // per adult
-  siblingRateCents,              // per sibling — often a child rate, sometimes 0
+  scoutRateCents,                // per scout            — PLANNED and CHARGED
+  includeLeaders,                // does the pack pay for leaders on this line?
+  leaderRateCents,               // per registered leader — PLANNED, the pack's own money
+  adultRateCents,                // per family adult      — CHARGED ONLY
+  siblingRateCents,              // per sibling           — CHARGED ONLY
   flatCents,                     // used when basis === 'flat'
   eventId,                       // optional link to an Event
   fundedBy: 'pack'|'families',   // whose money it is in the end
   paidDirectTo }                 // '' = money flows through the pack
                                  // a name = families pay THEM directly, e.g. 'Council'
 ```
+
+#### The pack covers scouts and leaders. Nobody else.
+
+*Owner ruling, 2026-07-27.* Parents and siblings pay their own way, so **they must never appear in
+the pack's planned figure.** The plan counts two head counts, and both are numbers the pack already
+keeps — the scout roster and the registered-leader roster — so neither is a guess:
+
+```js
+plannedHeads = { scouts: activeScouts, leaders: includeLeaders ? activeLeaders : 0 }
+planned      = scoutRate × scouts + leaderRate × leaders
+```
+
+This replaced `adultsFrom: 'assumption'` + `adultsPerScout` (default 1), which invented one parent
+per scout and multiplied them by the adult rate. A per-head line with any adult rate at all planned
+to pay for ten parents the pack was never going to pay for — the single biggest way this app could
+overstate what a pack has to raise. Migration moves a per-registered-leader fee onto
+`leaderRateCents` unchanged (the seeded adult registration line), and leaves a family rate where it
+is while dropping it out of the plan: **planned figures on those lines fall, and that is the
+correction.**
+
+Leaders carry their own rate rather than sharing the scout's because registration is genuinely two
+prices — $85 youth, $65 adult. A campsite or a plate of food is one price, so ticking the box
+starts the leader rate at the scout rate.
+
+`adultRateCents` and `siblingRateCents` survive as **billing** rates: what a family owes for the
+heads it brings, raised as charges from recorded attendance (§3.4's worked example is unchanged) and
+asked for only where families are billed through the pack. Planning assumes; reality is entered
+afterwards — and a parent is reality, not an assumption.
 
 #### Two questions, two fields
 
@@ -260,29 +309,54 @@ the pack spends, or get dropped and understate what Scouting costs a family.
 `fundedBy: 'pack'` with a `paidDirectTo` is meaningless — if the pack is paying, it goes through
 the pack's account — and the UI should not offer the combination.
 
+#### Two fields, but one question to answer
+
+Two independent fields is right for the *model* and was wrong for the *control*. Shipped as two
+controls, the commonest arrangement in this pack — families pay the council for day camp — was
+reachable only by picking "Families pay" and then noticing a text box appear underneath it.
+Nobody found it, and a council camp sat in the budget as money the pack was expected to raise.
+
+So **one select names all three arrangements**:
+
+| Control | `fundedBy` | `paidDirectTo` |
+|---|---|---|
+| Pack pays | `pack` | `''` |
+| Families pay the pack | `families` | `''` |
+| Families pay Council direct | `families` | `'Council'`, prefilled and editable |
+
+The third option is not a third `fundedBy` value — that is still the wrong answer for the reason
+above. It sets both fields, filling in the payee every pack means by it, and the payee stays a
+name because uniforms go to the Scout Shop and a campground bills its own. Clearing the name puts
+the line back through the pack's books, which is what a blank payee has always meant.
+
 #### Planning assumes; reality is entered afterwards
 
-Parents are not going to RSVP in this app, at least not yet. So the plan cannot wait on them, and
-**the planning head count is an assumption, stated openly**:
+Parents are not going to RSVP in this app, at least not yet. So the plan cannot wait on them — and
+**it no longer has to guess at them either.** The plan counts the two rosters the pack keeps (see
+*The pack covers scouts and leaders*, above):
 
 ```js
-plannedHeads = { scouts: activeScouts, adults: activeScouts × adultsPerScout, siblings: 0 }
-                                                              // adultsPerScout defaults to 1
-planned      = scoutRate × scouts + adultRate × adults + siblingRate × siblings
+plannedHeads = { scouts: activeScouts, leaders: includeLeaders ? activeLeaders : 0 }
+planned      = scoutRate × scouts + leaderRate × leaders
 ```
 
-One adult per scout, no siblings, is the honest default for budgeting — it is the minimum the pack
-will be on the hook for. `adultsPerScout` is editable per line for the events where two parents
-always come. Nothing about this pretends to know who is coming; it is a planning figure.
+Nothing here pretends to know who is coming, because it does not have to: nobody outside those two
+rosters is the pack's money.
+
+> **Superseded, 2026-07-27.** This section used to read "the planning head count is an assumption,
+> stated openly" — one adult per scout, editable per line. Openly stated or not, it was still the
+> pack budgeting to pay for parents who pay for themselves, and every per-head line with an adult
+> rate carried it. What a family owes for the heads it brings is now raised from recorded
+> attendance only.
 
 **After the event, the Treasurer enters what actually happened** — the attendance head counts and
 the real amount spent (as a ledger entry). From that point the line reports:
 
 | | Source |
 |---|---|
-| **Planned** | roster assumption × rates — frozen, the number the committee agreed |
-| **Expected heads** | the same assumption |
-| **Actual heads** | entered attendance |
+| **Planned** | scout roster × scout rate (+ leader roster × leader rate) — the number the committee agreed |
+| **Expected heads** | those same two rosters |
+| **Actual heads** | entered attendance, including the parents and siblings who came |
 | **Actual cost** | Σ ledger entries on the line — what was really paid |
 | **Charged** | rates × actual heads, per family, scout share waived where a tier applies |
 
@@ -798,10 +872,15 @@ Still deferred to Phase 3, because it needs `fundedBy` to know which lines care:
 every pack-funded line would be noise.
 
 **Phase 3a — pricing, `fundedBy` and `paidDirectTo`. ✅ BUILT.** The `perScout`/`familyPays`
-booleans are gone. A line now carries `basis: 'flat'|'per-head'`, the three rates,
-`adultsPerScout`, `fundedBy: 'pack'|'families'` and `paidDirectTo`. Migration is total-preserving
-— a per-scout line's estimate becomes its SCOUT rate with the adult and sibling rates at zero, so
-`adultsPerScout: 1` multiplies a rate of zero and nothing moves. Asserted in `test/harness.mjs`.
+booleans are gone. A line now carries `basis: 'flat'|'per-head'`, the rates,
+`includeLeaders`/`leaderRateCents`, `fundedBy: 'pack'|'families'` and `paidDirectTo`. Migration is
+total-preserving — a per-scout line's estimate becomes its SCOUT rate with every other rate at zero.
+Asserted in `test/harness.mjs`.
+
+- *Amended 2026-07-27:* `adultsPerScout` and `adultsFrom` are gone with them. A per-registered-leader
+  fee moved to `leaderRateCents` unchanged; a family adult rate stopped being planned. See *The pack
+  covers scouts and leaders* in §3.2 — this is the one migration in the document that deliberately
+  MOVES a total, downwards, on the lines that were budgeting for parents.
 
 - **Paid-direct money is out of the books entirely** — excluded from planned, actual, the balance
   and the collect grid — and reported separately as *what the year costs a family*. Before this it

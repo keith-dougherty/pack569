@@ -119,7 +119,7 @@
       var l = {
         id: id, name: name, category: cat, basis: basis,
         scoutRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
-        adultsPerScout: 1, fundedBy: 'pack', paidDirectTo: ''
+        includeLeaders: false, leaderRateCents: 0, fundedBy: 'pack', paidDirectTo: ''
       };
       if (extra) Object.keys(extra).forEach(function (k) { l[k] = extra[k]; });
       return l;
@@ -242,15 +242,21 @@
     var st = S();
 
     // A: every through-pack line at its planned figure. Computed here, from R.
+    //
+    // SCOUT RATES ONLY. Owner ruling 2026-07-27: the pack budgets for scouts and registered
+    // leaders (there are none on this roster), never for parents or siblings — they pay their
+    // own way. The adult and sibling rates on the campout and Blue & Gold are BILLING rates:
+    // they turn into charges once attendance is recorded, further down, and they are checked
+    // there. Before this ruling both lines also planned one invented parent per scout.
     var A = R.charter + R.awards + R.materials + R.reserve
       + R.dues * SCOUTS
-      + (R.campScout * SCOUTS + R.campAdult * SCOUTS)      // adultsPerScout = 1
-      + (R.bgScout * SCOUTS + R.bgAdult * SCOUTS);
+      + R.campScout * SCOUTS
+      + R.bgScout * SCOUTS;
     var familyDirect = R.dayCamp * SCOUTS;
     // Fees: no charges raised yet, so every family-funded through-pack line falls back to plan.
     var fees = R.dues * SCOUTS
-      + (R.campScout * SCOUTS + R.campAdult * SCOUTS)
-      + (R.bgScout * SCOUTS + R.bgAdult * SCOUTS);
+      + R.campScout * SCOUTS
+      + R.bgScout * SCOUTS;
     var B = CARRYOVER + fees;
     var C = Math.max(0, A - B);
     var goal = Math.round(C / (PCT / 100));
@@ -454,7 +460,9 @@
     check('Y2 dues charged at the carried rate',
       st.charges.reduce(function (n, c) { return n + c.amountCents; }, 0), R.dues * SCOUTS);
     check('Y2 book opens at the closing bank balance', st.book.openingCents, m1.bank);
-    check('Y2 book opening date', st.book.openingDate, '2026-09-01');
+    // The program year starts in JULY (it moved from September in 01a68a1 — this expectation
+    // was left behind by that commit), so the new book opens on 1 July.
+    check('Y2 book opening date', st.book.openingDate, '2026-07-01');
 
     // Categories and the pricing shape must survive.
     var cats = {};
@@ -467,6 +475,9 @@
     var camp = st.budget.activities.filter(function (l) { return l.name === 'Fall campout'; })[0];
     check('Y2 per-head rates kept, not re-derived', [camp.scoutRateCents, camp.adultRateCents, camp.siblingRateCents],
       [R.campScout, R.campAdult, R.campSib]);
+    // Whether the pack pays for leaders on a line is part of the plan, so it survives too.
+    var reg = st.budget.expenses.filter(function (l) { return l.name === 'Pack dues'; })[0];
+    check('Y2 leader inclusion carried', [reg.includeLeaders, reg.leaderRateCents], [false, 0]);
     check('Y2 paid-direct payee carried', st.budget.activities.filter(function (l) { return l.name === 'Cub day camp'; })[0].paidDirectTo, 'Council');
     // Flat lines seed from what they ACTUALLY cost last year.
     var awards = st.budget.expenses.filter(function (l) { return l.name === 'Awards & badges'; })[0];
@@ -529,7 +540,9 @@
     // rollovers, and the bank must chain unbroken across both close-outs.
     var a1 = st.archives.filter(function (a) { return a.year === 2025; })[0];
     check('Y3 year-1 archive still holds its own actuals', a1.budget.actualCents, 235250);
-    check('Y3 year-1 archive still holds its own planned', a1.budget.plannedCents, 345000);
+    // 290000, not the 345000 this expected before the 2026-07-27 ruling: the campout and
+    // Blue & Gold no longer plan an invented parent per scout ($400 + $150 of family money).
+    check('Y3 year-1 archive still holds its own planned', a1.budget.plannedCents, 290000);
     check('Y3 bank chain unbroken', [CARRYOVER, 37250, 27250], [CARRYOVER, 37250, st.book.openingCents]);
     check('Y3 every line still priced', st.budget.activities.concat(st.budget.expenses)
       .filter(function (l) { return !l.basis; }).length, 0);

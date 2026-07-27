@@ -428,6 +428,35 @@
   .brow-opts .att-mini > input[data-ch="line-direct"] { width: 210px; max-width: 100%; text-align: left; }
   .brow-break { flex: 1 1 100%; height: 0; }
   .brow-note { flex: 1 1 100%; }
+  /* Which dens an activity is for. Tick boxes, not a <select multiple>: a phone renders that
+     as an unusable little scroll box, and "the whole pack" has to be the state you get by NOT
+     choosing rather than a seventh option to keep in step with the other six. The "on" fill is
+     the same amber-with-dark-ink pairing the RSVP "maybe" button already ships, so it needs no
+     new contrast judgement in either theme. */
+  .den-pick { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  /* A full-width caption over a group of controls inside the options row. */
+  .den-pick-label, .opt-caption {
+    flex: 1 1 100%;
+    font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft);
+  }
+  /* A checkbox that sits on the same baseline as the money fields beside it, and reads as a
+     sentence rather than as another uppercase field caption. */
+  .chk-mini {
+    display: inline-flex; align-items: center; gap: 6px;
+    min-height: 34px; font-size: 0.82rem; color: var(--ink);
+  }
+  .chk-mini input { margin: 0; }
+  .den-pick-all { text-transform: none; letter-spacing: 0; font-weight: 650; color: var(--ink); }
+  .den-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    min-height: 36px; padding: 0 10px;
+    border: 1px solid var(--line); border-radius: 999px;
+    font-size: 0.8rem; font-weight: 600; color: var(--ink-soft);
+    background: var(--surface); cursor: pointer;
+  }
+  .den-chip:hover { color: var(--ink); }
+  .den-chip.on { background: var(--accent); border-color: var(--accent); color: #1A1408; }
+  .den-chip input { margin: 0; }
   /* On a phone the summary wraps to two lines and shoves the actions onto a third, so they
      end up scattered. Give it the whole line and let the actions sit together under it. */
   @media (max-width: 520px) {
@@ -1390,12 +1419,34 @@
   //   families · ''         vendor ← PACK ← families. Out, then back in per family.
   //   families · 'Council'  Council ← families. The pack is not in this transaction.
   // ---------------------------------------------------------------------------
+  // WHOSE HEADS THE PACK BUDGETS FOR — owner ruling, 2026-07-27.
+  //
+  // THE PACK COVERS SCOUTS AND REGISTERED LEADERS. NOBODY ELSE. Parents and siblings pay
+  // their own way, so they must never appear in the pack's planned figure.
+  //
+  // What this replaces: `adultsFrom: 'assumption'` + `adultsPerScout` (default 1) invented one
+  // parent per scout and multiplied them by the adult rate, so a per-head line with any adult
+  // rate at all planned to pay for ten parents the pack was never going to pay for. That is
+  // the single biggest way this app could overstate what a pack has to raise.
+  //
+  //   scoutRateCents    per scout                      PLANNED and CHARGED
+  //   leaderRateCents   per registered leader          PLANNED — the pack's own money
+  //   includeLeaders    does this cost cover leaders?  a checkbox, not an assumption
+  //   adultRateCents    per family adult               CHARGED ONLY, from recorded attendance
+  //   siblingRateCents  per sibling                    CHARGED ONLY, from recorded attendance
+  //
+  // Leaders get their own rate rather than sharing the scout rate because registration is
+  // genuinely two prices ($85 youth, $65 adult). The last two are what a FAMILY owes when the
+  // pack fronts an event and bills it back (§3.4's worked example is unchanged) — they raise
+  // charges from heads that were actually recorded, and they never enter the plan. Planning
+  // assumes; reality is entered afterwards, and a parent is reality, not an assumption.
+  // ---------------------------------------------------------------------------
   function centsOf(v) { return (typeof v === 'number' && isFinite(v) && v > 0) ? Math.round(v) : 0; }
   function freshLine(patch) {
     var l = {
       id: uid(), name: '', basis: 'flat',
-      scoutRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
-      adultsPerScout: 1, adultsFrom: 'assumption',
+      scoutRateCents: 0, leaderRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
+      includeLeaders: false,
       fundedBy: 'pack', paidDirectTo: '', category: 'other'
     };
     if (patch) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
@@ -1460,6 +1511,9 @@
   var LINE_CATEGORY_KEYS = LINE_CATEGORIES.map(function (c) { return c[0]; });
   var LINE_BASES = ['flat', 'per-head'];
   var LINE_FUNDERS = ['pack', 'families'];
+  // Who families pay when they pay somebody directly. Suggestions only — the field is a name,
+  // never a fixed list, because the payee is whoever sends the bill.
+  var PAYEE_SUGGESTIONS = ['Council', 'Scout Shop', 'Campground'];
   var ATT_MAX_HEADS = 99;
   function attHeads(v) {
     var n = (typeof v === 'number' && isFinite(v)) ? Math.floor(v) : parseInt(v, 10);
@@ -1495,6 +1549,7 @@
     var e = {
       id: uid(), kind: 'activity',
       den: '',            // kind 'den' only
+      dens: [],           // kind 'activity' only — which dens it is FOR; [] = the whole pack
       name: '',           // kind 'activity' only — meetings derive their label
       date: '', time: '', endTime: '', location: '', note: '',
       slot: 0,            // program month; for a dated event, derived from the date
@@ -1747,9 +1802,7 @@
     //
     // Totals must not move. Today's planned is `estCents × roster` for a per-scout line and
     // `estCents` flat otherwise, so a migrated per-head line carries the whole estimate as
-    // its SCOUT rate with the adult and sibling rates at zero. `adultsPerScout` defaults to
-    // 1 — the honest planning assumption, and the minimum the pack is on the hook for — but
-    // it multiplies an adult rate of zero, so nothing changes until somebody sets one.
+    // its SCOUT rate with every other rate at zero — the only rate a pre-3a line ever had.
     // -----------------------------------------------------------------------
     function migrateLineShape(l) {
       if (typeof l.id !== 'string' || !l.id) l.id = uid();
@@ -1761,7 +1814,6 @@
         l.adultRateCents = 0;
         l.siblingRateCents = 0;
         l.flatCents = wasPerScout ? 0 : est;
-        l.adultsPerScout = 1;
         // familyPays was only ever read alongside perScout (computeBudget gated on both), so
         // a families-pay flag left on a flat line was unreachable state, never a cost anyone
         // was billed. Preserving today's totals means it does not become one now.
@@ -1776,18 +1828,37 @@
       l.adultRateCents = centsOf(l.adultRateCents);
       l.siblingRateCents = centsOf(l.siblingRateCents);
       l.flatCents = centsOf(l.flatCents);
-      l.adultsPerScout = (typeof l.adultsPerScout === 'number' && isFinite(l.adultsPerScout) && l.adultsPerScout >= 0)
-        ? Math.min(9, Math.round(l.adultsPerScout * 100) / 100) : 1;
-      // Where the ADULT head count comes from. 'assumption' is the planning figure — so many
-      // adults per scout, for an event. 'leaders' counts the registered leader roster, which
-      // is what an annual adult registration fee is actually charged against, and it moves on
-      // its own as leaders join and leave.
-      if (l.adultsFrom !== 'leaders') l.adultsFrom = 'assumption';
+      // -------------------------------------------------------------------
+      // "The pack covers scouts and leaders" (owner ruling, 2026-07-27). Runs once per line:
+      // the ABSENCE of `includeLeaders` is the marker.
+      //
+      //   adultsFrom === 'leaders'   the adult rate WAS a per-registered-leader fee. It moves
+      //                              to leaderRateCents with the checkbox on, so the planned
+      //                              figure is unchanged to the cent (this is how the seeded
+      //                              adult registration line was set up).
+      //   adultsFrom === 'assumption' the adult rate was a FAMILY rate multiplied by invented
+      //                              parents. It stays as the family billing rate — families
+      //                              still owe it per head that turns up — but it stops being
+      //                              planned, so THE PLANNED FIGURE ON THOSE LINES DROPS. That
+      //                              is the correction, not a regression: the pack was
+      //                              budgeting to pay for parents who pay for themselves.
+      // -------------------------------------------------------------------
+      if (typeof l.includeLeaders !== 'boolean') {
+        var fromLeaders = l.adultsFrom === 'leaders';
+        l.includeLeaders = fromLeaders;
+        l.leaderRateCents = fromLeaders ? centsOf(l.adultRateCents) : 0;
+        if (fromLeaders) l.adultRateCents = 0;
+      }
+      l.leaderRateCents = centsOf(l.leaderRateCents);
+      // A leader rate with the box unticked is money nobody is planning to spend, and a
+      // ticked box with no rate costs nothing — both are harmless, and neither is worth
+      // second-guessing what somebody typed.
       l.paidDirectTo = typeof l.paidDirectTo === 'string' ? l.paidDirectTo.trim() : '';
       // "The pack is paying, but somebody else is paid directly" is meaningless — if the
       // pack is paying, it goes through the pack's account.
       if (l.fundedBy !== 'families') l.paidDirectTo = '';
       delete l.estCents; delete l.perScout; delete l.familyPays;
+      delete l.adultsFrom; delete l.adultsPerScout;
     }
     d.budget.activities.forEach(function (a) { if (a && typeof a === 'object') migrateLineShape(a); });
     d.budget.expenses.forEach(function (e) { if (e && typeof e === 'object') migrateLineShape(e); });
@@ -1965,6 +2036,13 @@
       e.sourceUid = typeof e.sourceUid === 'string' ? e.sourceUid : '';
       e.adventure = typeof e.adventure === 'string' ? e.adventure : '';
       if (e.kind !== 'den') { e.den = ''; e.adventure = ''; }
+      // Which dens an ACTIVITY is for. Absent on every older record → [] , which means the
+      // whole pack and is what every existing event already effectively said. Rebuilt in
+      // DENS order so it both dedupes and reads in rank order wherever it is printed.
+      // A den meeting already names its den and a pack meeting is everyone, so the field is
+      // cleared on those kinds rather than left to contradict the kind.
+      if (!Array.isArray(e.dens)) e.dens = [];
+      e.dens = e.kind === 'activity' ? DENS.filter(function (dn) { return e.dens.indexOf(dn) !== -1; }) : [];
       // Wave 15 — handbook renames apply to the free-text adventure field (exact match).
       if (e.adventure && ADV_RENAMES[e.adventure]) e.adventure = ADV_RENAMES[e.adventure];
     });
@@ -2743,12 +2821,13 @@
   // computePackTotals' teGoal).
   function fundingSummary() {
     var scouts = activeScouts().length;
-    var leaders = activeLeaders().length;
     var expenses = 0, incomeLines = 0, familyDirect = 0;
     var byCategory = {};
     allBudgetLines().forEach(function (r) {
       var l = r.line;
-      var planned = linePlannedCents(l, scouts, leaders);
+      // Through linePlanned, never priced here against a pack-wide roster: a den-limited
+      // activity is planned against the dens it is for.
+      var planned = linePlanned(l);
       // Money families pay somebody else directly is never the pack's, so it is in neither
       // A nor B — it is reported on its own as what the year costs a family.
       if (!lineThroughPack(l)) { familyDirect += planned; return; }
@@ -2770,7 +2849,7 @@
       var l = r.line;
       if (!lineRaisesCharges(l)) return;
       var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
-      fees += rows.length ? chargeTotals(rows, state.ledger).standing : linePlannedCents(l, scouts, leaders);
+      fees += rows.length ? chargeTotals(rows, state.ledger).standing : linePlanned(l);
     });
     var otherFr = 0;
     state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
@@ -2807,8 +2886,8 @@
   function computeBudget() {
     var b = state.budget;
     var scouts = activeScouts().length;
-    var leaders = activeLeaders().length;
-    // Phase 3a — planned comes from the line's rates against an assumed head count.
+    // Phase 3a — planned comes from the line's rates against an assumed head count, and
+    // through linePlanned() so a den-limited activity counts only the dens it is for.
     // Phase 1 — actual does NOT multiply by anything: a ledger entry is a total, what the
     // pack really paid, on a date, to somebody. The roster changing afterwards cannot alter
     // it, and that is the point.
@@ -2817,14 +2896,14 @@
     // through the pack's account, so counting it would overstate what the pack spends.
     var actPlanned = 0, actActual = 0, familyDirect = 0;
     b.activities.forEach(function (a) {
-      if (!lineThroughPack(a)) { familyDirect += linePlannedCents(a, scouts, leaders); return; }
-      actPlanned += linePlannedCents(a, scouts, leaders);
+      if (!lineThroughPack(a)) { familyDirect += linePlanned(a); return; }
+      actPlanned += linePlanned(a);
       actActual += lineActualCents(state.ledger, a.id);
     });
     var expPlanned = 0, expActual = 0;
     b.expenses.forEach(function (e) {
-      if (!lineThroughPack(e)) { familyDirect += linePlannedCents(e, scouts, leaders); return; }
-      expPlanned += linePlannedCents(e, scouts, leaders);
+      if (!lineThroughPack(e)) { familyDirect += linePlanned(e); return; }
+      expPlanned += linePlanned(e);
       expActual += lineActualCents(state.ledger, e.id);
     });
     var planned = actPlanned + expPlanned;
@@ -2838,7 +2917,6 @@
     // families owe, and they count here as soon as the heads are recorded.
     var chg = chargeTotals(state.charges, state.ledger);
     var feeIncomeExpected = 0, feeIncomeCollected = 0;
-    var feeRoster = activeScouts();
     // Wave 21 — reward tiers. A scout who earned coverage for a charge means the PACK is
     // paying it, so the family never owes it. The line's own cost is already counted in
     // planned/actual above (est × roster), so nothing is added here — the pack absorbing a
@@ -2860,7 +2938,8 @@
       var each = item.scoutRateCents || 0;
       var cm = state.collected[colKey] || {};
       var cov = coverage[colKey] || {};
-      feeRoster.forEach(function (s) {
+      // The line's OWN roster: a den-limited event bills the dens it is for, nobody else.
+      lineRoster(item).forEach(function (s) {
         if (cov[s.id]) { feesAbsorbed += each; return; } // pack pays it; not family income
         feeIncomeExpected += each;
         if (cm[s.id]) feeIncomeCollected += each;
@@ -2960,29 +3039,22 @@
   }
 
   /* ---------------- Budget line pricing (Phase 3a) ---------------- */
-  // Pure (takes the line + a roster size) so the Node harness can exercise the planning math.
+  // Pure (takes the line + two roster sizes) so the Node harness can exercise the planning math.
   //
-  // Parents are not going to RSVP in this app, at least not yet, so the plan cannot wait on
-  // them: the planning head count is an ASSUMPTION, stated openly. One adult per scout and
-  // no siblings is the honest default — it is the minimum the pack is on the hook for.
-  // Nothing here pretends to know who is coming. What actually happened is recorded
-  // afterwards as attendance, and from Phase 3b it is what families are charged from.
+  // THE PLAN COUNTS SCOUTS AND REGISTERED LEADERS, AND NOTHING ELSE. Both are numbers the pack
+  // actually keeps, so neither is a guess: they follow the roster and move as people join and
+  // leave. Parents and siblings pay their own way, so they are not the pack's money to plan —
+  // where the pack fronts their share and bills it back, that is a CHARGE raised from the heads
+  // somebody recorded afterwards (chargeRowsFor), never a number invented in advance.
   function linePlannedHeads(l, scoutN, leaderN) {
-    if (l.basis !== 'per-head') return { scouts: 0, adults: 0, siblings: 0 };
-    // A registration fee is charged per REGISTERED LEADER, a number the pack already keeps.
-    // An event's adult count is a planning assumption instead, because nobody has said yet
-    // who is coming.
-    var adults = l.adultsFrom === 'leaders'
-      ? (leaderN || 0)
-      : Math.round(scoutN * (l.adultsPerScout || 0));
-    return { scouts: scoutN, adults: adults, siblings: 0 };
+    if (l.basis !== 'per-head') return { scouts: 0, leaders: 0 };
+    return { scouts: scoutN, leaders: l.includeLeaders ? (leaderN || 0) : 0 };
   }
   function linePlannedCents(l, scoutN, leaderN) {
     if (l.basis !== 'per-head') return l.flatCents || 0;
     var hd = linePlannedHeads(l, scoutN, leaderN);
     return (l.scoutRateCents || 0) * hd.scouts +
-      (l.adultRateCents || 0) * hd.adults +
-      (l.siblingRateCents || 0) * hd.siblings;
+      (l.leaderRateCents || 0) * hd.leaders;
   }
   // Does this money pass through the pack's bank account? A line with a payee named in
   // paidDirectTo never does — families pay THEM — so it must never move the pack's balance,
@@ -2991,17 +3063,68 @@
   function lineThroughPack(l) { return !l.paidDirectTo; }
   function lineFamilyFunded(l) { return l.fundedBy === 'families'; }
   function linePerHead(l) { return l.basis === 'per-head'; }
+  // ---------------------------------------------------------------------------
+  // WHO AN EVENT IS FOR — den-limited activities.
+  //
+  // Most of what a pack does is for the whole pack, and that stays the default: an empty
+  // `dens` means everybody. But Webelos Woods is for Webelos and Arrow of Light, and Tiger
+  // Mania is for Tigers. Planning those against the whole roster overstates the pack's plan,
+  // and — much worse — CHARGES families for an event their scout was never invited to.
+  //
+  // The restriction lives on the EVENT, not on the budget line, because who is invited is a
+  // calendar fact that attendance and RSVP need too. The line reads it through its event, so
+  // there is one field and nothing to drift. A line with no event — dues, registration — is
+  // the whole roster by definition.
+  // ---------------------------------------------------------------------------
+  function eventDens(ev) { return (ev && Array.isArray(ev.dens)) ? ev.dens : []; }
+  function lineDens(l) { return eventDens(eventForLine(l)); }
+  // Pure, so the harness can pin it: the scouts a den list applies to. A scout with no den
+  // set is NOT in any den's event — which is why the UI says so out loud rather than quietly
+  // leaving them out of a bill.
+  function scoutsInDens(roster, dens) {
+    if (!dens || !dens.length) return roster;
+    return roster.filter(function (s) { return dens.indexOf(s.den) !== -1; });
+  }
+  function lineRoster(l) { return scoutsInDens(activeScouts(), lineDens(l)); }
+  // The scouts an event's RSVP or attendance list covers. A den meeting shows its den; a
+  // den-limited activity shows the dens it is for; everything else shows the whole roster.
+  // Anyone ALREADY recorded stays visible whatever the restriction says, so narrowing an
+  // event afterwards can never hide a reply that was given or a head that was counted.
+  function eventRoster(ev, recorded) {
+    var dens = ev ? (ev.kind === 'den' && ev.den ? [ev.den] : eventDens(ev)) : [];
+    return state.scouts.filter(function (s) {
+      if (recorded && recorded[s.id]) return true;
+      if (s.archived) return false;
+      return !dens.length || dens.indexOf(s.den) !== -1;
+    });
+  }
+  // "Webelos", "Webelos and Arrow of Light", "Tiger, Wolf and Bear".
+  function denListLabel(dens) {
+    if (!dens || !dens.length) return '';
+    if (dens.length === 1) return dens[0];
+    return dens.slice(0, -1).join(', ') + ' and ' + dens[dens.length - 1];
+  }
   // Every budget line, both arrays, with the label the rest of the app uses.
   function allBudgetLines() {
     return state.budget.activities.map(function (a) { return { line: a, kind: 'activity', key: 'act:' + a.id }; })
       .concat(state.budget.expenses.map(function (e) { return { line: e, kind: 'expense', key: e.id }; }));
   }
-  function linePlanned(l) { return linePlannedCents(l, activeScouts().length, activeLeaders().length); }
+  // The planning figure for one line: its own roster, which a den-limited event narrows.
+  function linePlanned(l) { return linePlannedCents(l, lineRoster(l).length, activeLeaders().length); }
+  // The rates, in the order they cost the pack money: what it plans first, then what a family
+  // is billed. "family adult" rather than "adult", because the two used to be the same field
+  // and confusing them is what put parents in the pack's budget.
   function lineRateSummary(l) {
     if (l.basis !== 'per-head') return '';
     var bits = ['scout ' + fmt(l.scoutRateCents || 0)];
-    if (l.adultRateCents) bits.push('adult ' + fmt(l.adultRateCents));
-    if (l.siblingRateCents) bits.push('sibling ' + fmt(l.siblingRateCents));
+    if (l.includeLeaders) bits.push('leader ' + fmt(l.leaderRateCents || 0));
+    // The family rates are only ever real money where families are billed through the pack.
+    // A rate left behind on a pack-funded line raises nothing and is planned as nothing, so
+    // printing it would advertise a charge that cannot happen.
+    if (lineRaisesCharges(l)) {
+      if (l.adultRateCents) bits.push('family adult ' + fmt(l.adultRateCents));
+      if (l.siblingRateCents) bits.push('sibling ' + fmt(l.siblingRateCents));
+    }
     return bits.join(' · ');
   }
 
@@ -3089,12 +3212,14 @@
   // will not touch a charge that has been settled. Correcting a typo before anyone pays
   // fixes the charge; after they have paid, it stands and needs a deliberate decision.
   function syncCharges() {
-    var roster = activeScouts();
     var want = {}, byKey = {};
     allBudgetLines().forEach(function (r) {
       if (!lineRaisesCharges(r.line)) return;
       var marked = r.line.eventId ? (state.attendance[r.line.eventId] || {}) : null;
-      chargeRowsFor(r.line, marked, roster).forEach(function (row) { want[chargeKey(row)] = row; });
+      // Each line against ITS OWN roster. A roster-basis line for a den-limited event
+      // raises charges for those dens only — billing the whole pack for Tiger Mania is the
+      // exact error this exists to stop.
+      chargeRowsFor(r.line, marked, lineRoster(r.line)).forEach(function (row) { want[chargeKey(row)] = row; });
     });
     state.charges.forEach(function (c) { byKey[chargeKey(c)] = c; });
     // Drop charges that should no longer exist — but never one that is settled or paid
@@ -3269,7 +3394,9 @@
   // (meeting or activity) is keyed by its bare event id.
   function rsvpSummary(evKey) {
     var map = state.rsvps[evKey] || {};
-    var roster = activeScouts();
+    // Den-limited events count "no reply" against the dens invited, not the whole pack —
+    // otherwise a Webelos-only campout reads "6 no reply" from six scouts who were not asked.
+    var roster = eventRoster(getEvent(evKey), map);
     var sum = { yes: 0, maybe: 0, no: 0, adults: 0, any: false };
     roster.forEach(function (s) {
       var r = map[s.id];
@@ -3309,13 +3436,22 @@
     var open = !!ui.rsvpOpen[evKey];
     var sum = rsvpSummary(evKey);
     var map = state.rsvps[evKey] || {};
-    var roster = activeScouts();
+    var rsvpEv = getEvent(evKey);
+    var roster = eventRoster(rsvpEv, map);
     var h = '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
       '<button type="button" class="exp-toggle" data-act="toggle-rsvp" data-key="' + evKey + '" aria-expanded="' + open + '">' +
       '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' + esc(rsvpSummaryLine(sum)) + '</button>';
     if (open) {
+      var rsvpDens = denListLabel(eventDens(rsvpEv));
+      if (rsvpDens) {
+        h += '<p class="small muted" style="margin:6px 0 4px">For ' + esc(rsvpDens) +
+          ' — only those dens are asked.</p>';
+      }
       h += '<div class="rsvp-list">';
-      if (!roster.length) h += '<p class="small muted" style="margin:6px 0 0">Add scouts on Scouts · Roster first.</p>';
+      if (!roster.length) {
+        h += '<p class="small muted" style="margin:6px 0 0">' +
+          (rsvpDens ? 'No active scouts in ' + esc(rsvpDens) + '.' : 'Add scouts on Scouts · Roster first.') + '</p>';
+      }
       roster.forEach(function (s) {
         var r = map[s.id];
         var st = r ? r.s : '';
@@ -3341,16 +3477,14 @@
   function renderAttendanceBlock(m) {
     var open = !!ui.attOpen[m.id];
     var marked = state.attendance[m.id] || {};   // Phase 2 — keyed by event id
-    var denFiltered = m.kind === 'den' && !!m.den;
+    // A den meeting is limited by its own den; an activity by the dens it is FOR. Both
+    // narrow the same list, and eventRoster keeps anyone already marked visible either way.
+    var attDens = denListLabel(m.kind === 'den' && m.den ? [m.den] : eventDens(m));
+    var denFiltered = !!attDens;
     // Phase 2b — heads beyond the scout only cost something at an activity, so that is the
     // only place the extra fields are asked for. A den meeting keeps its plain roll-call.
     var heads = m.kind === 'activity';
-    // Den meetings show that den's active scouts; anyone already marked stays visible.
-    var roster = state.scouts.filter(function (s) {
-      if (marked[s.id]) return true;
-      if (s.archived) return false;
-      return !denFiltered || s.den === m.den;
-    });
+    var roster = eventRoster(m, marked);
     var tot = attTotals(marked);
     var label = heads
       ? 'Who came: ' + (tot.heads ? attSummaryLine(tot) : 'nobody recorded yet')
@@ -3364,17 +3498,24 @@
           'A scout rarely arrives alone — count the adults and younger brothers and sisters too, ' +
           'because that is what the day really cost.</p>';
       }
+      if (denFiltered && m.kind === 'activity') {
+        h += '<p class="small muted" style="margin:0 0 4px">For ' + esc(attDens) +
+          ' — only those dens are charged for it.</p>';
+      }
       h += '<div class="rsvp-list">';
       if (!roster.length) {
         h += '<p class="small muted" style="margin:6px 0 0">' +
-          (denFiltered ? 'No active scouts in the ' + esc(m.den) + ' den.' : 'Add scouts on Scouts · Roster first.') + '</p>';
+          (denFiltered ? 'No active scouts in ' + esc(attDens) + '.' : 'Add scouts on Scouts · Roster first.') + '</p>';
       }
+      // The den pill is redundant when every row is the same den, and useful when the event
+      // covers two of them.
+      var attShowPill = eventDens(m).length > 1 || !denFiltered;
       roster.forEach(function (s) {
         var r = marked[s.id] || freshAttendance();
         h += '<label class="att-row' + (heads ? ' att-heads' : '') + '">' +
           '<input type="checkbox" data-ch="att-mark" data-id="' + m.id + '" data-scout="' + s.id + '"' +
           (r.scout ? ' checked' : '') + '><span class="att-name">' + esc(s.name) +
-          (s.den && !denFiltered ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') + '</span>' +
+          (s.den && attShowPill ? ' <span class="pill navy">' + esc(s.den) + '</span>' : '') + '</span>' +
           (heads
             ? '<span class="att-heads-in">' +
               '<label class="att-mini">adults<input type="number" min="0" max="' + ATT_MAX_HEADS + '" step="1" inputmode="numeric"' +
@@ -3780,8 +3921,10 @@
   var SEED_EXPENSES = [
     { name: 'Youth registration', category: 'registration', basis: 'per-head',
       scoutRateCents: SA_FEES.youthCents },
+    // Leaders only: no scout rate, the leader box ticked. Youth registration above is the
+    // other half of the same national fee, at the other rate.
     { name: 'Adult leader registration', category: 'registration', basis: 'per-head',
-      adultRateCents: SA_FEES.adultCents, adultsFrom: 'leaders' },
+      leaderRateCents: SA_FEES.adultCents, includeLeaders: true },
     { name: 'Unit charter fee', category: 'charter', basis: 'flat',
       flatCents: SA_FEES.unitCharterCents }
   ];
@@ -4973,7 +5116,12 @@
           events.push(mv);
           return;
         }
-        events.push({ kind: 'activity', date: e.date, title: eventLabel(e), detail: '' });
+        // A den-limited activity says so in its detail line — a parent whose scout is a Tiger
+        // needs to know Webelos Woods is not theirs, and a den name carries nothing private.
+        // It goes in the existing detail string rather than a new field, so the published
+        // shape is unchanged.
+        var aDens = denListLabel(eventDens(e));
+        events.push({ kind: 'activity', date: e.date, title: eventLabel(e), detail: aDens ? aDens + ' only' : '' });
       });
       events.sort(function (a, b) {
         return String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title));
@@ -6064,6 +6212,10 @@
       var aWhen = fmtTimeRange(ev.time, ev.endTime);
       h += line('When', esc(fmtDate(ev.date)) + (aWhen ? ' · ' + esc(aWhen) : '') +
         ' <span class="muted">· ' + esc(slotLabel(ev.slot)) + ' in the program year</span>');
+      // A den-limited event says so here too: this sheet gets printed and taken to the event,
+      // where "who is this for" is the first question anybody asks.
+      var aDens = denListLabel(eventDens(ev));
+      if (aDens) h += line('Who', esc(aDens) + ' <span class="muted">only</span>');
       if (ev.location) h += line('Where', esc(ev.location).replace(/\n/g, '<br>'));
       if (ev.note) h += line('Details', esc(ev.note).replace(/\n/g, '<br>'));
       if (!aLine) {
@@ -6298,6 +6450,11 @@
             '</div>' +
             '<input data-ch="ev-location" data-id="' + ev.id + '" value="' + esc(ev.location || '') + '" placeholder="Location (optional)" aria-label="Location" style="width:100%;margin-top:6px">' +
             '<textarea class="notes-in" data-ch="ev-note" data-id="' + ev.id + '" rows="3" placeholder="Details / notes (optional)" aria-label="Details or notes" style="margin-top:6px">' + esc(ev.note || '') + '</textarea>' +
+            // Who it is for. It lives here, on the calendar record, because it decides who is
+            // asked to RSVP and who is on the attendance list as well as who is charged — and
+            // the Budget row edits this same field, never a copy of it.
+            '<div class="brow-opts" style="border-top:0;padding-top:0;margin-top:8px">' +
+            denPickerControls(ev) + denPickerNote(ev) + '</div>' +
             '<div class="row" style="margin-top:8px;align-items:flex-start">' +
             renderRsvpBlock(ev.id) + renderAttendanceBlock(ev) + '</div></div>';
         });
@@ -6638,6 +6795,13 @@
     // Wave 19(4/23/24) — per-scout roster fields: renewal month (drives the amber pill +
     // the digest), a display-only den label, and a private one-line note.
     h += '<div class="row" style="margin-bottom:10px;align-items:flex-end">' +
+      // The NAME is editable, like a leader's. It was set once at add time and then fixed,
+      // which is wrong twice over: a Trail's End import arrives with whatever name the
+      // parent typed into their account, and a typo in a child's name is the one thing in
+      // here nobody should have to live with. Editing it moves the scout everywhere at once
+      // — standings, charges, attendance, the published board — because everything else
+      // keys off the id, never the name.
+      '<label class="fld" style="flex:1 1 180px">Name<input data-ch="scout-name" data-id="' + s.id + '" value="' + esc(s.name || '') + '" placeholder="Scout name" aria-label="Scout name"></label>' +
       // Den (rank) is editable here, not just at add time: scouts imported from Trail's End
       // arrive with no den, and a scout who moves up mid-year needs correcting. This drives
       // the adventure lists, advance-dens and den attendance — the label below is cosmetic.
@@ -6907,17 +7071,74 @@
   // the money, so a month of activities read as a wall of repeated defaults. The controls
   // are still one tap away; they are just not the loudest thing on the row any more.
   function lineSummaryText(l) {
-    var bits = [linePerHead(l) ? 'Per head' : 'Flat'];
+    // "+ leaders" earns its place in the collapsed sentence: it is the difference between
+    // ten heads and fourteen, and it is the only thing on a per-head line that changes the
+    // planned figure without changing a rate.
+    var bits = [linePerHead(l) ? (l.includeLeaders ? 'Per head + leaders' : 'Per head') : 'Flat'];
     bits.push(lineFamilyFunded(l)
-      ? (l.paidDirectTo ? 'families pay ' + l.paidDirectTo : 'families pay')
+      ? (l.paidDirectTo ? 'families pay ' + l.paidDirectTo : 'families pay the pack')
       : 'pack pays');
     bits.push(lineCategoryLabel(l.category));
+    // Who it is for, when that is not everybody. It belongs in the collapsed sentence and
+    // not only in the expanded options: "which dens" changes who gets billed, and a
+    // treasurer scanning the month must be able to see it without opening every row.
+    var dens = lineDens(l);
+    if (dens.length) bits.push(denListLabel(dens) + ' only');
     return bits.join(' · ');
+  }
+  // The three real arrangements (DESIGN-money.md §3.2), as one question instead of two.
+  // `fundedBy` + `paidDirectTo` stay two independent fields in the data — that separation is
+  // deliberate and correct — but as CONTROLS they made the commonest case in this pack
+  // (families pay the council for day camp) reachable only by picking "Families pay" and then
+  // noticing a second text box that appeared underneath. Nobody found it. One select names
+  // all three; the payee stays editable because the payee is not always the council.
+  function lineFundingMode(l) {
+    if (!lineFamilyFunded(l)) return 'pack';
+    return l.paidDirectTo ? 'direct' : 'families';
+  }
+  // The dens an activity is for, as tick boxes. Empty = the whole pack, which is why the
+  // "Whole pack" state is the absence of ticks rather than a seventh box to keep in step.
+  function denPickerControls(ev) {
+    var dens = eventDens(ev);
+    return '<span class="brow-break"></span>' +
+      '<div class="den-pick" role="group" aria-label="Which dens is this for">' +
+      '<span class="den-pick-label">Which dens is it for?' +
+      (dens.length ? '' : ' <span class="den-pick-all">Whole pack</span>') + '</span>' +
+      DENS.map(function (dn) {
+        var on = dens.indexOf(dn) !== -1;
+        return '<label class="den-chip' + (on ? ' on' : '') + '">' +
+          '<input type="checkbox" data-ch="ev-dens" data-id="' + ev.id + '" data-den="' + esc(dn) + '"' +
+          (on ? ' checked' : '') + '>' + esc(dn) + '</label>';
+      }).join('') +
+      '</div>';
+  }
+  // What the picker means for the money, said in the same breath. A scout with no den set
+  // is in no den's event, and being told that is the difference between a deliberate
+  // exclusion and a family that quietly never got billed.
+  function denPickerNote(ev) {
+    var dens = eventDens(ev);
+    if (!dens.length) {
+      return '<span class="small muted brow-note">Every active scout — tick dens above to limit it ' +
+        'to those dens, the way Webelos Woods or Tiger Mania is.</span>';
+    }
+    var inDens = scoutsInDens(activeScouts(), dens).length;
+    var noDen = activeScouts().filter(function (s) { return !s.den; }).length;
+    return '<span class="small muted brow-note">' + inDens + ' scout' + (inDens === 1 ? '' : 's') +
+      ' in ' + esc(denListLabel(dens)) + ' — only they are planned for, and only they can be checked in and charged.' +
+      (noDen ? ' ' + noDen + ' scout' + (noDen === 1 ? ' has' : 's have') +
+        ' no den set on the roster, so they are not counted.' : '') +
+      '</span>';
   }
   // The settings themselves, shown only when the row is expanded.
   function lineOptionControls(l, scoutN, collectKey) {
     var perHead = linePerHead(l);
     var leaderN = activeLeaders().length;
+    var mode = lineFundingMode(l);
+    var lineEv = eventForLine(l);
+    // The line's OWN head count, not the pack's: a den-limited event plans and bills the
+    // dens it is for. The caller's scoutN is the pack-wide figure and is right for everything
+    // else, so it is only overridden where the event says so.
+    scoutN = lineRoster(l).length;
     var h = '<div class="brow-opts">' +
       '<label class="att-mini">priced<select data-ch="line-basis" data-id="' + l.id + '" aria-label="How this is priced">' +
         '<option value="flat"' + (perHead ? '' : ' selected') + '>Flat cost</option>' +
@@ -6928,42 +7149,72 @@
           return '<option value="' + c[0] + '"' + (l.category === c[0] ? ' selected' : '') + '>' + esc(c[1]) + '</option>';
         }).join('') + '</select></label>' +
       '<label class="att-mini">paid by<select data-ch="line-funded" data-id="' + l.id + '" aria-label="Whose money is it">' +
-        '<option value="pack"' + (lineFamilyFunded(l) ? '' : ' selected') + '>Pack pays</option>' +
-        '<option value="families"' + (lineFamilyFunded(l) ? ' selected' : '') + '>Families pay</option>' +
+        '<option value="pack"' + (mode === 'pack' ? ' selected' : '') + '>Pack pays</option>' +
+        '<option value="families"' + (mode === 'families' ? ' selected' : '') + '>Families pay the pack</option>' +
+        '<option value="direct"' + (mode === 'direct' ? ' selected' : '') + '>Families pay Council direct</option>' +
         '</select></label>';
+    // Who it is for — only where there is an event to hang it on. A line with no event (dues,
+    // registration) is the whole roster by definition, and a den meeting already names its den.
+    if (lineEv && lineEv.kind === 'activity') h += denPickerControls(lineEv) + denPickerNote(lineEv);
+    // A per-head line is priced PER SCOUT, and covers registered leaders only if the pack is
+    // paying for them too. Those are the pack's two head counts and both come off the roster,
+    // so neither is a guess. Parents and siblings are not here at all: they pay their own way,
+    // and where the pack fronts their share it is billed below, from who actually came.
     if (perHead) {
+      var denWord = lineDens(l).length ? ' ' + esc(denListLabel(lineDens(l))) : ' active';
       h += '<span class="brow-break"></span>' +
-        '<label class="att-mini">scout<input class="money-in" inputmode="decimal" data-ch="line-scout-rate" data-id="' + l.id + '" value="' + dollars(l.scoutRateCents) + '" placeholder="0.00"></label>' +
-        '<label class="att-mini">adult<input class="money-in" inputmode="decimal" data-ch="line-adult-rate" data-id="' + l.id + '" value="' + dollars(l.adultRateCents) + '" placeholder="0.00"></label>' +
-        '<label class="att-mini">sibling<input class="money-in" inputmode="decimal" data-ch="line-sibling-rate" data-id="' + l.id + '" value="' + dollars(l.siblingRateCents) + '" placeholder="0.00"></label>' +
-        '<label class="att-mini">adults from<select data-ch="line-adults-from" data-id="' + l.id + '">' +
-          '<option value="assumption"' + (l.adultsFrom === 'leaders' ? '' : ' selected') + '>an assumption</option>' +
-          '<option value="leaders"' + (l.adultsFrom === 'leaders' ? ' selected' : '') + '>registered leaders</option>' +
-          '</select></label>' +
-        (l.adultsFrom === 'leaders' ? ''
-          : '<label class="att-mini">adults/scout<input class="weight-in" type="number" min="0" max="9" step="0.5" inputmode="decimal" data-ch="line-adults-per" data-id="' + l.id + '" value="' + esc(l.adultsPerScout) + '"></label>') +
-        // Only mention adults where an adult rate is actually charged — otherwise a youth
-        // registration line reads "10 scouts + 10 adults assumed" and invites the question
-        // of who those adults are and why they are free.
+        '<label class="att-mini">per scout<input class="money-in" inputmode="decimal" data-ch="line-scout-rate" data-id="' + l.id + '" value="' + dollars(l.scoutRateCents) + '" placeholder="0.00"></label>' +
+        '<label class="chk-mini"><input type="checkbox" data-ch="line-include-leaders" data-id="' + l.id + '"' +
+          (l.includeLeaders ? ' checked' : '') + '>Include registered leaders</label>' +
+        (l.includeLeaders
+          ? '<label class="att-mini">per leader<input class="money-in" inputmode="decimal" data-ch="line-leader-rate" data-id="' + l.id + '" value="' + dollars(l.leaderRateCents) + '" placeholder="0.00"></label>'
+          : '') +
         '<span class="small muted brow-note">' +
-          (l.adultsFrom === 'leaders'
-            ? leaderN + ' registered leader' + (leaderN === 1 ? '' : 's') +
-              ' — counted from Pack · People, so this moves as leaders join and leave' +
-              (l.scoutRateCents ? ', plus ' + scoutN + ' scouts' : '')
-            : (l.adultRateCents
-              ? scoutN + ' scouts + ' + linePlannedHeads(l, scoutN, leaderN).adults +
-                ' adults assumed — nobody has RSVP\u2019d, this is a planning figure'
-              : scoutN + ' active scout' + (scoutN === 1 ? '' : 's') + ' — this follows the roster')) +
+          (l.includeLeaders
+            ? scoutN + denWord + ' scout' + (scoutN === 1 ? '' : 's') + ' and ' +
+              leaderN + ' registered leader' + (leaderN === 1 ? '' : 's') +
+              ' \u2014 both counted from the roster, so this moves as people join and leave'
+            : scoutN + denWord + ' scout' + (scoutN === 1 ? '' : 's') +
+              ' \u2014 this follows the roster. Tick the box if the pack pays for leaders on this one too, ' +
+              'the way registration and a campsite fee do.') +
         '</span>';
     }
-    if (lineFamilyFunded(l)) {
+    // What a FAMILY owes for the heads it brings, asked only where families are billed through
+    // the pack. These are charge rates, not planning rates: they turn into money per head
+    // recorded on the day (chargeRowsFor), so nobody's parents are ever in the plan.
+    if (mode === 'families') {
       h += '<span class="brow-break"></span>' +
-        '<label class="att-mini" style="text-transform:none;letter-spacing:0">Paid directly to (blank if the pack collects it)' +
-        '<input data-ch="line-direct" data-id="' + l.id + '" value="' + esc(l.paidDirectTo) + '" placeholder="e.g. Council, Scout Shop" aria-label="Paid directly to"></label>' +
+        '<span class="opt-caption">What a family owes for the heads it brings</span>' +
+        '<label class="att-mini">per family adult<input class="money-in" inputmode="decimal" data-ch="line-adult-rate" data-id="' + l.id + '" value="' + dollars(l.adultRateCents) + '" placeholder="0.00"></label>' +
+        '<label class="att-mini">per sibling<input class="money-in" inputmode="decimal" data-ch="line-sibling-rate" data-id="' + l.id + '" value="' + dollars(l.siblingRateCents) + '" placeholder="0.00"></label>' +
         '<span class="small muted brow-note">' +
-        (l.paidDirectTo
-          ? 'Never enters the pack\u2019s books — no charge, no ledger entry, no effect on the balance. It still counts toward what the year costs a family.'
-          : 'The pack fronts it and is paid back by families.') + '</span>';
+        ((l.adultRateCents || l.siblingRateCents)
+          ? 'Parents and siblings pay their own way, so they are never in the pack\u2019s plan above. These rates ' +
+            'raise a charge per head once you record who came \u2014 a family that brought both parents and a ' +
+            'younger sister owes for three extra heads, and nobody else pays for them.'
+          : 'Leave these at zero unless the pack fronts the family\u2019s share and bills it back \u2014 a Blue &amp; Gold ' +
+            'dinner, a campsite that charges per person. They are charged from who actually came, never planned.') +
+        '</span>';
+    }
+    // The payee is only asked for once families are paying somebody directly, because that is
+    // the only arrangement where there IS one. Council is the common answer and the one the
+    // select fills in, but uniforms go to the Scout Shop and a campground bills its own name,
+    // so it stays a name rather than becoming a flag.
+    if (mode === 'direct') {
+      h += '<span class="brow-break"></span>' +
+        '<label class="att-mini" style="text-transform:none;letter-spacing:0">Paid directly to' +
+        '<input data-ch="line-direct" data-id="' + l.id + '" value="' + esc(l.paidDirectTo) + '" list="payeeList-' + l.id + '" placeholder="Council" aria-label="Paid directly to"></label>' +
+        '<datalist id="payeeList-' + l.id + '">' +
+        PAYEE_SUGGESTIONS.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>' +
+        '<span class="small muted brow-note">Families pay ' + esc(l.paidDirectTo) +
+        ' themselves. Never enters the pack\u2019s books — no charge, no ledger entry, no effect on the balance, ' +
+        'and popcorn does not have to cover it. It still counts toward what the year costs a family. ' +
+        'Clear the name and the pack collects it instead.</span>';
+    } else if (mode === 'families') {
+      h += '<span class="brow-break"></span>' +
+        '<span class="small muted brow-note">The pack fronts it and is paid back by families, so it raises a charge ' +
+        'against each family\u2019s account. If families pay the council or the Scout Shop themselves instead, ' +
+        'choose <em>Families pay Council direct</em> above.</span>';
     }
     if (collectKey && lineRaisesCharges(l)) h += '<span class="brow-break"></span>' + lineChargeSummary(l);
     return h + '</div>';
@@ -11426,7 +11677,11 @@
         line: x,
         slot: ev ? ev.slot : 0,
         location: ev ? ev.location : '',
-        note: ev ? ev.note : ''
+        note: ev ? ev.note : '',
+        // Who it was for. Webelos Woods is a Webelos event every year — the restriction is by
+        // den, not by the scouts who happened to be in it, so it survives the rollover exactly
+        // as the location and the packing list do. Losing it would quietly re-bill the pack.
+        dens: ev ? eventDens(ev).slice() : []
       };
     });
     b.programYear += 1;
@@ -11437,13 +11692,14 @@
     state.events = [];
     b.activities = carried.map(function (c) {
       var x = c.line;
-      var ev = freshEvent({ kind: 'activity', name: x.name || '', slot: c.slot, location: c.location, note: c.note });
+      var ev = freshEvent({ kind: 'activity', name: x.name || '', slot: c.slot, location: c.location, note: c.note, dens: c.dens });
       state.events.push(ev);
       return freshLine({
         name: x.name || '', eventId: ev.id, basis: x.basis,
         scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
         siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
-        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
+        includeLeaders: x.includeLeaders, leaderRateCents: x.leaderRateCents,
+        fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
         // AUDIT FIX — carry the category. freshLine defaults to 'other', so without this the
         // whole 510-278 grouping was silently reset every year — and an 'income' line came
         // back as an ordinary expense that bills families.
@@ -11455,7 +11711,8 @@
         name: x.name || '', basis: x.basis,
         scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
         siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
-        adultsPerScout: x.adultsPerScout, fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
+        includeLeaders: x.includeLeaders, leaderRateCents: x.leaderRateCents,
+        fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
         // AUDIT FIX — carry the category. freshLine defaults to 'other', so without this the
         // whole 510-278 grouping was silently reset every year — and an 'income' line came
         // back as an ordinary expense that bills families.
@@ -12864,10 +13121,13 @@
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
-    if (ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' || ch === 'scout-den') {
+    if (ch === 'scout-name' || ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' || ch === 'scout-den') {
       var scEd = getScout(el.dataset.id);
       if (!scEd) return;
-      if (ch === 'scout-renew') scEd.renewalMonth = el.value;
+      // Trimmed on the way in, exactly like a leader's name — a trailing space is invisible
+      // and would sort and shorten differently from the same name without one.
+      if (ch === 'scout-name') scEd.name = el.value.trim();
+      else if (ch === 'scout-renew') scEd.renewalMonth = el.value;
       else if (ch === 'scout-denlabel') scEd.denLabel = el.value;
       else if (ch === 'scout-den') scEd.den = DENS.indexOf(el.value) === -1 ? '' : el.value;
       else scEd.note = el.value;
@@ -12975,17 +13235,29 @@
       else if (bk === 'scout-rate') bl.scoutRateCents = toCents(el.value);
       else if (bk === 'adult-rate') bl.adultRateCents = toCents(el.value);
       else if (bk === 'sibling-rate') bl.siblingRateCents = toCents(el.value);
-      else if (bk === 'adults-per') {
-        var ap = parseFloat(el.value);
-        bl.adultsPerScout = (isFinite(ap) && ap >= 0) ? Math.min(9, Math.round(ap * 100) / 100) : 0;
-      } else if (bk === 'adults-from') {
-        bl.adultsFrom = el.value === 'leaders' ? 'leaders' : 'assumption';
+      else if (bk === 'leader-rate') bl.leaderRateCents = toCents(el.value);
+      else if (bk === 'include-leaders') {
+        bl.includeLeaders = el.checked;
+        // A campsite or a meal costs the same whoever is eating it, so the leader rate starts
+        // at the scout rate — one tick and the line is right. Registration is the exception
+        // ($85 youth, $65 adult) and the field is right there to correct.
+        if (bl.includeLeaders && !bl.leaderRateCents) bl.leaderRateCents = bl.scoutRateCents || 0;
       } else if (bk === 'category') {
         if (LINE_CATEGORY_KEYS.indexOf(el.value) !== -1) bl.category = el.value;
       } else if (bk === 'funded') {
-        bl.fundedBy = el.value === 'families' ? 'families' : 'pack';
-        // "The pack pays, but somebody else is paid directly" is meaningless.
-        if (bl.fundedBy !== 'families') bl.paidDirectTo = '';
+        // Three arrangements, two fields (DESIGN-money.md §3.2). 'direct' is not a third
+        // fundedBy value — it is families-funded with a payee, and the payee is prefilled
+        // with the one every pack means by it so the choice is complete in one tap. The name
+        // stays editable, and clearing it puts the line back through the pack's books.
+        if (el.value === 'direct') {
+          bl.fundedBy = 'families';
+          if (!bl.paidDirectTo) bl.paidDirectTo = 'Council';
+        } else {
+          bl.fundedBy = el.value === 'families' ? 'families' : 'pack';
+          // "The pack pays, but somebody else is paid directly" is meaningless — and picking
+          // "families pay the pack" means exactly that the pack collects it.
+          bl.paidDirectTo = '';
+        }
       } else if (bk === 'direct') bl.paidDirectTo = el.value.trim();
       else return;
       commit(); return;
@@ -13001,6 +13273,18 @@
       else if (evk === 'endtime') evr.endTime = el.value;
       else if (evk === 'location') evr.location = el.value;
       else if (evk === 'note') evr.note = el.value;
+      else if (evk === 'dens') {
+        // Which dens the activity is for. Rebuilt in DENS order every time so the stored
+        // array is the same whichever order the boxes were ticked in — one shape to read,
+        // and the printed label always comes out in rank order.
+        var evDen = el.dataset.den;
+        if (DENS.indexOf(evDen) === -1) return;
+        var evNext = eventDens(evr).slice();
+        var evAt = evNext.indexOf(evDen);
+        if (el.checked && evAt === -1) evNext.push(evDen);
+        else if (!el.checked && evAt !== -1) evNext.splice(evAt, 1);
+        evr.dens = DENS.filter(function (dn) { return evNext.indexOf(dn) !== -1; });
+      }
       else return;
       commit(); return;
     }
