@@ -1630,7 +1630,7 @@
       collected: {}, advancement: {},
       fundraisers: [],
       derby: { name: '', date: '', lanes: 4, cars: [], awards: [] },
-      rewardTiers: { duesCents: 0, tiers: [] },
+      rewardTiers: { duesCents: 0, tiers: [], assumeAllEarn: false },
       inventory: freshInventory(),
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
@@ -2252,6 +2252,9 @@
     // Lowest-threshold tier is the "dues tier"; the pack covers duesCents per scout who reaches it.
     if (!d.rewardTiers || typeof d.rewardTiers !== 'object' || Array.isArray(d.rewardTiers)) d.rewardTiers = { duesCents: 0, tiers: [] };
     d.rewardTiers.duesCents = (typeof d.rewardTiers.duesCents === 'number' && isFinite(d.rewardTiers.duesCents) && d.rewardTiers.duesCents > 0) ? Math.round(d.rewardTiers.duesCents) : 0;
+    // Plan as if every scout earns their tier (owner ask, 2026-07-27). Absent → false, so no
+    // existing pack record's goal moves until somebody chooses this.
+    d.rewardTiers.assumeAllEarn = d.rewardTiers.assumeAllEarn === true;
     if (!Array.isArray(d.rewardTiers.tiers)) d.rewardTiers.tiers = [];
     d.rewardTiers.tiers = d.rewardTiers.tiers.filter(function (tier) {
       if (!tier || typeof tier !== 'object' || Array.isArray(tier)) return false;
@@ -2844,12 +2847,31 @@
     // still money families will owe. Reading only charges would count a family-funded
     // campout as pure cost until the day it happens, and inflate the popcorn goal by the
     // whole of it — the pack would be told to raise money it was never going to spend.
-    var fees = 0;
+    //
+    // ...unless the pack has decided popcorn will pick those fees up (assumeAllEarn). Then the
+    // SCOUT share of a tier-covered line is not family income at all — it is what fundraising
+    // is for — and leaving it in B would set the goal too low by exactly what the pack
+    // promised to cover. Heads a family brought are untouched: a tier never covers those.
+    var assumeCov = assumeAllEarnTiers() ? tierCoveredKeys() : {};
+    var fees = 0, tierAssumed = 0;
     allBudgetLines().forEach(function (r) {
       var l = r.line;
       if (!lineRaisesCharges(l)) return;
       var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
-      fees += rows.length ? chargeTotals(rows, state.ledger).standing : linePlanned(l);
+      var owed = rows.length ? chargeTotals(rows, state.ledger).standing : linePlanned(l);
+      if (assumeCov[r.key]) {
+        // Only what still STANDS can move onto the pack: a charge already waived by a tier
+        // left `standing` long ago, and counting it again would take it off twice.
+        var mine = rows.length
+          ? rows.reduce(function (n, c) {
+            return (chargeIsOpen(c) && c.who === 'scout') ? n + (c.amountCents || 0) : n;
+          }, 0)
+          : tierScoutShareForLine(r);
+        mine = Math.min(mine, owed);
+        owed -= mine;
+        tierAssumed += mine;
+      }
+      fees += owed;
     });
     var otherFr = 0;
     state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
@@ -2863,6 +2885,8 @@
       scouts: scouts, byCategory: byCategory,
       A: expenses, B: income, C: need,
       carryover: carryover, fees: fees, otherFr: otherFr, cashGoal: cashGoal,
+      // What the assumption moved off the families and onto popcorn. 0 when it is off.
+      tierAssumed: tierAssumed,
       incomeLines: incomeLines, familyDirect: familyDirect,
       pct: pct, pctOk: pctOk, salesGoal: salesGoal,
       perScoutGoal: (salesGoal != null && scouts > 0) ? Math.round(salesGoal / scouts) : null
@@ -2923,6 +2947,11 @@
     // fee shows up correctly as income it no longer expects. `feesAbsorbed` is that figure,
     // reported for display only.
     var coverage = tierCoverageConfigured() ? packCoverage() : {};
+    // ...and if the pack has decided to PLAN on covering them, every scout on a covered line
+    // counts as absorbed, not just the ones who have sold enough so far. Otherwise this figure
+    // would report $0 absorbed while the funding worksheet was already treating it as the
+    // pack's — two screens describing the same money differently.
+    var assumeCovAll = assumeAllEarnTiers() ? tierCoveredKeys() : {};
     var feesAbsorbed = 0;
     function addFeeItem(item, colKey) {
       // Phase 3a — a family-funded line the pack fronts. Paid-direct lines raise nothing
@@ -2939,8 +2968,10 @@
       var cm = state.collected[colKey] || {};
       var cov = coverage[colKey] || {};
       // The line's OWN roster: a den-limited event bills the dens it is for, nobody else.
+      var planCovered = !!assumeCovAll[colKey];
       lineRoster(item).forEach(function (s) {
-        if (cov[s.id]) { feesAbsorbed += each; return; } // pack pays it; not family income
+        // Earned it, or the pack is planning on it: either way the family is not billed.
+        if (cov[s.id] || planCovered) { feesAbsorbed += each; return; }
         feeIncomeExpected += each;
         if (cm[s.id]) feeIncomeCollected += each;
       });
@@ -6970,6 +7001,67 @@
   function tierCoverageConfigured() {
     return sortedTiers().some(function (t) { return arrOf(t.covers).length > 0; });
   }
+  // ---------------------------------------------------------------------------
+  // TIERS AS A PLANNING ASSUMPTION — owner ask, 2026-07-27.
+  //
+  // packCoverage() is deliberately about what has ACTUALLY been sold, so in July it covers
+  // nobody and the plan expects every family to pay every fee. A pack that intends popcorn to
+  // pick those fees up is then planning the wrong year: it budgets income it means to give
+  // away, and its sales goal comes out too low by exactly the amount it promised.
+  //
+  // `assumeAllEarn` plans the promise instead: every scout is assumed to reach the tiers, so
+  // the fees a tier covers stop counting as family income and popcorn has to raise them. It
+  // is a deliberate switch, OFF by default, because it is an optimistic assumption about ten
+  // families and only the pack can decide to make it.
+  //
+  // It moves the goal the SAFE way — up, never down. And it is checkable, which is the point
+  // of tierAssumption(): if every scout reaches the top covering tier, that is a known
+  // quantity of sales, and the commission on it either covers what the pack promised or does
+  // not. A pack should find that out in July, not in February.
+  // ---------------------------------------------------------------------------
+  function assumeAllEarnTiers() {
+    return state.rewardTiers.assumeAllEarn === true && tierCoverageConfigured();
+  }
+  // Every collect key any tier points at. Coverage stacks, so one set is enough.
+  function tierCoveredKeys() {
+    var out = {};
+    sortedTiers().forEach(function (t) {
+      arrOf(t.covers).forEach(function (k) { out[k] = true; });
+    });
+    return out;
+  }
+  // The SCOUT share of one line across everyone it applies to — what the pack would pick up
+  // if every scout earned it. A tier never covers a head a family brought, so the adult and
+  // sibling rates are not here.
+  function tierScoutShareForLine(r) {
+    return (r.line.scoutRateCents || 0) * lineRoster(r.line).length;
+  }
+  // The promise, priced, and whether the sales that earn it pay for it. Null until a tier
+  // actually covers something.
+  function tierAssumption() {
+    var tiers = sortedTiers().filter(function (t) { return arrOf(t.covers).length > 0; });
+    if (!tiers.length) return null;
+    var top = tiers[tiers.length - 1];              // sortedTiers is ascending; coverage stacks
+    var roster = activeScouts().length;
+    var keys = tierCoveredKeys();
+    var picked = 0, lines = [];
+    allBudgetLines().forEach(function (r) {
+      if (!keys[r.key] || !lineRaisesCharges(r.line)) return;
+      var cents = tierScoutShareForLine(r);
+      if (cents > 0) lines.push({ name: r.line.name || ('Untitled ' + r.kind), cents: cents });
+      picked += cents;
+    });
+    var sales = (top.thresholdCents || 0) * roster;
+    var pct = parseFloat(state.commissionPct);
+    var commission = (isFinite(pct) && pct > 0) ? Math.round(sales * pct / 100) : null;
+    return {
+      top: top, roster: roster, sales: sales, commission: commission,
+      picked: picked, lines: lines,
+      // Positive = the commission on those sales more than pays for the rewards it earns.
+      net: commission == null ? null : commission - picked,
+      on: assumeAllEarnTiers()
+    };
+  }
   // Standings badges for one row: earned-tier name (navy) + gold "dues covered" marker.
   // Wave 21 — the gold badge used to be a hardcoded "Dues covered", shown to anyone past
   // the LOWEST tier. That was the old model, where one typed dues figure was the only thing
@@ -7358,7 +7450,20 @@
       '<table class="tbl fund-tbl"><tbody>' +
       '<tr><td><strong>A</strong> Total budgeted program expenses</td><td class="num money"><strong>' + fmt(fs2.A) + '</strong></td></tr>' +
       '<tr><td class="fund-sub">Carryover from last year</td><td class="num money">' + fmt(fs2.carryover) + '</td></tr>' +
-      (fs2.fees ? '<tr><td class="fund-sub">Dues &amp; fees families owe</td><td class="num money">' + fmt(fs2.fees) + '</td></tr>' : '') +
+      // Money the pack has decided popcorn will pick up is NOT in B — that is the whole point
+      // of the assumption — but it has to be visible, and the two lines have to TIE. So the
+      // fees row is shown GROSS of the deduction and the deduction takes it back off: a
+      // treasurer can read down the column and get B. (Coverage a scout has already earned
+      // has never appeared here — it leaves `fees` before this table is built — and the
+      // Budget card's "picked up by the pack" figure is where that is reported.)
+      (fs2.fees || fs2.tierAssumed
+        ? '<tr><td class="fund-sub">Dues &amp; fees families owe</td><td class="num money">' +
+          fmt(fs2.fees + fs2.tierAssumed) + '</td></tr>'
+        : '') +
+      (fs2.tierAssumed
+        ? '<tr><td class="fund-sub">Not asked for — reward tiers cover it <span class="muted">(planned)</span></td>' +
+          '<td class="num money">−' + fmt(fs2.tierAssumed) + '</td></tr>'
+        : '') +
       (fs2.incomeLines ? '<tr><td class="fund-sub">Budgeted income lines</td><td class="num money">' + fmt(fs2.incomeLines) + '</td></tr>' : '') +
       (fs2.otherFr ? '<tr><td class="fund-sub">Other fundraisers</td><td class="num money">' + fmt(fs2.otherFr) + '</td></tr>' : '') +
       '<tr><td class="fund-sub">Cash donations goal</td><td class="num money">' + fmt(fs2.cashGoal) + '</td></tr>' +
@@ -9323,6 +9428,45 @@
       });
     } else {
       h += '<div class="empty" style="margin:4px 0 6px">No reward tiers yet. Add one below — for example, reach $600 and the pack covers that scout’s dues.</div>';
+    }
+
+    // PLAN ON IT? — owner ask, 2026-07-27. Coverage above is what has actually been sold, so
+    // in July it is nobody. A pack that means popcorn to pick these fees up can say so here,
+    // and then the plan stops counting them as money families will hand over.
+    //
+    // The check underneath is the whole reason this is safe to offer: assuming every scout
+    // reaches the top covering tier is assuming a known quantity of SALES, and the commission
+    // on those sales either pays for what was promised or does not.
+    var ta = tierAssumption();
+    if (ta) {
+      h += '<hr class="divider"><label class="chk-mini" style="font-size:0.9rem">' +
+        '<input type="checkbox" data-ch="tier-assume-all"' + (ta.on ? ' checked' : '') + '>' +
+        'Plan as if every scout earns their tier</label>' +
+        '<p class="small muted" style="margin:6px 0 0">' +
+        (ta.on
+          ? 'The plan treats <strong class="money">' + fmt(ta.picked) + '</strong> of family fees as the pack\u2019s to raise, ' +
+            'so the Trail\u2019s End goal covers the rewards you are promising. Off, the plan expects families to pay them ' +
+            'and popcorn only has to make up the difference once scouts actually earn coverage.'
+          : 'Off: the plan expects families to pay these fees, and only counts coverage once a scout has really sold enough. ' +
+            'Tick it to budget for the promise instead \u2014 the goal goes UP by what the pack would pick up, never down.') +
+        '</p>';
+      if (ta.picked > 0) {
+        var reachWord = ta.roster === 1 ? 'scout reaches' : 'scouts reach';
+        h += '<p class="small" style="margin:8px 0 0">If all <strong>' + ta.roster + '</strong> ' + reachWord + ' ' +
+          '<strong>' + esc(ta.top.name || 'the top tier') + '</strong> (' + fmt(ta.top.thresholdCents) + '), ' +
+          'that is <strong class="money">' + fmt(ta.sales) + '</strong> sold' +
+          (ta.commission == null
+            ? ' \u2014 set a commission rate to see what it earns.'
+            : ' \u2192 <strong class="money">' + fmt(ta.commission) + '</strong> commission, against <strong class="money">' +
+              fmt(ta.picked) + '</strong> of fees the pack picks up.') + '</p>';
+        if (ta.net != null) {
+          h += '<p class="small" style="margin:4px 0 0">' + (ta.net >= 0
+            ? '<span class="pill navy">clears it</span> The commission those sales earn covers the rewards with <strong class="money">' +
+              fmt(ta.net) + '</strong> to spare.'
+            : '<span class="pill bad">short by ' + fmt(-ta.net) + '</span> The rewards cost more than the sales that earn them \u2014 ' +
+              'raise the tier, or cover less at it.') + '</p>';
+        }
+      }
     }
 
     if (!coverable.length) {
@@ -13057,6 +13201,8 @@
     }
     // Wave 8: reward tiers
     if (ch === 'tier-dues') { state.rewardTiers.duesCents = toCents(el.value); commit(); return; }
+    // Plan on the promise, or wait for the sales. Either way it can only move the goal UP.
+    if (ch === 'tier-assume-all') { state.rewardTiers.assumeAllEarn = el.checked; commit(); return; }
     if (ch === 'tier-name' || ch === 'tier-threshold' || ch === 'tier-reward') {
       var tier = state.rewardTiers.tiers.find(function (t) { return t.id === el.dataset.id; });
       if (!tier) return;

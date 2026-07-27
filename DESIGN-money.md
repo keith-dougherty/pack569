@@ -485,6 +485,34 @@ and it is the entire feature:
 waived = (charge.who === 'scout') && scoutReachedTier(charge.scoutId, line)
 ```
 
+#### Planning on the promise — `assumeAllEarn`
+
+*Owner ask, 2026-07-27.* A waiver is a fact about sales that have happened, so in July it covers
+nobody, and the plan expects every family to pay every fee. A pack that intends popcorn to pick
+those fees up is then **planning the wrong year**: it counts income it means to give away, and its
+sales goal comes out low by exactly the amount it promised.
+
+`state.rewardTiers.assumeAllEarn` plans the promise instead. Every scout is assumed to reach the
+tiers, so the **scout share** of every tier-covered line stops being family income and becomes
+something fundraising has to raise. It is **off by default** — an optimistic assumption about ten
+families is the pack's call, not the app's — and it can only ever move the goal **up**, because the
+deduction is floored against what is actually owed (`mine = Math.min(mine, owed)`). A charge already
+waived left `fees` when it was waived and is not taken off a second time.
+
+The reason this is safe to offer is that it is **checkable**. Assuming everyone reaches the top
+covering tier is assuming a known quantity of sales, so the commission on those sales either pays
+for the rewards or it does not:
+
+```
+all 11 scouts reach "Dues covered" ($300) → $3,300 sold → $1,056 commission
+                                          → $1,045 of fees the pack picks up
+                                          → clears it, $11 to spare
+```
+
+Shown next to the toggle, both ways round — *clears it* or *short by* — because a pack promising
+rewards its own thresholds cannot fund should find that out in July, not in February. The worksheet
+prints the fees row **gross** and the deduction beneath it so the column still adds up to B.
+
 **Where this sits relative to the two models Scouting America describes.** The unit budgeting
 guidelines offer a choice:
 

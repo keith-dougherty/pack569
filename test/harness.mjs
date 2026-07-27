@@ -636,7 +636,9 @@ test('the pack covering a fee is lost income, not a new cost', () => {
   // on top would double-count it. What changes is that the family no longer reimburses.
   const fn = /function addFeeItem\(item, colKey\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(fn, 'addFeeItem() not found');
-  ok(/if \(cov\[s\.id\]\) \{ feesAbsorbed \+= each; return; \}/.test(fn[0]),
+  // `planCovered` is the 2026-07-27 planning assumption: earned it, or the pack has decided
+  // to plan on covering it. Either way the family is not billed and the pack absorbs it.
+  ok(/if \(cov\[s\.id\] \|\| planCovered\) \{ feesAbsorbed \+= each; return; \}/.test(fn[0]),
     'a covered scout is not excluded from expected fee income');
   ok(!/actual \+= feesAbsorbed/.test(SCRIPT), 'absorbed fees are being double-counted into actual spent');
 });
@@ -2576,6 +2578,75 @@ test('a scout’s name can be corrected', () => {
     'the name field has no handler, or does not trim like a leader’s does');
   // Everything keys off the id, so a rename must not need to touch anything else.
   ok(!/scoutId === .*\.name|name === c\.scoutId/.test(SCRIPT), 'something is matching a scout by name');
+});
+
+/* ================================================================
+   Reward tiers as a planning assumption — owner ask, 2026-07-27
+   ================================================================ */
+
+test('planning on the tiers is off until the pack says so', () => {
+  // It is an optimistic assumption about ten families. No pack record's goal may move on its
+  // own because the app decided to be hopeful.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({ version: 1, scouts: [], budget: { programYear: 2025, activities: [], expenses: [] } });
+  eq(d.rewardTiers.assumeAllEarn, false, 'the assumption defaults on');
+  const kept = ctx.normalizeState({
+    version: 1, scouts: [], rewardTiers: { duesCents: 0, tiers: [], assumeAllEarn: true },
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(kept.rewardTiers.assumeAllEarn, true, 'a pack that chose it loses the setting');
+  ok(/function assumeAllEarnTiers\(\) \{\s*\n\s*return state\.rewardTiers\.assumeAllEarn === true && tierCoverageConfigured\(\);/.test(SCRIPT),
+    'the assumption applies even when no tier covers anything');
+});
+
+test('the assumption moves fees onto popcorn, and only ever raises the goal', () => {
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'fundingSummary() not found');
+  ok(/var assumeCov = assumeAllEarnTiers\(\) \? tierCoveredKeys\(\) : \{\};/.test(fn[0]),
+    'the fees loop does not consult the assumption');
+  // B falls by what the pack picks up, so C = A − B rises by the same amount. The subtraction
+  // is floored against what is actually owed, so fees can never go negative and "raise the
+  // goal" can never turn into "lower the goal".
+  ok(/mine = Math\.min\(mine, owed\);/.test(fn[0]), 'the assumption could subtract more than is owed');
+  ok(/tierAssumed \+= mine;/.test(fn[0]), 'what the assumption moved is not reported');
+  ok(/tierAssumed: tierAssumed,/.test(fn[0]), 'tierAssumed is not returned for the worksheet to show');
+});
+
+test('a charge already waived is not taken off twice', () => {
+  // A scout who really earned coverage left `standing` when the charge was waived. Counting
+  // their share again would understate family income by that much a second time.
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/return \(chargeIsOpen\(c\) && c\.who === 'scout'\) \? n \+ \(c\.amountCents \|\| 0\) : n;/.test(fn[0]),
+    'the assumption counts settled or family-head charges');
+});
+
+test('the tier promise is priced, and checked against the sales that earn it', () => {
+  // The reason this is safe to offer at all: assuming every scout reaches the top covering
+  // tier is assuming a known quantity of SALES. Either the commission on them pays for the
+  // rewards or it does not, and a pack should find that out in July.
+  const fn = /function tierAssumption\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'tierAssumption() not found');
+  ok(/var top = tiers\[tiers\.length - 1\];/.test(fn[0]),
+    'the check must assume the TOP covering tier — coverage stacks, so that is what "all covered" means');
+  ok(/var sales = \(top\.thresholdCents \|\| 0\) \* roster;/.test(fn[0]), 'implied sales are not roster × threshold');
+  ok(/net: commission == null \? null : commission - picked/.test(fn[0]), 'there is no self-funding verdict');
+  ok(/if \(!keys\[r\.key\] \|\| !lineRaisesCharges\(r\.line\)\) return;/.test(fn[0]),
+    'the price includes lines no tier covers, or lines that raise no charges at all');
+  // Priced from the SCOUT share only: a tier never covers a head a family brought.
+  const share = /function tierScoutShareForLine\(r\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(share && /\(r\.line\.scoutRateCents \|\| 0\) \* lineRoster\(r\.line\)\.length/.test(share[0]),
+    'the promise is priced off something other than the scout rate × the line’s own roster');
+  ok(!/adultRateCents|siblingRateCents/.test(share[0]), 'a tier is pricing in parents and siblings');
+});
+
+test('the toggle and the worksheet line exist, and say which way the goal moves', () => {
+  ok(/data-ch="tier-assume-all"/.test(SCRIPT), 'there is no toggle');
+  ok(/if \(ch === 'tier-assume-all'\) \{ state\.rewardTiers\.assumeAllEarn = el\.checked; commit\(\); return; \}/.test(SCRIPT),
+    'the toggle has no handler');
+  ok(/Plan as if every scout earns their tier/.test(SCRIPT), 'the toggle is unlabelled');
+  ok(/Not asked for &mdash; reward tiers cover it|Not asked for — reward tiers cover it/.test(SCRIPT),
+    'B drops with no line on the worksheet to say why');
+  ok(/clears it|short by/.test(SCRIPT), 'the self-funding verdict is never shown');
 });
 
 /* ---------------- report ---------------- */
