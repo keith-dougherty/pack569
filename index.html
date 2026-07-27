@@ -3702,8 +3702,15 @@
   function seedStandardYear() {
     var existing = {};
     // Phase 2 — the seed makes a calendar entry AND the budget line that pays for it, since
-    // "the traditional slate" is a plan for both. Idempotence keys off the EVENT name.
+    // "the traditional slate" is a plan for both. So idempotence has to check BOTH sides.
+    //
+    // Checking only event names was a real bug: del-event deliberately keeps a budget line
+    // when its event is removed (the ledger posts against that line), so a pack that took
+    // the Raingutter Regatta off the calendar and then re-seeded ended up with TWO Regatta
+    // lines — one stranded under "Not on the calendar", one freshly linked — and the same
+    // money planned twice. Two behaviours each correct on their own.
     state.events.forEach(function (e) { if (e.kind === 'activity') existing[(e.name || '').trim().toLowerCase()] = 1; });
+    state.budget.activities.forEach(function (a) { existing[(a.name || '').trim().toLowerCase()] = 1; });
     var added = 0;
     SEED_ACTIVITIES.forEach(function (t) {
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot

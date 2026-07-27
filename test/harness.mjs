@@ -2081,6 +2081,17 @@ test('Season setup says what the Trail’s End goal actually is', () => {
     'a stretch below the minimum is silently dropped with no explanation');
 });
 
+test('re-seeding never plans the same activity twice', () => {
+  // del-event keeps the budget line when its event goes (the ledger posts against it), so
+  // matching only event names let a re-seed re-create a name that was still budgeted for.
+  const fn = /function seedStandardYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'seedStandardYear() not found');
+  ok(/state\.events\.forEach\(function \(e\) \{ if \(e\.kind === 'activity'\) existing\[/.test(fn[0]),
+    'event names are not checked');
+  ok(/state\.budget\.activities\.forEach\(function \(a\) \{ existing\[/.test(fn[0]),
+    'a budget line whose event was deleted would be seeded again — the same money twice');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
