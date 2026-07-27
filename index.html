@@ -2702,10 +2702,30 @@
       fund: fund
     };
   }
+  // Is this date inside the program year? Pure — the window is Sept 1 to Aug 31.
+  function dateInProgramYear(iso, py) {
+    return !!iso && iso >= programYearStartISO(py) && iso <= programYearEndISO(py);
+  }
   // Phase 2 — a budget line's month is its event's month. Lines with no event (their event
   // was deleted, or they were never scheduled) come back from unscheduledActivities().
+  //
+  // A line whose event is dated OUTSIDE the program year is deliberately kept out of the
+  // month grid: that grid is labelled from the program year, so filing a July-2026 event
+  // into it would head the group "July 2028" and be wrong by two years without saying so.
+  // outOfYearActivities() collects them under their real month instead.
   function activitiesInSlot(slot) {
-    return state.budget.activities.filter(function (a) { return lineSlot(a) === slot; });
+    return state.budget.activities.filter(function (a) {
+      var ev = eventForLine(a);
+      if (!ev) return false;
+      if (ev.date && !dateInProgramYear(ev.date, state.budget.programYear)) return false;
+      return lineSlot(a) === slot;
+    });
+  }
+  function outOfYearActivities() {
+    return state.budget.activities.filter(function (a) {
+      var ev = eventForLine(a);
+      return !!(ev && ev.date && !dateInProgramYear(ev.date, state.budget.programYear));
+    });
   }
   function unscheduledActivities() {
     return state.budget.activities.filter(function (a) { return lineSlot(a) === -1; });
@@ -6802,6 +6822,30 @@
       acts.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
       h += '<button type="button" class="btn small ghost" data-act="add-activity" data-slot="' + slot + '">+ Add activity</button></div>';
     }
+    // Dated outside the program year. Grouped by the month they are ACTUALLY in, because
+    // the grid above takes its year from the program year and would mislabel them. Nearly
+    // always either a typo'd year or a pack planning next September before closing the
+    // books — both worth seeing rather than filing silently under the wrong heading.
+    var strays = outOfYearActivities();
+    if (strays.length) {
+      var byMonth = {};
+      strays.forEach(function (a) {
+        var mk = monthKey(eventForLine(a).date);
+        (byMonth[mk] = byMonth[mk] || []).push(a);
+      });
+      Object.keys(byMonth).sort().forEach(function (mk) {
+        var rows = byMonth[mk];
+        var sub = rows.reduce(function (n, a) { return n + (lineThroughPack(a) ? linePlanned(a) : 0); }, 0);
+        h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
+          '<strong>' + esc(monthLabel(mk)) + '</strong>' +
+          '<span class="small muted money">planned ' + fmt(sub) + '</span></div>' +
+          '<p class="small muted" style="margin:0 0 6px">Outside the ' + esc(slotLabel(0)) + ' – ' +
+          esc(slotLabel(11)) + ' program year. Check the date, or close out the year to move the plan on.</p>';
+        rows.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
+        h += '</div>';
+      });
+    }
+
     // Phase 2 — lines whose event was deleted (or that were never scheduled). Before the
     // split these could not exist: the date and the money were the same row, so losing one
     // lost the other. Now the money stands on its own and says so.

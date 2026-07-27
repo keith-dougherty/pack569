@@ -1697,6 +1697,41 @@ test('the week list is ordered the way the week happens', () => {
 });
 
 
+test('a month heading never claims a year the event is not in', () => {
+  // slotYear() takes the year from budget.programYear alone, so an event dated outside the
+  // program year would be filed under a heading two years off with nothing to say so. The
+  // realistic way to hit it is planning September before closing out the year in August.
+  const { dateInProgramYear } = sandbox(['programYearStartISO', 'programYearEndISO', 'dateInProgramYear']);
+  eq(dateInProgramYear('2025-09-01', 2025), true, 'first day of the program year');
+  eq(dateInProgramYear('2026-08-31', 2025), true, 'last day of the program year');
+  eq(dateInProgramYear('2025-08-31', 2025), false, 'the day before it starts');
+  eq(dateInProgramYear('2026-09-01', 2025), false, 'next September, planned before the rollover');
+  eq(dateInProgramYear('', 2025), false, 'undated');
+});
+
+test('an out-of-year line is grouped by its REAL month, not filed into the grid', () => {
+  const inSlot = /function activitiesInSlot\(slot\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(inSlot, 'activitiesInSlot() not found');
+  ok(/if \(ev\.date && !dateInProgramYear\(ev\.date, state\.budget\.programYear\)\) return false;/.test(inSlot[0]),
+    'the month grid still swallows dates from another year');
+  const stray = /function outOfYearActivities\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(stray, 'outOfYearActivities() not found');
+  ok(/!dateInProgramYear\(ev\.date, state\.budget\.programYear\)/.test(stray[0]), 'wrong predicate');
+  // ...and it must be rendered under monthLabel of its own date, with an explanation.
+  ok(/monthLabel\(mk\)/.test(SCRIPT), 'the stray group is not labelled from its own month');
+  ok(/Outside the/.test(SCRIPT), 'the stray group does not say why it is separate');
+});
+
+test('an out-of-year line appears exactly once', () => {
+  // It must leave the slot grid when it joins the stray group, or the same money shows twice.
+  const inSlot = /function activitiesInSlot\(slot\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const stray = /function outOfYearActivities\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const loose = /function unscheduledActivities\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/return false;/.test(inSlot), 'activitiesInSlot does not exclude anything');
+  ok(/ev && ev\.date/.test(stray), 'outOfYearActivities would catch undated lines too');
+  ok(/lineSlot\(a\) === -1/.test(loose), 'unscheduledActivities would catch dated lines too');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
