@@ -1578,7 +1578,7 @@ test('Phase 4: a family-funded event counts as income before anyone has attended
   // raise money it was never going to spend.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : linePlannedCents\(l, scouts\)/.test(fn[0]),
+  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : linePlannedCents\(l, scouts, leaders\)/.test(fn[0]),
     'a family-funded line with no charges yet contributes nothing to income');
 });
 
@@ -1885,6 +1885,129 @@ test('season-over-season reports money only, and says why', () => {
   const model = /function locationHistoryFrom\(archives, liveLocs, programYear\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(model && !/events|perEvent|avg/i.test(model[0].replace(/\/\/[^\n]*/g, '')),
     'locationHistoryFrom exposes an event count that could be averaged across mismatched units');
+});
+
+/* ================================================================
+   Seeded registration — only what the app can work out for itself.
+   ================================================================ */
+
+const REG_FNS = ['centsOf', 'uid', 'freshLine', 'SA_FEES', 'SEED_EXPENSES',
+  'linePlannedHeads', 'linePlannedCents'];
+
+test('the national fees live in one dated place, and the seed reads them', () => {
+  const { SA_FEES } = sandbox(['SA_FEES']);
+  eq(SA_FEES.youthCents, 8500, 'annual national youth registration');
+  eq(SA_FEES.adultCents, 6500, 'annual national adult registration');
+  eq(SA_FEES.unitCharterCents, 10000, 'unit charter fee');
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(SA_FEES.verified), 'the figures carry no verification date');
+  const seed = /var SEED_EXPENSES = \[[\s\S]*?\n  \];/.exec(SCRIPT);
+  ok(seed && !/\b8500\b|\b6500\b|\b10000\b/.test(seed[0]),
+    'a fee is restated in the seed instead of read from SA_FEES — they would drift');
+});
+
+test('youth registration follows the roster', () => {
+  const { SEED_EXPENSES, freshLine, linePlannedCents } = sandbox(REG_FNS);
+  const youth = freshLine(SEED_EXPENSES.filter(e => e.name === 'Youth registration')[0]);
+  eq(linePlannedCents(youth, 10, 4), 85000, 'ten scouts');
+  eq(linePlannedCents(youth, 14, 4), 119000, 'four more scouts join');
+  eq(linePlannedCents(youth, 0, 4), 0, 'an empty roster costs nothing');
+});
+
+test('adult registration follows the LEADER roster, not an assumption', () => {
+  // This is the whole reason it can be seeded: the count is a number the pack already
+  // keeps, so the line moves on its own as leaders join and leave.
+  const { SEED_EXPENSES, freshLine, linePlannedCents, linePlannedHeads } = sandbox(REG_FNS);
+  const adult = freshLine(SEED_EXPENSES.filter(e => e.name === 'Adult leader registration')[0]);
+  eq(adult.adultsFrom, 'leaders', 'it is still using the per-scout assumption');
+  eq(linePlannedCents(adult, 10, 6), 39000, 'six registered leaders at $65');
+  eq(linePlannedCents(adult, 10, 7), 45500, 'a seventh leader registers');
+  eq(linePlannedCents(adult, 40, 6), 39000, 'the scout count must not affect it');
+  eq(linePlannedHeads(adult, 10, 6).adults, 6, 'head count');
+  eq(linePlannedCents(adult, 10, 0), 0, 'no leaders recorded yet');
+});
+
+test('an event line still uses the per-scout assumption', () => {
+  // Adding adultsFrom must not change how an ordinary event plans its adults.
+  const { freshLine, linePlannedCents, linePlannedHeads } = sandbox(REG_FNS);
+  const bg = freshLine({ basis: 'per-head', scoutRateCents: 1500, adultRateCents: 1500, adultsPerScout: 1 });
+  eq(bg.adultsFrom, 'assumption', 'the default changed');
+  eq(linePlannedHeads(bg, 10, 99).adults, 10, 'the leader roster leaked into an event');
+  eq(linePlannedCents(bg, 10, 99), 30000, 'the 3.4 worked example still plans to $300');
+});
+
+test('the charter fee is flat — one unit, not one per scout', () => {
+  const { SEED_EXPENSES, freshLine, linePlannedCents } = sandbox(REG_FNS);
+  const chart = freshLine(SEED_EXPENSES.filter(e => e.name === 'Unit charter fee')[0]);
+  eq(chart.basis, 'flat', 'basis');
+  eq(linePlannedCents(chart, 30, 9), 10000, 'a bigger pack does not owe more charter fee');
+});
+
+test('nothing is seeded that the app cannot work out', () => {
+  // A council fee or an optional subscription seeded at $0 looks planned-for and
+  // understates the plan, which sets the popcorn goal too LOW.
+  const { SEED_EXPENSES } = sandbox(REG_FNS);
+  eq(SEED_EXPENSES.length, 3, 'the seed should be exactly the three derivable costs');
+  const names = SEED_EXPENSES.map(e => e.name).sort();
+  eq(names, ['Adult leader registration', 'Unit charter fee', 'Youth registration'], 'seeded lines');
+  const seed = /var SEED_EXPENSES = \[[\s\S]*?\n  \];/.exec(SCRIPT)[0];
+  ok(!/council/i.test(seed), 'a council program fee is being guessed at');
+  ok(!/Scout Life/i.test(seed), 'an optional subscription is being seeded');
+  ok(!/joining/i.test(seed), 'the $25 joining fee abolished in 2024 is being seeded');
+});
+
+test('seeding registration is idempotent, and independent of the activity slate', () => {
+  const fn = /function seedStandardYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'seedStandardYear() not found');
+  ok(/existingExp\[t\.name\.toLowerCase\(\)\]/.test(fn[0]), 'seeding twice would duplicate the registration lines');
+  ok(/if \(added \|\| addedExp\)/.test(fn[0]),
+    'a pack that already has the activities would be told nothing was added');
+});
+
+test('every planning call passes the leader count', () => {
+  // A missed one silently plans adult registration at zero.
+  // Walk each call balancing parens, so a nested activeScouts() does not fool the check.
+  const bad = [];
+  const NEEDLE = 'linePlannedCents(';
+  for (let i = SCRIPT.indexOf(NEEDLE); i !== -1; i = SCRIPT.indexOf(NEEDLE, i + 1)) {
+    if (/[.\w]/.test(SCRIPT[i - 1] || '')) continue;            // skip the declaration
+    let depth = 0, args = [''], j = i + NEEDLE.length;
+    for (; j < SCRIPT.length; j++) {
+      const ch = SCRIPT[j];
+      if (ch === '(') depth++;
+      else if (ch === ')') { if (!depth) break; depth--; }
+      if (!depth && ch === ',') { args.push(''); continue; }
+      args[args.length - 1] += ch;
+    }
+    if (args.length !== 3) bad.push(NEEDLE + args.join(',') + ')');
+  }
+  eq(bad, [], 'these calls omit the leader count: ' + bad.join(' | '));
+  ok(/function linePlanned\(l\) \{ return linePlannedCents\(l, activeScouts\(\)\.length, activeLeaders\(\)\.length\); \}/.test(SCRIPT),
+    'the state-reading wrapper does not pass the ACTIVE leader roster');
+});
+
+test('a leader who has moved on stops costing the pack money', () => {
+  // state.leaders is every leader ever added. Counting it would keep paying registration
+  // for people who left — and the line is seeded, so nobody would think to check it.
+  ok(/function activeLeaders\(\) \{ return state\.leaders\.filter\(function \(l\) \{ return !l\.archived; \}\); \}/.test(SCRIPT),
+    'there is no active-leader helper');
+  ok(/l\.archived = l\.archived === true;/.test(SCRIPT), 'leaders cannot be archived');
+  // Every place that asks "how many leaders" must count the ACTIVE ones. (The raw list is
+  // still fine as a loop bound, an "any data at all" check, or a splice index — this checks
+  // the three places where the number is a HEAD COUNT.)
+  ['function computeBudget', 'function fundingSummary', 'function lineMoneyControls'].forEach(function (fname) {
+    const re = new RegExp(fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}');
+    const fn = re.exec(SCRIPT);
+    ok(fn, fname + '() not found');
+    ok(!/state\.leaders\.length/.test(fn[0]), fname + ' counts archived leaders');
+    ok(/activeLeaders\(\)\.length/.test(fn[0]), fname + ' does not count active leaders');
+  });
+});
+
+test('an archived leader is not nagged about, and can come back', () => {
+  ok(/activeLeaders\(\)\.forEach\(function \(l\) \{\s*\n\s*leaderStatus\(l\)/.test(SCRIPT),
+    'Home still chases training for leaders who have left');
+  ok(/act === 'archive-leader' \|\| act === 'restore-leader'/.test(SCRIPT), 'archiving is one-way or missing');
+  ok(/data-act="toggle-leaders-archived"/.test(SCRIPT), 'archived leaders cannot be seen again');
 });
 
 /* ---------------- report ---------------- */

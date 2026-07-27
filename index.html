@@ -1290,7 +1290,8 @@
     var l = {
       id: uid(), name: '', basis: 'flat',
       scoutRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
-      adultsPerScout: 1, fundedBy: 'pack', paidDirectTo: '', category: 'other'
+      adultsPerScout: 1, adultsFrom: 'assumption',
+      fundedBy: 'pack', paidDirectTo: '', category: 'other'
     };
     if (patch) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
     return l;
@@ -1581,6 +1582,10 @@
     // exactly as it was: this migration only ever adds.
     d.leaders.forEach(function (l) {
       if (!l || typeof l !== 'object') return;
+      // Leaders move on. Archiving keeps the person and their training history while taking
+      // them out of every count — most concretely the adult registration line, which would
+      // otherwise keep paying for people who left.
+      l.archived = l.archived === true;
       if (typeof l.sytCompleted !== 'string') l.sytCompleted = '';
       if (typeof l.uid !== 'string') l.uid = '';
       if (!Array.isArray(l.jobs)) l.jobs = jobsFromRoleText(l.role);
@@ -1664,6 +1669,11 @@
       l.flatCents = centsOf(l.flatCents);
       l.adultsPerScout = (typeof l.adultsPerScout === 'number' && isFinite(l.adultsPerScout) && l.adultsPerScout >= 0)
         ? Math.min(9, Math.round(l.adultsPerScout * 100) / 100) : 1;
+      // Where the ADULT head count comes from. 'assumption' is the planning figure — so many
+      // adults per scout, for an event. 'leaders' counts the registered leader roster, which
+      // is what an annual adult registration fee is actually charged against, and it moves on
+      // its own as leaders join and leave.
+      if (l.adultsFrom !== 'leaders') l.adultsFrom = 'assumption';
       l.paidDirectTo = typeof l.paidDirectTo === 'string' ? l.paidDirectTo.trim() : '';
       // "The pack is paying, but somebody else is paid directly" is meaningless — if the
       // pack is paying, it goes through the pack's account.
@@ -2207,6 +2217,7 @@
     armedTimer: null,
     overlay: null,          // null | {kind:'summary'} | {kind:'export',...} | {kind:'import',...}
     showArchived: false,
+    showArchivedLeaders: false,
     calMonth: null,         // 'YYYY-MM' currently shown; lazily set to next storefront's month
     calSelectedDate: null,  // 'YYYY-MM-DD' tapped on the calendar, or null
     showCompleted: false,
@@ -2409,6 +2420,7 @@
   }
   function getFundraiser(id) { return state.fundraisers.find(function (f) { return f.id === id; }); }
   function activeScouts() { return state.scouts.filter(function (s) { return !s.archived; }); }
+  function activeLeaders() { return state.leaders.filter(function (l) { return !l.archived; }); }
 
   // Everything that lands on a calendar day, keyed by day-of-month for a given 'YYYY-MM'.
   function dayEventsForMonth(mk) {
@@ -2604,11 +2616,12 @@
   // computePackTotals' teGoal).
   function fundingSummary() {
     var scouts = activeScouts().length;
+    var leaders = activeLeaders().length;
     var expenses = 0, incomeLines = 0, familyDirect = 0;
     var byCategory = {};
     allBudgetLines().forEach(function (r) {
       var l = r.line;
-      var planned = linePlannedCents(l, scouts);
+      var planned = linePlannedCents(l, scouts, leaders);
       // Money families pay somebody else directly is never the pack's, so it is in neither
       // A nor B — it is reported on its own as what the year costs a family.
       if (!lineThroughPack(l)) { familyDirect += planned; return; }
@@ -2630,7 +2643,7 @@
       var l = r.line;
       if (!lineRaisesCharges(l)) return;
       var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
-      fees += rows.length ? chargeTotals(rows, state.ledger).standing : linePlannedCents(l, scouts);
+      fees += rows.length ? chargeTotals(rows, state.ledger).standing : linePlannedCents(l, scouts, leaders);
     });
     var otherFr = 0;
     state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
@@ -2661,6 +2674,7 @@
   function computeBudget() {
     var b = state.budget;
     var scouts = activeScouts().length;
+    var leaders = activeLeaders().length;
     // Phase 3a — planned comes from the line's rates against an assumed head count.
     // Phase 1 — actual does NOT multiply by anything: a ledger entry is a total, what the
     // pack really paid, on a date, to somebody. The roster changing afterwards cannot alter
@@ -2670,14 +2684,14 @@
     // through the pack's account, so counting it would overstate what the pack spends.
     var actPlanned = 0, actActual = 0, familyDirect = 0;
     b.activities.forEach(function (a) {
-      if (!lineThroughPack(a)) { familyDirect += linePlannedCents(a, scouts); return; }
-      actPlanned += linePlannedCents(a, scouts);
+      if (!lineThroughPack(a)) { familyDirect += linePlannedCents(a, scouts, leaders); return; }
+      actPlanned += linePlannedCents(a, scouts, leaders);
       actActual += lineActualCents(state.ledger, a.id);
     });
     var expPlanned = 0, expActual = 0;
     b.expenses.forEach(function (e) {
-      if (!lineThroughPack(e)) { familyDirect += linePlannedCents(e, scouts); return; }
-      expPlanned += linePlannedCents(e, scouts);
+      if (!lineThroughPack(e)) { familyDirect += linePlannedCents(e, scouts, leaders); return; }
+      expPlanned += linePlannedCents(e, scouts, leaders);
       expActual += lineActualCents(state.ledger, e.id);
     });
     var planned = actPlanned + expPlanned;
@@ -2820,13 +2834,19 @@
   // no siblings is the honest default — it is the minimum the pack is on the hook for.
   // Nothing here pretends to know who is coming. What actually happened is recorded
   // afterwards as attendance, and from Phase 3b it is what families are charged from.
-  function linePlannedHeads(l, scoutN) {
+  function linePlannedHeads(l, scoutN, leaderN) {
     if (l.basis !== 'per-head') return { scouts: 0, adults: 0, siblings: 0 };
-    return { scouts: scoutN, adults: Math.round(scoutN * (l.adultsPerScout || 0)), siblings: 0 };
+    // A registration fee is charged per REGISTERED LEADER, a number the pack already keeps.
+    // An event's adult count is a planning assumption instead, because nobody has said yet
+    // who is coming.
+    var adults = l.adultsFrom === 'leaders'
+      ? (leaderN || 0)
+      : Math.round(scoutN * (l.adultsPerScout || 0));
+    return { scouts: scoutN, adults: adults, siblings: 0 };
   }
-  function linePlannedCents(l, scoutN) {
+  function linePlannedCents(l, scoutN, leaderN) {
     if (l.basis !== 'per-head') return l.flatCents || 0;
-    var hd = linePlannedHeads(l, scoutN);
+    var hd = linePlannedHeads(l, scoutN, leaderN);
     return (l.scoutRateCents || 0) * hd.scouts +
       (l.adultRateCents || 0) * hd.adults +
       (l.siblingRateCents || 0) * hd.siblings;
@@ -2843,7 +2863,7 @@
     return state.budget.activities.map(function (a) { return { line: a, kind: 'activity', key: 'act:' + a.id }; })
       .concat(state.budget.expenses.map(function (e) { return { line: e, kind: 'expense', key: e.id }; }));
   }
-  function linePlanned(l) { return linePlannedCents(l, activeScouts().length); }
+  function linePlanned(l) { return linePlannedCents(l, activeScouts().length, activeLeaders().length); }
   function lineRateSummary(l) {
     if (l.basis !== 'per-head') return '';
     var bits = ['scout ' + fmt(l.scoutRateCents || 0)];
@@ -3600,6 +3620,38 @@
   /* ---------------- Wave 2: seed a standard Scouting year ---------------- */
   // Traditional slate by program-month slot (Sept=0 … Aug=11). Activities only, NO
   // dates — the owner assigns dates on the Budget tab once availability is known.
+  // ---------------------------------------------------------------------------
+  // Scouting America registration fees. VERIFIED 2026-07-27 against:
+  //   https://www.longbeachbsa.org/activities/renewal/   (2026 schedule)
+  //   https://www.scouting.org/programs/cub-scouts/cost-of-cub-scouting/
+  //
+  // Only three costs are seeded, and only because the app can WORK ALL THREE OUT: the
+  // youth fee times the active roster, the adult fee times the registered leaders, and a
+  // charter fee every unit owes flat. All three then move on their own as people join and
+  // leave — that is what makes them safe to seed rather than something to guess.
+  //
+  // Deliberately NOT seeded: the council program fee (varies $15–$100 a youth, only the
+  // council knows it) and Scout Life (optional per pack). A line sitting at $0 looks
+  // planned-for and understates the plan, which sets the popcorn goal too LOW. Those get
+  // added by hand, with the real number in front of you.
+  //
+  // Fees change roughly annually (youth went $75 → $80 → $85). Re-check before a program
+  // year and edit HERE. The one-time $25 joining fee was abolished in April 2024.
+  // ---------------------------------------------------------------------------
+  var SA_FEES = {
+    verified: '2026-07-27',
+    youthCents: 8500,         // annual national registration, per youth
+    adultCents: 6500,         // annual national registration, per registered adult
+    unitCharterCents: 10000   // per UNIT, flat
+  };
+  var SEED_EXPENSES = [
+    { name: 'Youth registration', category: 'registration', basis: 'per-head',
+      scoutRateCents: SA_FEES.youthCents },
+    { name: 'Adult leader registration', category: 'registration', basis: 'per-head',
+      adultRateCents: SA_FEES.adultCents, adultsFrom: 'leaders' },
+    { name: 'Unit charter fee', category: 'charter', basis: 'flat',
+      flatCents: SA_FEES.unitCharterCents }
+  ];
   var SEED_ACTIVITIES = [
     { slot: 0, name: 'School Night — join & recruiting' },
     { slot: 0, name: 'Popcorn kickoff' },
@@ -3627,9 +3679,21 @@
       state.budget.activities.push(freshLine({ name: t.name, eventId: seedEv.id }));
       added += 1;
     });
-    if (added) {
+    // Registration too — idempotent on name, same as the activities.
+    var existingExp = {};
+    state.budget.expenses.forEach(function (e) { existingExp[(e.name || '').trim().toLowerCase()] = 1; });
+    var addedExp = 0;
+    SEED_EXPENSES.forEach(function (t) {
+      if (existingExp[t.name.toLowerCase()]) return;
+      state.budget.expenses.push(freshLine(t));
+      addedExp += 1;
+    });
+    if (added || addedExp) {
       commit();
-      showToast('Added ' + added + ' activities — set dates on Money · Budget when they’re known');
+      var bits = [];
+      if (added) bits.push(added + ' activit' + (added === 1 ? 'y' : 'ies'));
+      if (addedExp) bits.push(addedExp + ' registration line' + (addedExp === 1 ? '' : 's'));
+      showToast('Added ' + bits.join(' and ') + ' — set dates on the calendar when they’re known');
     } else {
       render();
       showToast('Everything’s already planned');
@@ -6676,6 +6740,7 @@
   // whether a payee and a collect grid appear at all.
   function lineMoneyControls(l, scoutN, collectKey) {
     var perHead = linePerHead(l);
+    var leaderN = activeLeaders().length;
     var h = '<select data-ch="line-basis" data-id="' + l.id + '" aria-label="How this is priced">' +
       '<option value="flat"' + (perHead ? '' : ' selected') + '>Flat cost</option>' +
       '<option value="per-head"' + (perHead ? ' selected' : '') + '>Per head</option>' +
@@ -6701,10 +6766,25 @@
         '<label class="att-mini">scout<input class="money-in" inputmode="decimal" data-ch="line-scout-rate" data-id="' + l.id + '" value="' + dollars(l.scoutRateCents) + '" placeholder="0.00"></label>' +
         '<label class="att-mini">adult<input class="money-in" inputmode="decimal" data-ch="line-adult-rate" data-id="' + l.id + '" value="' + dollars(l.adultRateCents) + '" placeholder="0.00"></label>' +
         '<label class="att-mini">sibling<input class="money-in" inputmode="decimal" data-ch="line-sibling-rate" data-id="' + l.id + '" value="' + dollars(l.siblingRateCents) + '" placeholder="0.00"></label>' +
-        '<label class="att-mini">adults/scout<input class="weight-in" type="number" min="0" max="9" step="0.5" inputmode="decimal" data-ch="line-adults-per" data-id="' + l.id + '" value="' + esc(l.adultsPerScout) + '"></label>' +
-        '<span class="small muted lrate-note">' + scoutN + ' scouts + ' +
-          linePlannedHeads(l, scoutN).adults + ' adults assumed — nobody has RSVP\u2019d, this is a planning figure</span>' +
-        '</div>';
+        '<label class="att-mini">adults from<select data-ch="line-adults-from" data-id="' + l.id + '">' +
+          '<option value="assumption"' + (l.adultsFrom === 'leaders' ? '' : ' selected') + '>an assumption</option>' +
+          '<option value="leaders"' + (l.adultsFrom === 'leaders' ? ' selected' : '') + '>registered leaders</option>' +
+          '</select></label>' +
+        (l.adultsFrom === 'leaders' ? ''
+          : '<label class="att-mini">adults/scout<input class="weight-in" type="number" min="0" max="9" step="0.5" inputmode="decimal" data-ch="line-adults-per" data-id="' + l.id + '" value="' + esc(l.adultsPerScout) + '"></label>') +
+        // Only mention adults where an adult rate is actually charged — otherwise a youth
+        // registration line reads "10 scouts + 10 adults assumed" and invites the question
+        // of who those adults are and why they are free.
+        '<span class="small muted lrate-note">' +
+          (l.adultsFrom === 'leaders'
+            ? leaderN + ' registered leader' + (leaderN === 1 ? '' : 's') +
+              ' — counted from Pack · People, so this moves as leaders join and leave' +
+              (l.scoutRateCents ? ', plus ' + scoutN + ' scouts' : '')
+            : (l.adultRateCents
+              ? scoutN + ' scouts + ' + linePlannedHeads(l, scoutN, leaderN).adults +
+                ' adults assumed — nobody has RSVP\u2019d, this is a planning figure'
+              : scoutN + ' active scout' + (scoutN === 1 ? '' : 's') + ' — this follows the roster')) +
+        '</span></div>';
     }
     // Whose money, and whether it touches our account at all.
     if (lineFamilyFunded(l)) {
@@ -6780,7 +6860,11 @@
       '<label class="fld">Starting funds — carryover from last year ($)<input class="money-in" inputmode="decimal" data-ch="bud-start" value="' + dollars(b.startingBalance) + '" placeholder="0.00"></label>' +
       '</div>' +
       '<div class="row" style="margin-top:10px">' + seedBtn() + '</div>' +
-      '<p class="small muted" style="margin:6px 0 0">Adds the traditional slate — School Night, Pinewood Derby, Blue &amp; Gold, camps — to the months below with no dates set. Skips anything already planned.</p>' +
+      '<p class="small muted" style="margin:6px 0 0">Adds the traditional slate — School Night, Pinewood Derby, Blue &amp; Gold, camps — with no dates set, ' +
+      'plus the three registration costs the app can work out for itself: youth registration at <strong>' + fmt(SA_FEES.youthCents) + ' a scout</strong>, ' +
+      'adult registration at <strong>' + fmt(SA_FEES.adultCents) + ' a registered leader</strong>, and the <strong>' + fmt(SA_FEES.unitCharterCents) + '</strong> unit charter fee ' +
+      '(Scouting America national rates, checked ' + esc(fmtDate(SA_FEES.verified)) + '). All three follow your roster. ' +
+      'Your council’s program fee isn’t seeded — only your council knows it. Skips anything already planned.</p>' +
       '<p class="small muted" style="margin:8px 0 0"><strong>Funds in</strong> = carryover (' + fmt(bud.startingBalance) + ') + popcorn commission (' + fmt(bud.commission) + (bud.commissionKnown ? '' : ' — set a rate in Season setup above') + ')' +
       (bud.retainedCash > 0 ? ' + cash donations kept in full (' + fmt(bud.retainedCash) + ')' : '') +
       (bud.feeIncomeCollected > 0 ? ' + family-paid fees collected (' + fmt(bud.feeIncomeCollected) + ')' : '') +
@@ -7561,7 +7645,7 @@
     return h;
   }
   function renderLeaderRow(l) {
-    var pills = leaderStatus(l);
+    var pills = l.archived ? [] : leaderStatus(l);
     var pillHtml = pills.map(function (p) { return '<span class="pill' + p.cls + '">' + esc(p.label) + '</span>'; }).join(' ');
     var myJobIds = arrOf(l.jobs);
     var jobsBlock = '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
@@ -7599,8 +7683,9 @@
         '</p>';
     }
     jobsBlock += '</div>';
-    return '<div class="leader-row">' +
+    return '<div class="leader-row' + (l.archived ? ' wk-past' : '') + '">' +
       '<div class="row" style="align-items:flex-end">' +
+      (l.archived ? '<span class="pill navy" style="align-self:flex-end;margin-bottom:9px">moved on</span>' : '') +
       '<label class="fld">Name<input data-ch="ldr-name" data-id="' + l.id + '" value="' + esc(l.name) + '" placeholder="First name" style="width:140px"></label>' +
       // Wave 21 — the free-text role moved out of this row and into the Jobs block below,
       // where the structured picker is now the primary answer to "what do they do".
@@ -7620,6 +7705,10 @@
       })() +
       '<label class="fld">Registration renews<input type="month" data-ch="ldr-renew" data-id="' + l.id + '" value="' + esc(l.renewalMonth) + '"></label>' +
       '<label class="fld" style="flex:1 1 160px">Notes<input data-ch="ldr-notes" data-id="' + l.id + '" value="' + esc(l.notes) + '" placeholder="Optional"></label>' +
+      (canEdit()
+        ? '<button type="button" class="btn small" data-act="' + (l.archived ? 'restore-leader' : 'archive-leader') + '" data-id="' + l.id + '" style="align-self:flex-end">' +
+          (l.archived ? 'Bring back' : 'Moved on (keeps history)') + '</button>'
+        : '') +
       tinyDangerBtn('del-leader:' + l.id, 'Remove ' + (l.name || 'leader')) +
       '</div>' + jobsBlock + '</div>';
   }
@@ -7734,7 +7823,7 @@
     }
 
     /* ----- Committee Chair ----- */
-    state.leaders.forEach(function (l) {
+    activeLeaders().forEach(function (l) {
       leaderStatus(l).forEach(function (p) {
         add('chair', p.label === 'Training expired' ? 'now' : 'week',
           (l.name || 'A leader') + ' — ' + p.label.toLowerCase(),
@@ -8246,7 +8335,7 @@
   /* ----- Pack · People — the roster that keeps the pack legal ----- */
   function renderPackPeople() {
     // Leaders card
-    var leaders = state.leaders.slice().sort(function (a, b) {
+    var leaders = activeLeaders().slice().sort(function (a, b) {
       if (!a.name && b.name) return 1;
       if (a.name && !b.name) return -1;
       return a.name.localeCompare(b.name);
@@ -8263,6 +8352,17 @@
     }
     leaders.forEach(function (l) { h += renderLeaderRow(l); });
     if (canEdit()) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
+    // Leaders who have moved on. Kept, not deleted: their training dates are the pack's
+    // record of who was qualified when, and adult registration stops counting them.
+    var goneLeaders = state.leaders.filter(function (l) { return l.archived; });
+    if (goneLeaders.length) {
+      h += '<hr class="divider"><div class="spread">' +
+        '<p class="eyebrow" style="margin:0">Moved on <span class="pill navy">' + goneLeaders.length + '</span></p>' +
+        '<button type="button" class="btn small ghost" data-act="toggle-leaders-archived">' +
+        (ui.showArchivedLeaders ? 'Hide' : 'Show') + '</button></div>';
+      if (ui.showArchivedLeaders) goneLeaders.forEach(function (l) { h += renderLeaderRow(l); });
+      else h += '<p class="small muted" style="margin:6px 0 0">Not counted in adult registration or training reminders.</p>';
+    }
     // Wave 21 — this roster used to hand off to Popcorn's two-deep gaps. Storefront shifts
     // no longer track adults at all (a parent comes with each scout), so that seam is gone:
     // leaders here are about jobs, training and renewals, not staffing.
@@ -11786,6 +11886,12 @@
       render(); return;
     }
     if (act === 'toggle-archived') { ui.showArchived = !ui.showArchived; render(); return; }
+    if (act === 'toggle-leaders-archived') { ui.showArchivedLeaders = !ui.showArchivedLeaders; render(); return; }
+    if (act === 'archive-leader' || act === 'restore-leader') {
+      var arLdr = state.leaders.find(function (x) { return x.id === el.dataset.id; });
+      if (arLdr) { arLdr.archived = act === 'archive-leader'; commit(); }
+      return;
+    }
     if (act === 'toggle-completed') { ui.showCompleted = !ui.showCompleted; render(); return; }
     if (act === 'cal-prev') { ui.calMonth = shiftMonth(ui.calMonth, -1); ui.calSelectedDate = null; render(); return; }
     if (act === 'cal-next') { ui.calMonth = shiftMonth(ui.calMonth, 1); ui.calSelectedDate = null; render(); return; }
@@ -12663,6 +12769,8 @@
       else if (bk === 'adults-per') {
         var ap = parseFloat(el.value);
         bl.adultsPerScout = (isFinite(ap) && ap >= 0) ? Math.min(9, Math.round(ap * 100) / 100) : 0;
+      } else if (bk === 'adults-from') {
+        bl.adultsFrom = el.value === 'leaders' ? 'leaders' : 'assumption';
       } else if (bk === 'category') {
         if (LINE_CATEGORY_KEYS.indexOf(el.value) !== -1) bl.category = el.value;
       } else if (bk === 'funded') {
