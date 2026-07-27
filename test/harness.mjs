@@ -22,6 +22,8 @@ import vm from 'node:vm';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
 const SCRIPT = HTML.slice(HTML.indexOf('<script>') + 8, HTML.lastIndexOf('</script>'));
+// Some invariants live in the stylesheet, not the script.
+const SCRIPT_CSS = HTML.slice(HTML.indexOf('<style>'), HTML.indexOf('</style>'));
 
 /* ---------------- tiny assert kit ---------------- */
 let pass = 0;
@@ -2008,6 +2010,18 @@ test('an archived leader is not nagged about, and can come back', () => {
     'Home still chases training for leaders who have left');
   ok(/act === 'archive-leader' \|\| act === 'restore-leader'/.test(SCRIPT), 'archiving is one-way or missing');
   ok(/data-act="toggle-leaders-archived"/.test(SCRIPT), 'archived leaders cannot be seen again');
+});
+
+test('a toast wraps instead of running off both edges of a phone', () => {
+  // It is centred and position:fixed, so nowrap never gave anything to scroll — a long
+  // message simply ran past both edges and lost text at each end. Several toasts are the
+  // only place the app says what it just did.
+  const css = /\.toast \{[\s\S]*?\n  \}/.exec(SCRIPT_CSS || '');
+  const rule = css ? css[0] : (/\.toast \{[\s\S]*?\n  \}/.exec(HTML) || [''])[0];
+  ok(rule, '.toast rule not found');
+  ok(!/white-space: nowrap/.test(rule), 'a long toast still runs off the screen');
+  ok(/white-space: normal/.test(rule), 'the toast does not wrap');
+  ok(/max-width:/.test(rule), 'the toast has no width ceiling, so it can still overflow');
 });
 
 /* ---------------- report ---------------- */

@@ -503,9 +503,15 @@
   }
   .toast {
     position: fixed;
-    left: 50%;
+    /* Centred by an inset band, NOT by left:50% + translateX. With left:50% the containing
+       block runs from the middle of the screen to the right edge, so the toast could never
+       be wider than half the viewport however large its max-width — which is what made a
+       long message six lines tall on a phone. */
+    left: 16px;
+    right: 16px;
     bottom: 20px;
-    transform: translateX(-50%);
+    margin: 0 auto;
+    width: fit-content;
     z-index: 60;
     background: var(--navy);
     color: var(--navy-ink);
@@ -515,7 +521,21 @@
     font-size: 0.85rem;
     font-weight: 600;
     box-shadow: var(--shadow);
-    white-space: nowrap;
+    /* A toast is centred and position:fixed, so nowrap never scrolled — it ran off BOTH
+       edges and cut the message at each end. On a 375px phone "Added 12 activities and 3
+       registration lines — set dates on the calendar when they're known" lost 130px a side.
+       Several of these messages are the only place the app says what it just did, so it
+       wraps now and the radius eases off so a two-line pill isn't a lozenge. */
+    max-width: min(calc(100vw - 32px), 34rem);
+    white-space: normal;
+    /* break-word, NOT anywhere: `anywhere` also shrinks the element's intrinsic
+       min-content width, and on an inline-flex toast that collapsed it to half the
+       screen and five lines tall. This wraps a long word without changing how wide
+       the box wants to be. */
+    overflow-wrap: break-word;
+    text-align: center;
+    line-height: 1.35;
+    border-radius: 18px;
   }
 
   /* ---------- Wave 2: RSVP, attendance, seed ---------- */
