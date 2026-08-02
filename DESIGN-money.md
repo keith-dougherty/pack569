@@ -576,33 +576,94 @@ per scout, `planned = rate × roster`) and nothing downstream learns a third sha
 what the editor asks for — one figure, no leader box, no adult or sibling price — and that the
 picker offers the whole fee as a single thing to cover.
 
-> **Known limit, stated in the UI rather than hidden:** the fee is counted once per scout, and the
-> app has no family link, so two scouts who are brother and sister are counted twice. It errs
-> **high**, which is the safe direction for a plan, and the note on the line says so.
+#### Families — `scout.familyId`
+
+*Owner ask, 2026-07-27, closing the limit above.* A per-family fee counted once per **scout** was
+one too many for every pair of siblings in the pack. The fix is one field:
+
+```js
+familyKeyOf(s) = s.familyId || s.id      // no link = a family of one
+```
+
+Deliberately not a family *entity*: nothing to create, name, rename or leave orphaned, and a pack
+that links nobody behaves exactly as it did. Linking Ben to Ada sets Ben's `familyId` to Ada's key,
+so linking a third to either of them joins the same family. `normalizeState` never resolves it — a
+link to a scout who left simply stops matching anybody, and they are a family of one again.
+
+**It changes exactly one thing.** `lineBillingRoster(l)` is the line's own roster, narrowed again to
+one scout per family *only when the line is priced per family*; everything else bills every scout it
+applies to. So:
+
+| | Per-family fee | Everything per head |
+|---|---|---|
+| Counted | once per family | once per scout |
+| Charged to | the first of them on the roster | each scout |
+| A parent's place | — (no separate heads) | **one per scout, unchanged** |
+
+> **Owner rule, stated because it is the thing that would be wrong to assume:** *"if a family has
+> two scouts, each scout is allowed a parent, so both parents are still eligible."* Linking pools
+> the family fee and **nothing else**. `collapseMarkedToFamilies` moves only the scout mark onto the
+> billing scout; adult and sibling heads stay recorded against the scout they were recorded against,
+> so two scouts keep two scouts' worth of entitlement everywhere it matters.
+
+Verified end to end: linking two of four scouts took a $75 per-family council fee from **$300 to
+$225** and a pack-collected $50 per-family fee from four charges to **three** — while $80 per-head
+dues stayed at **four charges of $80**, one for each scout including the linked sibling.
 
 **Tiers stack, so a higher tier names only what it ADDS.** The adult-shirt tier covers
 `L-shirt#adult` alone — the scout's shirt already came from the tier below — which is exactly what
 makes the per-tier margin figure meaningful:
 
 ```
-"Adult shirt" $400 — $150 more a scout than the tier below, earning $45 at 30%,
-                     against $18 of cover → pays for itself
+"Adult shirt" $220 earned — $70 more a scout than the tier below ($233.34 of sales),
+                            against $18 of cover → pays for itself
 ```
 
-#### What a threshold is worth — the break-even
+#### A threshold is COMMISSION, not sales
 
-A threshold is a **sales** figure ("reach $250 in sales and online donations"); what the pack gets
-from it is the **commission** on that. The rewards are priced in real dollars, so the two only meet
-at the break-even — the sales at which the commission covers what the tier hands back, cumulative
-because the tiers stack:
+*Owner ruling, 2026-08-02, replacing the sales basis below.* A threshold is **what the scout earned
+the pack**. "Reach $150" means $150 landed in the pack's account.
+
+The reason is that the other half of a tier — what it hands back — is priced in real dollars. On a
+sales basis the two sides were in different currencies and every screen had to convert between them.
+On a commission basis they are the same currency, and three things collapse into subtraction:
+
+| | Sales basis (until 2026-08-02) | Commission basis |
+|---|---|---|
+| Does the tier pay for itself? | sales × rate vs cover | **threshold − cover** |
+| What a stretch level earns at the margin | gap × rate | **the gap** |
+| The make-up payment for a missed deadline | the **sales** gap — a $50 gap on $15 of lost commission | **the commission the pack didn't get** |
+
+That last row was a real over-charge: a family closing a $50 shortfall handed over $50 to replace
+$15 the pack would have earned. It is now exactly whole.
+
+**Earned at each channel's own rate** (`scoutCommissionOf`) — online money at the online rate,
+everything else at the base rate, rounded per channel, the same split `computePackTotals` uses. The
+consequence is deliberate and worth saying out loud: *two scouts with identical sales can land either
+side of a tier* if one sold online and the other at a storefront. That is the thing being measured.
+
+**What a scout can act on is still sales**, so every tier prints both (`salesForCommission`):
 
 ```
-Reaching it means $250 of sales → $75 commission at 30%, against $87 handed back
-                                  by this tier and the ones below it
-                                → a scout would need $290 of sales to cover it
+Reaching it means the scout has earned the pack $150.00, against $146.00 handed back.
+  [pays for itself]  A scout gets there on $500.00 of sales + online donations
+                     — or less, if they sell where the pack earns the better 35%.
 ```
 
-Valued at the same rate the goal uses (`commissionRates().goal`), so the two can never disagree.
+The sales figure is a **floor, not an estimate**: worked out at `commissionRates().goal` (the lower
+of the two rates, the same one the goal uses) and rounded **up**. Sell that much down any channel and
+the tier is reached; sell it at the better rate and it is reached sooner. Quoting the storefront rate
+instead would promise Pack 569's $150 tier at $428.58 and then fail to deliver it to a scout who sold
+online — the one direction a minimum must never be wrong in.
+
+> **No rate, no measurement.** A threshold in commission is unmeasurable until a commission rate is
+> set, so nobody earns anything and the card says so rather than showing every tier at nought scouts.
+> Note that "does it pay for itself" still answers without a rate — only the sales line needs one.
+
+> **No migration.** Stored thresholds are numerically unchanged: they were entered meaning "what the
+> pack hands back", which is a commission figure. Anyone who had typed a *sales* number would find
+> their tiers roughly three times harder, which is why every tier now prints its sales equivalent on
+> screen where it can be eyeballed.
 
 #### Reimbursing a fee the family paid the council
 
@@ -643,6 +704,88 @@ Finally, `privateBenefitCheck()` runs the guidance's own test on the pack's own 
 tiers have handed to individuals against the commission earned — and says which side of "the
 majority stays with the unit" the pack is on. Not advice: a number, and the sentence it came from.
 
+#### Covering the leaders, and paying for it out of popcorn
+
+*Owner question, 2026-07-28: "if we wanted to cover leaders for activities/dues/etc, but split
+those costs amongst each scout to cover those costs through fundraisers, how would I budget for
+that?"*
+
+The mechanism already existed and the plan already splits it — tick **include registered leaders**
+on the line and set the per-leader rate. What was missing is that the split was **wrong by exactly
+the leaders' cost**, and nothing on screen said what covering them came to.
+
+**The bug.** Expected family income falls back to the planning figure on a line with no charges
+raised yet (an event before anybody has attended). That figure was `linePlanned`, which includes
+the leaders' places — so a pack covering its leaders was told that families would hand over the
+leaders' money too, and its fundraising need came out short by that amount. Worked example, two
+scouts and two leaders at $40 each:
+
+| | Before | After |
+|---|---|---|
+| A — what the pack spends | $160 | $160 |
+| B — what families are billed | $160 ✗ | **$80** |
+| C — what popcorn must raise | $80 ✗ | **$160** |
+
+Fixed with `lineFamilyPlanned(l)` — the scout share and nothing else — used wherever the question
+is *"what would families be billed?"*. `linePlanned` is still the whole cost, because that is what
+the pack really plans to spend, and A is still right. The two were never the same question.
+
+**And the answer to the question is now a number on the worksheet:**
+
+```
+A  Total budgeted program expenses                                    $480.00
+   …of which leaders' places the pack covers  ($120.00 a scout on the goal)  $240.00
+```
+
+That is the whole of "split it amongst the scouts": a leader's place is never billed to a family,
+so it stays in A, C rises by it, the goal rises by it ÷ commission, and every scout's per-scout
+goal already carries their share. The line just makes it visible enough to decide on.
+
+#### A scout's credit on cash the pack keeps — `cashScoutPct`
+
+*Owner ask, 2026-08-02: "If [cash is not run through Trail's End], I want to be able to split the
+cash donations so a set commission goes to each scout who earned it and the rest goes to fund the
+pack."*
+
+A tier threshold is **commission** — what the scout put in the pack's account. That reading breaks
+on a cash donation the pack keeps whole, because a kept donation generates no commission at all. A
+scout who brought $500 in cash to a storefront table sat at **$0 earned**, while one who rang up
+$500 of product moved $175 up the board. The money was better for the pack and worth nothing to
+the scout.
+
+`cashScoutPct` is the third rate, and the only one that isn't Trail's End's:
+
+| Channel | Rate | Where it lands |
+|---|---|---|
+| Online | `commissionPctOnline` | commission — pack income |
+| Storefront / wagon | `commissionPct` | commission — pack income |
+| **Cash the pack keeps** | **`cashScoutPct`** | **tier credit only — the cash was already 100% income** |
+
+**It is credit, not a payout.** Nothing is handed to a scout and no scout has an account. Scouting
+America's unit budgeting guidance is plain that money raised in the pack's name belongs to the
+pack, and crediting individual accounts by individual sales is the private-benefit problem the
+guidance exists to prevent. This rate decides tier progress and nothing else — the same thing
+popcorn commission already does here. That is also the honest reading of "the rest goes to fund the
+pack": the pack banks every cent either way, and the rate only decides how much of a donation a
+reward tier has a claim on. $700 kept at 30% is $150 spoken for and $550 nothing is owed against.
+
+**Two traps, both closed:**
+
+1. **Double counting.** With the Trail's End toggle ON that same cash is already inside
+   `goalBaseOf` and has earned real commission. So `commissionRates().cash` is the **effective**
+   rate — null whenever the toggle is on — and `cashScoutCredit()` returns 0. A $500 donation
+   earns 17,500¢ with the toggle on, not 32,500¢.
+2. **Crediting money nobody brought in.** `cashCreditTotals()` sums the credit **per scout**, so
+   cash sitting on a storefront block with no scouts assigned is never credited to anyone. It
+   stays in the free figure, which is where it belongs.
+
+The credit does move the budget, and correctly: scouts reaching tiers on donations means the pack
+covers more of their fees, so B falls and C rises. The donation is in the bank and the reward it
+buys is out of it.
+
+`tierRateMissing()` counts this rate too — a pack running a donations-only drive can measure tiers
+on it alone.
+
 #### Which tier the pack plans on — `planOnTierId`
 
 *Owner ask, 2026-07-27.* A waiver is a fact about sales that have happened, so in July it covers
@@ -670,23 +813,24 @@ moves it **up** only, because the deduction is floored against what is actually 
 not taken off a second time.
 
 **Both halves are checkable, and they are different questions.** For the planned tier: everybody
-reaching it is a known quantity of sales, so the commission either pays for what was promised or
-does not —
+reaching it is a known quantity of **commission**, so it either pays for what was promised or does
+not. Since 2026-08-02 that comparison needs no rate at all — the rate only says what the promise is
+in popcorn —
 
 ```
-all 13 scouts reach "Pack shirt" ($250) → $3,250 sold → $975 commission at 30%
-                                        → $1,196 of fees the pack picks up
-                                        → short by $221 — plan on a lower tier, raise this one,
-                                          or cover less at it
+all 13 scouts reach "Pack shirt" ($100 earned each) → the pack has earned $1,300
+                                        → against $1,196 of fees it picks up
+                                        → clears it, $104 to spare
+                                        → which takes $4,333.34 of sales at 30%
 ```
 
 For a stretch tier the question is at the **margin**, because it happens one scout at a time: going
-from the tier below to this one means selling the gap, and the commission on that gap is what has to
-cover the extra fees it picks up —
+from the tier below to this one earns the pack the **gap**, and the gap is what has to cover the
+extra fees that level picks up —
 
 ```
-"Adult Activites" $350 — $50 more a scout, earning $15, against $60 of cover
-                       → costs the pack $45 a scout who gets there
+"Adult Activites" $250 earned — $50 more a scout ($166.67 of sales), against $60 of cover
+                              → costs the pack $10 a scout who gets there
 ```
 
 That is the number a pack wants before it writes a big reward on a poster, and it is invisible in any
@@ -712,9 +856,12 @@ never knows what it is owed. So a tier may carry a `dueBy`, and then:
 - Once the date has passed the tier is **closed**. Whoever did not reach it is billed the fee it
   would have covered — which needs no new mechanics at all, because an unwaived charge is the
   default state.
-- Or they **pay the difference**: the gap between what they sold and the threshold, **capped at the
-  fee the tier covers**. Paying more to reach a tier than the tier saves you is not a rule anybody
-  means, so the cap is part of the rule rather than a kindness.
+- Or they **pay the difference**: the gap between what they **earned the pack** and the threshold,
+  **capped at the fee the tier covers**. Paying more to reach a tier than the tier saves you is not a
+  rule anybody means, so the cap is part of the rule rather than a kindness. Since the threshold
+  became a commission figure (2026-08-02) that gap is the money the pack actually missed, so paying
+  it leaves the books exactly where the selling would have; the row also shows the same gap in sales,
+  for the family that would rather hear it in popcorn.
 
 Recording a makeup writes **two different kinds of thing**, deliberately: the money goes in the
 **ledger** as an ordinary family payment (it really arrived; it has to reconcile), and the fact that

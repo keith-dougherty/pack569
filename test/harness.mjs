@@ -570,7 +570,7 @@ test('nothing tracks adults on a storefront shift', () => {
 
 test('no surface still says a shift needs adults', () => {
   // String literals only — a comment explaining what was removed is legitimate history.
-  const literals = [...SCRIPT.matchAll(/'((?:[^'\\\n]|\\.)*)'/g)].map((m) => m[1]).join(' ');
+  const literals = [...SCRIPT.matchAll(/'((?:[^'\\\n]|\\.)*)'/g)].map((m) => m[1]).join('\0');
   for (const phrase of ['needs adults', 'Needs two-deep', 'no adults', 'Adults on this block']) {
     ok(!literals.includes(phrase), `user-facing copy still reads "${phrase}"`);
   }
@@ -599,19 +599,40 @@ test('deleting a leader no longer cascades into storefronts', () => {
    Wave 21 — per-tier reward coverage
    ================================================================ */
 // packCoverage() reads who earned what through tierEarnedMap(), so both come out of the
-// source together. The stubs are the four things they touch: the tier list, the roster, the
-// totals (deadline-aware — `asOf` selects a snapshot) and the goal base.
+// source together. Since 2026-08-02 a threshold is COMMISSION, not sales, so the rate math is
+// sliced in rather than stubbed — the conversion IS the thing under test. The stubs are only
+// the tier list, the roster and the totals (deadline-aware — `asOf` selects a snapshot).
+//
+// A test writes a scout's sales as `tot(storefrontSales, onlineSales)` and may set RATE and
+// ONLINE_RATE; RATE defaults to 100% so a test that does not care about the conversion can
+// keep writing thresholds in the same units as the sales.
 function coverageSandbox(setup) {
   const ctx = vm.createContext({});
   vm.runInContext(
-    `${slice('tierEarnedMap')}
-     ${slice('packCoverage')}
+    `function tot(store, online) {
+       var on = online || 0;
+       return { sales: (store || 0) + on, onS: on, onD: 0, storeD: 0, wagonD: 0 };
+     }
      ${setup}
+     ${slice('tierEarnedMap')}
+     ${slice('packCoverage')}
+     ${slice('scoutCommissionOf')}
+     ${slice('commissionRates')}
+     ${slice('goalBaseOf')}
+     ${slice('cashDonOf')}
+     ${slice('cashScoutRate')}
+     ${slice('cashCreditOn')}
+     ${slice('cashScoutCredit')}
      var SALES_AT = typeof SALES_AT === 'undefined' ? {} : SALES_AT;
+     var state = {
+       commissionPct: typeof RATE === 'undefined' ? '100' : RATE,
+       commissionPctOnline: typeof ONLINE_RATE === 'undefined' ? '' : ONLINE_RATE,
+       cashScoutPct: typeof CASH_RATE === 'undefined' ? '' : CASH_RATE,
+       cashThroughTrailsEnd: typeof CASH_VIA_TE === 'undefined' ? false : CASH_VIA_TE
+     };
      function sortedTiers() { return TIERS; }
      function arrOf(v) { return Array.isArray(v) ? v : []; }
      function computeScoutTotals(asOf) { return asOf ? SALES_AT[asOf] : SALES; }
-     function goalBaseOf(r) { return r.t; }
      function activeScouts() { return Object.keys(SALES).map(function (id) { return { id: id }; }); }
      var EARNED = tierEarnedMap();
      var RESULT = packCoverage();`, ctx);
@@ -627,7 +648,7 @@ test('coverage stacks up the tiers a scout has reached', () => {
        { id:'t2', thresholdCents: 45000, covers:['act:a3'] },
        { id:'t3', thresholdCents: 90000, covers:[] }
      ];
-     var SALES = { top: 50000, mid: 35000, low: 1000 };`);
+     var SALES = { top: tot(50000), mid: tot(35000), low: tot(1000) };`);
   const r = ctx.RESULT;
   eq(Object.keys(r.x1).sort(), ['mid', 'top'], 'tier-1 charge covers everyone past tier 1');
   eq(Object.keys(r['act:a3']), ['top'], 'tier-2 charge covers only the scout past tier 2');
@@ -1515,8 +1536,8 @@ test('a covered adult share is priced at the ADULT rate, and is new pack spendin
   ok(cost, 'coverCostForKeys() not found');
   ok(/if \(who === 'scout' && !reimb\) fees \+= cents; else extra \+= cents;/.test(cost[0]),
     'the two kinds of covered money are not kept apart');
-  ok(/lineRateForWho\(r\.line, who\) \* lineRoster\(r\.line\)\.length/.test(cost[0]),
-    'a share is not priced at its own rate across the line’s own roster');
+  ok(/lineRateForWho\(r\.line, who\) \* lineBillingRoster\(r\.line\)\.length/.test(cost[0]),
+    'a share is not priced at its own rate across whoever the line actually bills');
   const fs2 = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(/var tierExtra = coverCostForKeys\(assumeCov\)\.extra;\s*\n\s*expenses \+= tierExtra;/.test(fs2[0]),
     'a covered adult share never reaches A, so the pack plans to buy shirts with no money for them');
@@ -1657,8 +1678,12 @@ test('Phase 4: a family-funded event counts as income before anyone has attended
   // raise money it was never going to spend.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : linePlanned\(l\)/.test(fn[0]),
+  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : lineFamilyPlanned\(l\)/.test(fn[0]),
     'a family-funded line with no charges yet contributes nothing to income');
+  // ...and the fallback is what FAMILIES would be billed, not the whole planned cost: a leader's
+  // place is in linePlanned and no family is ever billed for one.
+  ok(/function lineFamilyPlanned\(l\) \{ return \(l\.scoutRateCents \|\| 0\) \* lineBillingRoster\(l\)\.length; \}/.test(SCRIPT),
+    'expected family income is not the scout share');
 });
 
 test('Phase 4: the Budget card and the goal share one arithmetic', () => {
@@ -2102,11 +2127,13 @@ test('every planning call passes the leader count', () => {
       if (!depth && ch === ',') { args.push(''); continue; }
       args[args.length - 1] += ch;
     }
-    if (args.length !== 3) bad.push(NEEDLE + args.join(',') + ')');
+    // 3 args, or 4 once the family count is passed for a per-family line. Fewer means somebody
+    // dropped the leader count, which silently plans adult registration at zero.
+    if (args.length !== 3 && args.length !== 4) bad.push(NEEDLE + args.join(',') + ')');
   }
   eq(bad, [], 'these calls omit the leader count: ' + bad.join(' | '));
-  ok(/function linePlanned\(l\) \{ return linePlannedCents\(l, lineRoster\(l\)\.length, activeLeaders\(\)\.length\); \}/.test(SCRIPT),
-    'the state-reading wrapper does not pass the line roster and the ACTIVE leader roster');
+  ok(/return linePlannedCents\(l, roster\.length, activeLeaders\(\)\.length, familiesOf\(roster\)\.length\);/.test(SCRIPT),
+    'the state-reading wrapper does not pass the line roster, the ACTIVE leaders and the family count');
 });
 
 test('a leader who has moved on stops costing the pack money', () => {
@@ -2506,12 +2533,16 @@ test('a den-limited line bills only the dens it is for', () => {
   // that stays true by construction rather than by luck.
   const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(sc, 'syncCharges() not found');
-  ok(/chargeRowsFor\(r\.line, marked, lineRoster\(r\.line\)\)/.test(sc[0]),
+  // lineBillingRoster IS the line's own roster, narrowed again to one scout per family where the
+  // fee is priced per family. Either way it is never the whole pack.
+  ok(/chargeRowsFor\(r\.line, collapseMarkedToFamilies\(r\.line, marked\), lineBillingRoster\(r\.line\)\)/.test(sc[0]),
     'syncCharges raises roster charges against one pack-wide roster');
+  ok(/function lineBillingRoster\(l\) \{[\s\S]*?if \(!linePerFamily\(l\)\) return roster;/.test(SCRIPT),
+    'lineBillingRoster narrows a line that is not priced per family');
   ok(!/var roster = activeScouts\(\);/.test(sc[0]), 'syncCharges still holds one pack-wide roster');
   const cb = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/lineRoster\(item\)\.forEach/.test(cb[0]),
-    'expected family income is still counted across the whole pack');
+  ok(/lineBillingRoster\(item\)\.forEach/.test(cb[0]),
+    'expected family income is counted against somebody other than whoever the line bills');
 });
 
 test('attendance and RSVP show the dens invited, and never hide a recorded reply', () => {
@@ -2768,11 +2799,15 @@ test('the plan is priced at the CHOSEN tier, and checked against the sales that 
   ok(fn, 'tierAssumption() not found');
   ok(!/tiers\[tiers\.length - 1\]/.test(fn[0]), 'the check still assumes the top tier');
   ok(/var pt = plannedTier\(\);/.test(fn[0]), 'the check does not read the chosen tier');
-  ok(/var sales = pt \? \(pt\.thresholdCents \|\| 0\) \* roster : 0;/.test(fn[0]),
-    'implied sales are not the chosen threshold × the roster');
+  ok(/var commission = pt \? \(pt\.thresholdCents \|\| 0\) \* roster : 0;/.test(fn[0]),
+    'the promise is not the chosen threshold × the roster');
+  ok(/var sales = salesForCommission\(commission\);/.test(fn[0]),
+    'the sales that back the promise are not derived from it');
   ok(/var pct = commissionRates\(\)\.goal;/.test(fn[0]),
     'the check values the sales at a rate other than the one the goal uses');
-  ok(/net: commission == null \? null : commission - cost\.picked/.test(fn[0]), 'there is no self-funding verdict');
+  ok(/net: commission - cost\.picked/.test(fn[0]), 'there is no self-funding verdict');
+  ok(!/Math\.round\(sales \* pct \/ 100\)/.test(fn[0]),
+    'the promise is still being derived from a rate rather than being the threshold');
   const cost = /function coverCostForKeys\(keys\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/coverableLines\(\)\.forEach/.test(cost),
     'the price walks lines that are not coverable at all');
@@ -2821,7 +2856,11 @@ test('tiers above the planned one are stretch, and judged at the margin', () => 
   ok(/stretch: sortedTiers\(\)\.filter\(tierIsStretch\)/.test(fn[0]), 'the stretch tiers are not reported');
   ok(/var gap = Math\.max\(0, \(t\.thresholdCents \|\| 0\) - \(below \? below\.thresholdCents \|\| 0 : 0\)\);/.test(fn[0]),
     'the margin is not the gap up from the tier below');
-  ok(/net: earns == null \? null : earns - perScout/.test(fn[0]), 'there is no per-scout margin verdict');
+  // The gap between two thresholds IS the extra commission that level earns, so the margin is
+  // a subtraction — no rate, and nothing for the copy to disagree with.
+  ok(/tier: t, gap: gap, earns: gap,/.test(fn[0]),
+    'the margin still converts the gap through a rate instead of being it');
+  ok(/net: gap - perScout/.test(fn[0]), 'there is no per-scout margin verdict');
   ok(/>stretch</.test(SCRIPT) && /Stretch tiers/.test(SCRIPT), 'nothing on screen marks a tier as a stretch');
 });
 
@@ -2834,26 +2873,26 @@ test('a tier with a deadline is measured on sales dated up to it', () => {
   // difference." A sale on the 2nd cannot satisfy a deadline of the 1st.
   const ctx = coverageSandbox(`
      var TIERS = [{ id:'t1', thresholdCents: 30000, covers:['dues'], dueBy: '2025-11-01' }];
-     var SALES    = { early: 40000, late: 40000, never: 5000 };          // season totals
-     var SALES_AT = { '2025-11-01': { early: 35000, late: 10000, never: 5000 } };`);
+     var SALES    = { early: tot(40000), late: tot(40000), never: tot(5000) };   // season totals
+     var SALES_AT = { '2025-11-01': { early: tot(35000), late: tot(10000), never: tot(5000) } };`);
   eq(Object.keys(ctx.RESULT.dues).sort(), ['early'],
     'the late seller was covered on money that arrived after the deadline');
-  eq(ctx.EARNED.t1.early, 'sold', 'earned by selling');
+  eq(ctx.EARNED.t1.early, 'earned', 'earned by selling');
   ok(!ctx.EARNED.t1.late, 'a season total must not satisfy a deadline');
 });
 
 test('a tier with no deadline still counts the whole season', () => {
   const ctx = coverageSandbox(`
      var TIERS = [{ id:'t1', thresholdCents: 30000, covers:['dues'], dueBy: '' }];
-     var SALES = { a: 40000, b: 10000 };`);
+     var SALES = { a: tot(40000), b: tot(10000) };`);
   eq(Object.keys(ctx.RESULT.dues), ['a'], 'the no-deadline tier stopped working');
 });
 
 test('paying the difference counts as reaching the tier', () => {
   const ctx = coverageSandbox(`
      var TIERS = [{ id:'t1', thresholdCents: 30000, covers:['dues'], dueBy: '2025-11-01', madeUp: ['late'] }];
-     var SALES    = { early: 40000, late: 40000 };
-     var SALES_AT = { '2025-11-01': { early: 35000, late: 10000 } };`);
+     var SALES    = { early: tot(40000), late: tot(40000) };
+     var SALES_AT = { '2025-11-01': { early: tot(35000), late: tot(10000) } };`);
   eq(Object.keys(ctx.RESULT.dues).sort(), ['early', 'late'], 'a makeup payment did not satisfy the tier');
   eq(ctx.EARNED.t1.late, 'madeUp', 'the two ways in are not told apart');
 });
@@ -2864,6 +2903,10 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
   ok(fn, 'tierMissedRows() not found');
   ok(/var totals = computeScoutTotals\(t\.dueBy\);/.test(fn[0]), 'the shortfall is measured on the wrong date');
   ok(/short = Math\.max\(0, \(t\.thresholdCents \|\| 0\) - base\)/.test(fn[0]), 'the shortfall is not the gap to the tier');
+  // On the commission basis the gap is money, so paying it leaves the pack exactly where the
+  // selling would have. Measuring it in SALES is what would over-charge the family.
+  ok(/var got = scoutCommissionOf\(\{ t: totals\[s\.id\] \}\);/.test(fn[0]),
+    'the shortfall is measured in sales, so a family would be asked for more than the pack lost');
   ok(/makeup: Math\.min\(short, cover\)/.test(fn[0]), 'the makeup is not capped at the fee');
   ok(/if \(!t\.dueBy\) return \[\];/.test(fn[0]), 'a tier with no deadline is reporting people as having missed it');
   const cover = /function tierCoverCentsPerScout\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
@@ -2903,19 +2946,19 @@ test('the deadline drives coverage, waivers, badges and the counts from ONE map'
 test('a blank online rate means the same rate, so nothing moves on upgrade', () => {
   // commissionRates() reads `state`, so it is exercised in a sandbox with one supplied.
   const ctx = vm.createContext({ state: {} });
-  vm.runInContext(slice('commissionRates'), ctx);
+  vm.runInContext(slice('commissionRates') + slice('cashScoutRate') + slice('cashCreditOn'), ctx);
   const run = (base, online) => {
     ctx.state.commissionPct = base; ctx.state.commissionPctOnline = online;
     return vm.runInContext('commissionRates()', ctx);
   };
-  eq(run('32', ''), { base: 32, online: 32, split: false, goal: 32, goalIsOnline: false },
+  eq(run('32', ''), { base: 32, online: 32, split: false, goal: 32, goalIsOnline: false, cash: null },
     'blank must mean "the same"');
-  eq(run('32', '32'), { base: 32, online: 32, split: false, goal: 32, goalIsOnline: false },
+  eq(run('32', '32'), { base: 32, online: 32, split: false, goal: 32, goalIsOnline: false, cash: null },
     'the same figure typed twice is not a split');
-  eq(run('', ''), { base: null, online: null, split: false, goal: null, goalIsOnline: false },
+  eq(run('', ''), { base: null, online: null, split: false, goal: null, goalIsOnline: false, cash: null },
     'no rate set at all');
   // A rate typed only for online still leaves the storefront rate unset rather than guessing.
-  eq(run('', '50'), { base: null, online: 50, split: true, goal: 50, goalIsOnline: false }, 'online-only');
+  eq(run('', '50'), { base: null, online: 50, split: true, goal: 50, goalIsOnline: false, cash: null }, 'online-only');
 });
 
 test('the goal is worked out at the LOWER of the two rates', () => {
@@ -2924,7 +2967,7 @@ test('the goal is worked out at the LOWER of the two rates', () => {
   // came in online, which is the one direction a MINIMUM must never be wrong in. The lower rate
   // is the only choice that stays right whichever way the two fall.
   const ctx = vm.createContext({ state: {} });
-  vm.runInContext(slice('commissionRates'), ctx);
+  vm.runInContext(slice('commissionRates') + slice('cashScoutRate') + slice('cashCreditOn'), ctx);
   const run = (base, online) => {
     ctx.state.commissionPct = base; ctx.state.commissionPctOnline = online;
     return vm.runInContext('commissionRates()', ctx);
@@ -2976,21 +3019,90 @@ test('what families pay directly is split by who they pay', () => {
    ================================================================ */
 
 test('a tier says what its threshold is worth in sales AND in commission', () => {
-  // A threshold is a SALES figure; what the pack gets from it is the commission on that. The
-  // rewards are priced in real dollars, so the two only meet at the break-even.
+  // Owner ruling 2026-08-02: the threshold IS the commission, so "what the pack gets" needs no
+  // rate at all and "does it pay for itself" is a subtraction. What still needs converting is
+  // the number a scout can act on — nobody sells commission.
   const fn = /function tierBreakEven\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'tierBreakEven() not found');
-  ok(/earns: pct == null \? null : Math\.round\(\(t\.thresholdCents \|\| 0\) \* pct \/ 100\)/.test(fn[0]),
-    'it does not say what reaching the threshold earns the pack');
-  ok(/sales: \(pct == null \|\| pct <= 0 \|\| !cover\) \? null : Math\.round\(cover \/ \(pct \/ 100\)\)/.test(fn[0]),
-    'it does not work out the sales needed to cover what the tier hands back');
+  ok(/var earns = t\.thresholdCents \|\| 0;/.test(fn[0]),
+    'what the tier earns the pack is being derived from a rate instead of being the threshold');
+  ok(/needSales: salesForCommission\(earns\)/.test(fn[0]),
+    'it does not work out the sales that reach the threshold');
+  ok(!/\* pct \/ 100/.test(fn[0]), 'the break-even still multiplies the threshold by a rate');
   // Cumulative, because the tiers stack and so does what a scout at that level walks away with.
   const cum = /function tierCumulativeCoverCents\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(cum && /if \(o\.thresholdCents <= t\.thresholdCents\) cents \+= tierCoverCentsPerScout\(o\);/.test(cum[0]),
     'the break-even ignores what the tiers below already hand out');
-  ok(/A scout would need/.test(SCRIPT), 'the figure is never shown');
-  // It is valued at the same rate as the goal, so the two cannot disagree.
-  ok(/var pct = commissionRates\(\)\.goal;/.test(fn[0]), 'the break-even uses a different rate from the goal');
+  ok(/A scout gets there on/.test(SCRIPT), 'the sales figure is never shown');
+  // Converted at the same rate as the goal, so the two cannot disagree.
+  const conv = /function salesForCommission\(cents\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(conv, 'salesForCommission() not found');
+  ok(/var pct = commissionRates\(\)\.goal;/.test(conv[0]),
+    'the sales figure uses a different rate from the goal');
+  ok(/Math\.ceil\(cents \/ \(pct \/ 100\)\)/.test(conv[0]),
+    'a minimum is being rounded down, which can land a scout a cent short of the tier');
+});
+
+test('sales-to-reach-a-tier is quoted at the rate a scout can always beat', () => {
+  // The conversion has to be a floor, not an estimate: sell this much and you are there
+  // whatever the channel mix, because every other channel earns more per dollar.
+  const ctx = vm.createContext({ state: {} });
+  vm.runInContext(slice('commissionRates') + slice('cashScoutRate') + slice('cashCreditOn') + slice('salesForCommission'), ctx);
+  const need = (base, online, cents) => {
+    ctx.state.commissionPct = base; ctx.state.commissionPctOnline = online;
+    return vm.runInContext(`salesForCommission(${cents})`, ctx);
+  };
+  // Pack 569's own rates, 35% storefront / 30% online. $150 of commission is $500 of popcorn
+  // at the worse rate — quoting the storefront rate would promise the tier at $428.58 and then
+  // not deliver it to a scout who sold online.
+  eq(need('35', '30', 15000), 50000, 'the lower of the two rates must set the figure');
+  eq(need('35', '', 15000), 42858, 'one rate: $150 / 35%, rounded up so it is never short');
+  eq(need('', '', 15000), null, 'no rate set at all');
+  eq(need('35', '30', 0), null, 'a tier that earns nothing has no sales figure');
+  // The floor property, stated as arithmetic rather than as a comment.
+  for (const cents of [15000, 25000, 30000, 33333, 99999]) {
+    const sold = need('35', '30', cents);
+    ok(Math.round(sold * 30 / 100) >= cents, `${sold} sold online must still reach ${cents}`);
+    ok(Math.round(sold * 35 / 100) >= cents, `${sold} sold at a storefront must still reach ${cents}`);
+  }
+});
+
+test('a scout earns a tier at each channel’s own rate', () => {
+  // What the pack actually got, not an average — which means two scouts with identical sales
+  // can land either side of a tier. That is the thing being measured, so it is pinned here.
+  const ctx = coverageSandbox(`
+     var RATE = '35', ONLINE_RATE = '30';
+     var TIERS = [{ id:'t1', thresholdCents: 15000, covers:['dues'] }];
+     var SALES = {
+       storefront: tot(45000, 0),      // $450 at 35% = $157.50 — in
+       online:     tot(0, 45000),      // $450 at 30% = $135.00 — out
+       mixed:      tot(30000, 20000)   // $105.00 + $60.00 = $165.00 — in
+     };`);
+  eq(Object.keys(ctx.RESULT.dues).sort(), ['mixed', 'storefront'],
+    'the tier is not being measured on what each channel actually earned');
+  ok(!ctx.EARNED.t1.online, 'the same sales sold online do not earn the same commission');
+  // And the split is rounded per channel, exactly as computePackTotals does it.
+  const fn = /function scoutCommissionOf\(r\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'scoutCommissionOf() not found');
+  ok(/Math\.round\(online \* \(rates\.online \|\| 0\) \/ 100\)\s*\n?\s*\+ Math\.round\(other \* \(rates\.base \|\| 0\) \/ 100\)/.test(fn[0]),
+    'the two channels are not rounded apart');
+  ok(/var other = goalBaseOf\(r\) - online;/.test(fn[0]),
+    'the non-online remainder is not taken from the goal base, so cash could fall through a gap');
+});
+
+test('with no commission rate nothing is earned, and the card says why', () => {
+  // A threshold in commission is unmeasurable without a rate. Silently showing every tier at
+  // nought scouts would read as "nobody sold anything".
+  const ctx = coverageSandbox(`
+     var RATE = '', ONLINE_RATE = '';
+     var TIERS = [{ id:'t1', thresholdCents: 15000, covers:['dues'] }, { id:'t0', thresholdCents: 0, covers:['patch'] }];
+     var SALES = { big: tot(500000) };`);
+  ok(!ctx.EARNED.t1.big, 'a tier was earned with no rate to measure it by');
+  ok(ctx.EARNED.t0.big, 'a zero-threshold prize tier should still be reached by everybody');
+  const fn = /function tierRateMissing\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'tierRateMissing() not found');
+  ok(/No commission rate set, so nothing can be measured/.test(SCRIPT),
+    'the card never explains why every tier sits at nought scouts');
 });
 
 test('a council-paid fee can be covered, and only ever as a reimbursement', () => {
@@ -3060,11 +3172,45 @@ test('a per-family fee is one price for whoever the family brings', () => {
     'the basis select cannot reach per-family');
 });
 
-test('the per-family count is honest about siblings', () => {
-  // One fee per family, counted once per scout — which is one too many for two scouts who are
-  // brother and sister. The app has no family link, so it says so instead of pretending.
-  ok(/brothers or sisters\. The app has no way to know that yet, and it errs high/.test(SCRIPT),
-    'the sibling double-count is not disclosed');
+test('a per-family fee counts FAMILIES, and a link is what makes that possible', () => {
+  // It used to count one per scout and say so, because there was no family link. Now there is,
+  // and the count follows it.
+  const fam = sandbox(['familyKeyOf', 'familiesOf']);
+  const roster = [
+    { id: 'a', name: 'Ada Dougherty' },
+    { id: 'b', name: 'Ben Dougherty', familyId: 'a' },
+    { id: 'c', name: 'Cal Smith' }
+  ];
+  eq(fam.familiesOf(roster).length, 2, 'two Doughertys and a Smith is two families');
+  eq(fam.familiesOf(roster).map((f) => f.members.map((s) => s.id)), [['a', 'b'], ['c']], 'membership');
+  eq(fam.familyKeyOf({ id: 'z' }), 'z', 'an unlinked scout is a family of one');
+  eq(fam.familyKeyOf({ id: 'b', familyId: 'a' }), 'a', 'a linked scout takes the family key');
+  // The plan counts families for a per-family line, and scouts for everything else.
+  const { linePlannedCents, freshLine } = sandbox(['centsOf', 'uid', 'freshLine', 'LINE_BASES',
+    'LINE_FUNDERS', 'linePerHead', 'linePerFamily', 'linePlannedHeads', 'linePlannedCents']);
+  const camp = freshLine({ basis: 'per-family', scoutRateCents: 7500 });
+  eq(linePlannedCents(camp, 13, 4, 11), 82500, 'eleven families, not thirteen scouts');
+  eq(linePlannedCents(camp, 13, 4), 97500, 'with no family count it falls back to one per scout');
+  const dues = freshLine({ basis: 'per-head', scoutRateCents: 8000 });
+  eq(linePlannedCents(dues, 13, 4, 11), 104000, 'a per-head line still counts every scout');
+});
+
+test('linking scouts pools the family fee and NOTHING else', () => {
+  // Owner rule, 2026-07-27: "if a family has two scouts, each scout is allowed a parent, so both
+  // parents are still eligible". The link exists for family-priced fees; every per-head
+  // entitlement stays per scout.
+  const fn = /function collapseMarkedToFamilies\(line, marked\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'collapseMarkedToFamilies() not found');
+  ok(/if \(!marked \|\| !linePerFamily\(line\)\) return marked;/.test(fn[0]),
+    'a line that is not priced per family is having its attendance collapsed');
+  ok(/\/\/ The scout mark moves to the family's billing scout; the heads they brought do not move\./.test(fn[0]),
+    'the rule that heads stay put is not stated where it is enforced');
+  ok(/out\[sid\]\.adults \+= r\.adults \|\| 0;/.test(fn[0]),
+    'a parent recorded against one sibling is being merged onto the other — two scouts, two parents');
+  ok(!/out\[to\]\.adults/.test(fn[0]), 'adult heads are still being pooled onto the billing scout');
+  // And the roster says the same thing where a leader does the linking.
+  ok(/place, their own dues and their own parent/.test(SCRIPT),
+    'the roster does not say what linking leaves alone');
 });
 
 test('the scout/adult split is available on every billed line, not just shirts', () => {
@@ -3078,6 +3224,182 @@ test('the scout/adult split is available on every billed line, not just shirts',
   // And a line with no adult price yet says what setting one would buy you.
   ok(/gives a reward tier something separate to cover/.test(fn[0]),
     'nothing tells a pack that setting an adult price makes it coverable');
+});
+
+test('a family link is one field, and survives the scout it points at leaving', () => {
+  // The smallest model that fixes the double count: no family entity to create, name, rename or
+  // leave orphaned. normalizeState never resolves references, so a link to a scout who left
+  // simply stops matching anybody and they are a family of one again.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [{ id: 'a', name: 'Ada' }, { id: 'b', name: 'Ben', familyId: 'a' }],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(d.scouts[0].familyId, '', 'an unlinked scout must migrate to no link');
+  eq(d.scouts[1].familyId, 'a', 'a link that was set is lost');
+  ok(!/familyId.*=.*getScout|resolve/.test(/if \(typeof s\.familyId !== 'string'\) s\.familyId = '';/.exec(SCRIPT)[0]),
+    'the migration is resolving a reference');
+  // Joining somebody joins their family, so a third scout linked to either sibling joins both.
+  const fn = /if \(ch === 'scout-family'\) \{[\s\S]*?\n      \}/.exec(SCRIPT);
+  ok(fn, 'the family handler was not found');
+  ok(/scEd\.familyId = tgt \? familyKeyOf\(tgt\) : '';/.test(fn[0]),
+    'linking copies a scout id rather than joining that scout’s family');
+  ok(/if \(scEd\.familyId === scEd\.id\) scEd\.familyId = '';/.test(fn[0]),
+    'a scout can be linked to themselves, which would mean two things at once');
+  ok(/data-ch="scout-family"/.test(SCRIPT), 'there is no way to link two scouts');
+});
+
+/* ================================================================
+   Covering the leaders, and the deadline box — 2026-07-28
+   ================================================================ */
+
+test('a leader’s place is the pack’s cost, never family income', () => {
+  // The bug this pins: with no charges raised yet, expected family income fell back to the whole
+  // planned cost — leaders included. A pack covering its leaders was told to raise LESS than it
+  // needed by exactly what the leaders cost, which is the one direction that leaves it short.
+  const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'fundingSummary() not found');
+  ok(/: lineFamilyPlanned\(l\);/.test(fn[0]), 'the fees fallback is not the family share');
+  ok(!/: linePlanned\(l\);/.test(fn[0]), 'the fees fallback still counts the leaders’ places');
+  // A one-liner, so match to the end of ITS line — a greedy block match would swallow the next
+  // function, which does mention a leader rate, and the assertion would pass for the wrong reason.
+  const fam = /function lineFamilyPlanned\(l\) \{[^\n]*\}/.exec(SCRIPT);
+  ok(fam && /scoutRateCents/.test(fam[0]) && !/leaderRateCents/.test(fam[0]),
+    'what families are billed includes a leader rate');
+  // A is still the whole cost — the pack really is spending it.
+  const cb = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/actPlanned \+= linePlanned\(a\);/.test(cb[0]), 'the planned figure stopped counting the leaders');
+});
+
+test('covering the leaders is shown, and priced per scout on the goal', () => {
+  // "Split those costs amongst each scout" is what the plan already does — popcorn carries what
+  // families are not billed for — but a pack cannot act on that unless it can see the number.
+  const fn = /function leaderPlannedCents\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'leaderPlannedCents() not found');
+  ok(/if \(!lineThroughPack\(r\.line\) \|\| !r\.line\.includeLeaders\) return;/.test(fn[0]),
+    'it counts lines that do not include leaders, or money the pack never handles');
+  ok(/\(r\.line\.leaderRateCents \|\| 0\) \* activeLeaders\(\)\.length/.test(fn[0]),
+    'the leader cost is not the leader rate across the ACTIVE leader roster');
+  ok(/leaderPerScout: \(salesGoal != null && scouts > 0 && leaderPlanned > 0\)/.test(SCRIPT),
+    'the per-scout share of the leaders’ cost is not worked out');
+  ok(/of which leaders/.test(SCRIPT), 'the worksheet never shows it');
+  ok(/a scout on the goal/.test(SCRIPT), 'it does not say what that is per scout');
+});
+
+test('a tier with no deadline shows no date box', () => {
+  // A native date input that has been touched can sit there showing a date the tier does not
+  // have. No deadline, no box — and the box comes back the moment somebody asks for one.
+  ok(/\(\(t\.dueBy \|\| ui\.tierDueOpen\[t\.id\]\)/.test(SCRIPT),
+    'the date box renders whether or not there is a deadline');
+  ok(/data-act="tier-due-open:/.test(SCRIPT), 'there is no way to add a deadline');
+  ok(/data-act="tier-due-clear:/.test(SCRIPT), 'there is no way to take one off');
+  const clear = /if \(act\.indexOf\('tier-due-clear:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(clear && /dcT\.dueBy = '';/.test(clear[0]), 'clearing does not clear the deadline');
+  ok(clear && /ui\.tierDueOpen\[dcId\] = false;/.test(clear[0]),
+    'clearing leaves the empty box behind, which is the thing being fixed');
+  ok(/tierDueOpen: \{\},/.test(SCRIPT), 'the open-box flag is not part of ui state');
+});
+
+/* ========================================================================
+   Cash donations can earn a scout something — 2026-08-02
+   ===================================================================== */
+
+test('a kept cash donation credits the scout, and only while the pack keeps it', () => {
+  const ctx = vm.createContext({ state: {} });
+  vm.runInContext(slice('cashScoutRate') + slice('cashCreditOn') + slice('cashScoutCredit'), ctx);
+  const credit = (pct, viaTE, cents) => {
+    ctx.state.cashScoutPct = pct; ctx.state.cashThroughTrailsEnd = viaTE;
+    return vm.runInContext(`cashScoutCredit(${cents})`, ctx);
+  };
+  eq(credit('30', false, 50000), 15000, '30% of $500');
+  eq(credit('', false, 50000), 0, 'no rate set means cash earns a scout nothing');
+  eq(credit('0', false, 50000), 0, 'zero is the same as blank');
+  eq(credit('30', false, 0), 0, 'nothing in, nothing credited');
+  eq(credit('33.3', false, 10000), 3330, 'a fractional rate rounds to the cent');
+  eq(credit('150', false, 10000), 10000, 'a scout cannot be credited more than the pack was given');
+  // The one that matters: with the toggle ON that same cash is already earning real commission.
+  eq(credit('30', true, 50000), 0, 'a donation run through Trail’s End is being credited twice');
+});
+
+test('the cash credit lands in what a scout earned, not in what they sold', () => {
+  // A scout who hands over $500 in cash at a table earned the pack more than one who rang up
+  // $500 of product — and until this rate existed the board had them at $175 and $0.
+  const donor = "{ sales: 0, onS: 0, onD: 0, storeD: 50000, wagonD: 0 }";
+  const on = coverageSandbox(`
+     var RATE = '35', ONLINE_RATE = '30', CASH_RATE = '30';
+     var TIERS = [{ id:'t1', thresholdCents: 15000, covers:['dues'] }];
+     var SALES = { seller: tot(50000), donor: ${donor} };`);
+  ok(on.EARNED.t1.seller, '$500 of storefront popcorn at 35% is $175, which clears $150');
+  ok(on.EARNED.t1.donor, '$500 of cash at a 30% credit is $150, which reaches it too');
+  eq(vm.runInContext('goalBaseOf({ t: SALES.donor })', on), 0,
+    'the donation leaked into the sales base, so the Trail’s End goal thinks it was sold');
+  const off = coverageSandbox(`
+     var RATE = '35', ONLINE_RATE = '30';
+     var TIERS = [{ id:'t1', thresholdCents: 15000, covers:['dues'] }];
+     var SALES = { donor: ${donor} };`);
+  ok(!off.EARNED.t1.donor, 'with no credit rate set, a donation still earned a tier');
+});
+
+test('cash run through Trail’s End is never paid for twice', () => {
+  // Toggle on, the donation IS commissionable and goalBaseOf already carries it. Adding a
+  // credit on top would hand the scout the money twice over for the same twenty-dollar bill.
+  const ctx = coverageSandbox(`
+     var RATE = '35', ONLINE_RATE = '30', CASH_RATE = '30', CASH_VIA_TE = true;
+     var TIERS = [{ id:'t1', thresholdCents: 15000, covers:['dues'] }];
+     var SALES = { donor: { sales: 0, onS: 0, onD: 0, storeD: 50000, wagonD: 0 } };`);
+  eq(vm.runInContext('scoutCommissionOf({ t: SALES.donor })', ctx), 17500,
+    'the commission and the credit are both being counted');
+  eq(vm.runInContext('commissionRates().cash', ctx), null,
+    'the effective cash rate must read as "none" while Trail’s End is handling the cash');
+});
+
+test('the pack-wide split only credits cash that reached a scout', () => {
+  const ctx = vm.createContext({
+    state: { cashScoutPct: '30', cashThroughTrailsEnd: false },
+    // $1000 kept, but only $250 of it was ever credited to a scout — the rest sits on a
+    // storefront block nobody was assigned to.
+    computePackTotals: () => ({ cashKept: 100000 }),
+    computeScoutTotals: () => ({ a: { storeD: 20000, wagonD: 5000 }, b: { storeD: 0, wagonD: 0 } })
+  });
+  vm.runInContext(slice('cashScoutRate') + slice('cashCreditOn') + slice('cashScoutCredit') +
+    slice('cashCreditTotals'), ctx);
+  const out = vm.runInContext('cashCreditTotals()', ctx);
+  eq(out.credited, 7500, '30% of the $250 that actually reached a scout');
+  eq(out.free, 92500, 'unassigned cash is free money — no tier has a claim on it');
+  eq(out.kept, 100000, 'kept is the pack figure, not the scouts’ share of it');
+  ctx.state.cashScoutPct = '';
+  eq(vm.runInContext('cashCreditTotals()', ctx), { on: false, rate: null, kept: 100000, credited: 0, free: 100000 },
+    'with no rate the whole kept figure is free and nothing is credited');
+});
+
+test('a cash credit rate alone is enough to measure tiers', () => {
+  const fn = /function tierRateMissing\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn && /rates\.cash == null/.test(fn[0]),
+    'a donations-only pack is told nothing can be measured while its credit rate sits there');
+});
+
+test('the cash credit is described as credit, never as a payout', () => {
+  // Scouting America's unit budgeting guidance: money raised in the pack's name belongs to the
+  // pack. This rate decides tier progress and nothing else — the copy must not imply otherwise.
+  ok(/nothing is paid out and no scout has an account of their own/.test(SCRIPT),
+    'the field never says the money is not handed over');
+  ok(/It is credit, not a payout/.test(SCRIPT), 'the standings board never says it either');
+  ok(!/paid out to (a|the) scout|into the scout’s account|the scout’s own account/.test(SCRIPT),
+    'the copy describes an individual scout account, which is the thing to avoid');
+  ok(/<strong>reward tiers<\/strong> of the scout who brought it in/.test(SCRIPT),
+    'the field never says what the credit is actually for');
+});
+
+test('a checkbox and its label are styled wherever they are used', () => {
+  // .perscout was defined three times, each scoped to a row class — so Season setup's copy of
+  // the same markup fell through to the global `input` rule and drew a 40px padded box.
+  ok(/\n  \.perscout \{ display: inline-flex;/.test(SCRIPT_CSS), 'there is no unscoped .perscout rule');
+  ok(/\n  \.perscout input\[type="checkbox"\] \{[^}]*min-height: auto;/.test(SCRIPT_CSS),
+    'the checkbox still inherits the 40px min-height from the global input rule');
+  ok(!/\.(erow|lrow|arow) \.perscout input \{/.test(SCRIPT_CSS),
+    'a row-scoped copy of the input reset is back — the base rule already does it');
+  ok(!/\.(erow|lrow|arow) \.perscout \{ display: inline-flex/.test(SCRIPT_CSS),
+    'a row-scoped copy of the whole rule is back');
 });
 
 /* ---------------- report ---------------- */

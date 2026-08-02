@@ -167,8 +167,11 @@
       },
       advancement: {}, fundraisers: [],
       derby: { name: '', date: '', lanes: 4, cars: [], awards: [] },
-      // Tier 1 at $300 covers PACK DUES only — the doc's "Dues covered".
-      rewardTiers: { duesCents: 0, tiers: [{ id: 'T1', name: 'Dues covered', thresholdCents: 30000, reward: '', covers: ['L-dues'] }] },
+      // Tier 1 covers PACK DUES only — the doc's "Dues covered".
+      // 2026-08-02: a threshold is the COMMISSION a scout earned the pack, not their sales. It
+      // is written as the commission on $400 of wagon sales so the scenario's intent survives a
+      // rate change — s0..s2 sell exactly that and clear it, everyone else sells $150.
+      rewardTiers: { duesCents: 0, tiers: [{ id: 'T1', name: 'Dues covered', thresholdCents: Math.round(40000 * PCT / 100), reward: '', covers: ['L-dues'] }] },
       inventory: { commissionPct: String(PCT), orderTotalCents: 0, products: [], distributions: [] },
       archives: [], densAdvancedYear: 0, startHereDismissed: true, movedNoticeDismissed: true, rev: 0
     };
@@ -283,7 +286,7 @@
 
   function year1Run(plan) {
     results.push('--- the year happens ---');
-    // Popcorn: three scouts clear the $300 tier, everyone else sells less.
+    // Popcorn: three scouts clear the dues tier, everyone else sells less.
     var st = S();
     st.storefronts = [{ id: 'SF1', name: 'Market', date: '2025-09-20', blocks: [] }];
     var sales = 0;

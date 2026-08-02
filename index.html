@@ -237,6 +237,13 @@
   input.weight-in { width: 74px; text-align: center; font-variant-numeric: tabular-nums; }
   input.time-in { width: 128px; color-scheme: light dark; }
   label.fld { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; font-weight: 600; color: var(--ink-soft); }
+  /* A checkbox with its label beside it. This used to be defined three times over, each copy
+     scoped to a row class (.erow / .lrow / .arow) — so the SAME markup used anywhere else
+     (Season setup, most visibly) fell through to the global `input` rule above and drew the
+     tick as a 40px-tall padded box sitting off from its own text. The base rule belongs here;
+     the row variants keep only the one thing that is theirs, which is refusing to wrap. */
+  .perscout { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--ink-soft); }
+  .perscout input[type="checkbox"] { min-height: auto; width: auto; padding: 0; margin: 0; flex: 0 0 auto; }
   /* Multi-line notes field: full width, comfortable leading, vertical resize only. */
   textarea.notes-in { width: 100%; min-height: 68px; line-height: 1.45; resize: vertical; }
 
@@ -367,8 +374,7 @@
   .erow:last-of-type { border-bottom: none; }
   .erow .ename { flex: 1 1 150px; min-height: 36px; min-width: 0; }
   .erow input.money-in { width: 92px; min-height: 36px; }
-  .erow .perscout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
-  .erow .perscout input { min-height: auto; width: auto; }
+  .erow .perscout { white-space: nowrap; }
   /* ---------- Budget line rows ----------
      The old row laid eight controls of equal weight across two wrapped lines with a dashed
      rule between activities, so a month read as a wall of repeated "Flat cost / Other /
@@ -477,8 +483,7 @@
   .lrow input[type="date"] { min-height: 36px; }
   .lrow .lbal { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
   .lrow .lmore { flex: 0 0 auto; }
-  .lrow .perscout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
-  .lrow .perscout input { min-height: auto; width: auto; }
+  .lrow .perscout { white-space: nowrap; }
   .ldetail { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0 2px; }
   .tier-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
   .tier-row:first-of-type { border-top: 1px solid var(--line); }
@@ -840,10 +845,9 @@
   /* ---------- Wave 17 ---------- */
   /* Season-setup consolidation + treasurer aids reuse existing classes/tokens
      (.card/.fld/.perscout/.erow/.rsvp-wrap/.closeout-list) — no new tokens, so all four
-     theme blocks stay untouched. Only the activity-row checkbox pair needs a scoped rule;
-     it mirrors .erow .perscout exactly. */
-  .arow .perscout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
-  .arow .perscout input { min-height: auto; width: auto; }
+     theme blocks stay untouched. The activity row wants its checkbox pair kept on one line;
+     everything else about .perscout is the base rule up in Controls. */
+  .arow .perscout { white-space: nowrap; }
 
   /* ---------- Wave 18 ---------- */
   /* Accessibility + interaction mechanics. No new tokens — every color below derives
@@ -1628,6 +1632,7 @@
       goalCents: 0, goalIsDerived: true,
       stretchGoalCents: 0, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
+      cashScoutPct: '',                // credit a scout earns on cash the pack keeps (blank = none)
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
       events: [],                      // Phase 2 — the calendar record; meetings[] is legacy
       charges: [],                     // Phase 3b — what each family owes, per head
@@ -1739,6 +1744,11 @@
       if (typeof s.renewalMonth !== 'string') s.renewalMonth = '';
       if (typeof s.denLabel !== 'string') s.denLabel = '';
       if (typeof s.note !== 'string') s.note = '';
+      // 2026-07-27 — brothers and sisters. Absent → '' , and a scout with no link is a family
+      // of one, so a pack that never links anybody behaves exactly as it did. Deliberately NOT
+      // resolved here (normalizeState never resolves references): a link to a deleted scout
+      // simply stops matching, which makes them a family of one again.
+      if (typeof s.familyId !== 'string') s.familyId = '';
     });
     // Wave 19(20) — SYT completed-on date; expiry is computed (+1 year) when set.
     // Legacy sytExpiry stays as-is and keeps working when sytCompleted is blank.
@@ -1783,6 +1793,9 @@
       d.cashThroughTrailsEnd = !!(d.cashInCommission || d.cashInGoal);
     }
     delete d.cashInCommission; delete d.cashInGoal;
+    // The scout's credit on cash the pack keeps. Absent → '' , which means "none" — so an
+    // existing pack record's tier standings do not move until somebody sets a rate.
+    d.cashScoutPct = typeof d.cashScoutPct === 'string' ? d.cashScoutPct : '';
     if (!d.packName) d.packName = 'Pack 569';
     if (!d.budget || typeof d.budget !== 'object') d.budget = freshBudget();
     if (typeof d.budget.programYear !== 'number') d.budget.programYear = defaultProgramYear();
@@ -2476,6 +2489,10 @@
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
+    // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
+    // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
+    // and it is transient on purpose (nothing to persist about a box being open).
+    tierDueOpen: {},
     budgetShowPast: false,  // Budget — reveal the already-gone months that carry no lines
     forgiveFor: null,   // Phase 3b — charge id showing the inline "why" form
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
@@ -2659,6 +2676,53 @@
   }
   function getFundraiser(id) { return state.fundraisers.find(function (f) { return f.id === id; }); }
   function activeScouts() { return state.scouts.filter(function (s) { return !s.archived; }); }
+  // ---------------------------------------------------------------------------
+  // FAMILIES — brothers and sisters, 2026-07-27.
+  //
+  // A per-family fee (council camping) is paid once however many scouts a family has, and until
+  // now the app counted one per SCOUT because it had no way to know. It errs high, which is the
+  // safe direction, but for a pack with two sets of siblings it is real slack in the plan and a
+  // family billed twice for one campsite.
+  //
+  // The model is deliberately the smallest thing that fixes it: ONE FIELD on the scout. A scout
+  // with no link is a family of one, so a pack that links nobody behaves exactly as before, and
+  // there is no family entity to create, name, rename or leave orphaned.
+  //
+  //   familyKeyOf(s)   s.familyId or, failing that, the scout's own id
+  //
+  // Linking Ben to Ada sets Ben.familyId to Ada's key; linking a third joins the same key. The
+  // key is a scout id and nothing enforces that the scout still exists — a link to somebody who
+  // left simply stops matching anyone else, and they are a family of one again.
+  // ---------------------------------------------------------------------------
+  function familyKeyOf(s) { return (s && s.familyId) || (s && s.id) || ''; }
+  // Everyone on the ACTIVE roster who shares this scout's family key, themselves included.
+  function familyMembers(s) {
+    var key = familyKeyOf(s);
+    return activeScouts().filter(function (o) { return familyKeyOf(o) === key; });
+  }
+  // The families on a roster, in roster order, each with its members. One entry per family, so
+  // this is what a per-family fee is counted against.
+  function familiesOf(roster) {
+    var seen = {}, out = [];
+    (roster || []).forEach(function (s) {
+      var key = familyKeyOf(s);
+      if (seen[key]) { seen[key].members.push(s); return; }
+      seen[key] = { key: key, members: [s] };
+      out.push(seen[key]);
+    });
+    return out;
+  }
+  function activeFamilies() { return familiesOf(activeScouts()); }
+  // The one scout a family's single fee is billed to: the first of them on the roster. Stable, so
+  // the charge key stays put — and if that scout leaves, the next one carries it.
+  function familyBillingScout(fam) { return fam.members[0]; }
+  // "Ada and Ben", "Ada, Ben and Cal" — first names as typed, because that is how a leader knows
+  // them and the app has no surname field to be clever with.
+  function familyLabel(fam) {
+    var names = fam.members.map(function (s) { return (s.name || '').split(' ')[0] || s.name || 'scout'; });
+    if (names.length === 1) return names[0];
+    return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  }
   function activeLeaders() { return state.leaders.filter(function (l) { return !l.archived; }); }
 
   // Everything that lands on a calendar day, keyed by day-of-month for a given 'YYYY-MM'.
@@ -2751,8 +2815,61 @@
       base: base, online: eff, split: online != null && online !== base,
       // Which rate the goal is worked out at, and its name, so a screen can say so.
       goal: both.length ? Math.min.apply(null, both) : null,
-      goalIsOnline: both.length > 1 && eff < base
+      goalIsOnline: both.length > 1 && eff < base,
+      // A THIRD rate, and not a Trail's End one — see cashScoutCredit() below. This is the
+      // EFFECTIVE rate: null unless the pack has set one AND is keeping the cash, because with
+      // the Trail's End toggle on that same cash earns real commission and the two rates above
+      // have already counted it. Readers get one field to check instead of a rate and a toggle.
+      cash: cashCreditOn() ? cashScoutRate() : null
     };
+  }
+  // CASH DONATIONS EARN THE SCOUT SOMETHING TOO — owner ask, 2026-08-02.
+  //
+  // When cash does NOT run through Trail's End the pack banks every cent of it, and until now
+  // the scout who brought it in earned nothing for it: tiers are measured in commission, and a
+  // donation the pack keeps whole generates no commission. A scout could hand over $300 in cash
+  // at a storefront table and sit at $0 earned, while one who rang up $300 of product moved a
+  // hundred dollars up the board. `cashScoutPct` fixes that — it is the share of a kept cash
+  // donation that counts toward the tiers of the scout it was credited to.
+  //
+  // What it is NOT: a payout. Nothing is handed to a scout and nothing lands in an individual
+  // account — Scouting America's unit budgeting guidance is plain that money raised in the
+  // pack's name belongs to the pack, and crediting individual accounts by individual sales is
+  // the private-benefit problem the guidance exists to prevent. This rate only decides how much
+  // of the donation counts toward a tier that every scout can reach on the same terms, which is
+  // exactly how popcorn commission already works here. The pack keeps 100% either way; the rest
+  // of the donation is simply money no tier has a claim on.
+  function cashScoutRate() {
+    var pct = parseFloat(state.cashScoutPct);
+    if (!isFinite(pct) || pct <= 0) return null;
+    return Math.min(pct, 100);
+  }
+  // Is the credit actually in play? Only while the pack keeps the cash — with the Trail's End
+  // toggle on, the donation IS commissionable and the commission rates have already counted it.
+  // (Kept multi-line on purpose: the harness slices a declaration by finding the next line that
+  // is `  }` at this indent, so a one-liner would silently swallow whatever follows it.)
+  function cashCreditOn() {
+    return !state.cashThroughTrailsEnd && cashScoutRate() != null;
+  }
+  // What one scout's kept cash donations earn them toward their tiers.
+  function cashScoutCredit(cashCents) {
+    if (!cashCreditOn() || !cashCents) return 0;
+    return Math.round(cashCents * cashScoutRate() / 100);
+  }
+  // The pack-wide split, for the boards: of the cash the pack kept, how much is spoken for by
+  // scouts' tier progress and how much no tier has a claim on. Credited is summed PER SCOUT
+  // (same rounding the standings show) and so deliberately excludes cash that never reached a
+  // scout — an unassigned storefront block earns nobody anything.
+  function cashCreditTotals() {
+    var pack = computePackTotals();
+    var kept = pack.cashKept || 0;
+    if (!cashCreditOn()) return { on: false, rate: null, kept: kept, credited: 0, free: kept };
+    var totals = computeScoutTotals(), credited = 0;
+    Object.keys(totals).forEach(function (id) {
+      var t = totals[id];
+      credited += cashScoutCredit((t.storeD || 0) + (t.wagonD || 0));
+    });
+    return { on: true, rate: cashScoutRate(), kept: kept, credited: credited, free: Math.max(0, kept - credited) };
   }
   function computePackTotals() {
     // Summed from source records (not scout shares) so unassigned block money still counts.
@@ -2937,7 +3054,9 @@
       var l = r.line;
       if (!lineRaisesCharges(l)) return;
       var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
-      var owed = rows.length ? chargeTotals(rows, state.ledger).standing : linePlanned(l);
+      // No charges yet → fall back to what FAMILIES would be billed, which is the scout share.
+      // Not linePlanned: that includes the leaders' places, and no family is billed for those.
+      var owed = rows.length ? chargeTotals(rows, state.ledger).standing : lineFamilyPlanned(l);
       COVER_WHO.forEach(function (who) {
         if (!assumeCov[coverKeyOf(r.key, who)]) return;
         // Only what still STANDS can move onto the pack: a charge already waived by a tier left
@@ -2969,6 +3088,7 @@
     // At the LOWER of the pack's rates (commissionRates), so a mix of channels can only beat
     // the goal, never fall short of it. Selling everything at the better rate gets there early;
     // that is the right way for a minimum to be wrong.
+    var leaderPlanned = leaderPlannedCents();
     var rates = commissionRates();
     var pct = rates.goal;
     var pctOk = pct != null && pct > 0;
@@ -2983,6 +3103,10 @@
       pct: pct, pctOk: pctOk, salesGoal: salesGoal,
       // What a covered non-scout share added to A, so the worksheet can show it as its own line.
       tierExtra: tierExtra,
+      // What covering the pack's leaders costs, and what that is per scout once popcorn carries it.
+      leaderPlanned: leaderPlanned,
+      leaderPerScout: (salesGoal != null && scouts > 0 && leaderPlanned > 0)
+        ? Math.round(leaderPlanned / scouts) : 0,
       // Which rate that was, so the screens can name it instead of assuming the storefront one.
       goalIsOnline: rates.goalIsOnline, ratesSplit: rates.split,
       basePct: rates.base, onlinePct: rates.online,
@@ -3076,7 +3200,7 @@
       var cov = coverage[colKey] || {};
       // The line's OWN roster: a den-limited event bills the dens it is for, nobody else.
       var planCovered = !!assumeCovAll[colKey];
-      lineRoster(item).forEach(function (s) {
+      lineBillingRoster(item).forEach(function (s) {
         // Earned it, or the pack is planning on it: either way the family is not billed.
         if (cov[s.id] || planCovered) { feesAbsorbed += each; return; }
         feeIncomeExpected += each;
@@ -3198,13 +3322,17 @@
   // leave. Parents and siblings pay their own way, so they are not the pack's money to plan —
   // where the pack fronts their share and bills it back, that is a CHARGE raised from the heads
   // somebody recorded afterwards (chargeRowsFor), never a number invented in advance.
-  function linePlannedHeads(l, scoutN, leaderN) {
+  // `familyN` is how many FAMILIES the roster is, for a per-family line. Omitted, it falls back
+  // to the scout count — which is the right answer when nobody is linked, and was the only answer
+  // before families existed.
+  function linePlannedHeads(l, scoutN, leaderN, familyN) {
     if (!linePerHead(l)) return { scouts: 0, leaders: 0 };
+    if (linePerFamily(l)) return { scouts: familyN == null ? scoutN : familyN, leaders: 0 };
     return { scouts: scoutN, leaders: l.includeLeaders ? (leaderN || 0) : 0 };
   }
-  function linePlannedCents(l, scoutN, leaderN) {
+  function linePlannedCents(l, scoutN, leaderN, familyN) {
     if (!linePerHead(l)) return l.flatCents || 0;
-    var hd = linePlannedHeads(l, scoutN, leaderN);
+    var hd = linePlannedHeads(l, scoutN, leaderN, familyN);
     return (l.scoutRateCents || 0) * hd.scouts +
       (l.leaderRateCents || 0) * hd.leaders;
   }
@@ -3266,7 +3394,35 @@
       .concat(state.budget.expenses.map(function (e) { return { line: e, kind: 'expense', key: e.id }; }));
   }
   // The planning figure for one line: its own roster, which a den-limited event narrows.
-  function linePlanned(l) { return linePlannedCents(l, lineRoster(l).length, activeLeaders().length); }
+  function linePlanned(l) {
+    var roster = lineRoster(l);
+    return linePlannedCents(l, roster.length, activeLeaders().length, familiesOf(roster).length);
+  }
+  // What FAMILIES would be billed for a line, at plan time — the scout share and nothing else.
+  //
+  // A LEADER'S PLACE IS NEVER FAMILY INCOME. It is the pack covering its own leaders, which is
+  // the whole point of the include-leaders box, and counting it as money families will hand over
+  // tells the pack to raise LESS than it needs by exactly the leaders' cost. (linePlanned is the
+  // right figure for A — what the pack plans to spend. This is the other half of that line.)
+  function lineFamilyPlanned(l) { return (l.scoutRateCents || 0) * lineBillingRoster(l).length; }
+  // What the pack plans to spend on LEADERS' places, across every line it handles. Reported so a
+  // pack covering its leaders can see what that costs and what it adds to each scout's goal.
+  function leaderPlannedCents() {
+    var cents = 0;
+    allBudgetLines().forEach(function (r) {
+      if (!lineThroughPack(r.line) || !r.line.includeLeaders) return;
+      cents += (r.line.leaderRateCents || 0) * activeLeaders().length;
+    });
+    return cents;
+  }
+  // Who a line actually bills. A per-family fee is billed once per family, to the first of them
+  // on the roster; everything else bills every scout it applies to. This is the roster handed to
+  // chargeRowsFor, which is what keeps that function ignorant of families.
+  function lineBillingRoster(l) {
+    var roster = lineRoster(l);
+    if (!linePerFamily(l)) return roster;
+    return familiesOf(roster).map(familyBillingScout);
+  }
   // What families pay directly, grouped by WHO they pay. `paidDirectTo` has always been a name
   // rather than a flag, so it already covers a council and a vendor equally — this is where
   // that pays off: council fees and vendor fees are two different conversations, and a single
@@ -3320,6 +3476,35 @@
   // meant to stop.
   function chargeBasis(l) { return l.eventId ? 'attendance' : 'roster'; }
   function chargeKey(c) { return c.lineId + '|' + c.scoutId + '|' + c.who + '|' + c.seq; }
+  // For a per-family line, two siblings both marked present are ONE family at the event, so the
+  // scout mark is merged onto the family's billing scout and the fee is charged once.
+  //
+  // OWNER RULE, 2026-07-27: linking scouts NEVER pools anything else. "If a family has two
+  // scouts, each scout is allowed a parent, so both parents are still eligible." So the adult and
+  // sibling heads stay exactly where they were recorded, on the scout they were recorded against —
+  // a family with two scouts keeps two scouts' worth of entitlement everywhere it matters. The
+  // link exists for family-priced fees and nothing else.
+  function collapseMarkedToFamilies(line, marked) {
+    if (!marked || !linePerFamily(line)) return marked;
+    var out = {};
+    Object.keys(marked).forEach(function (sid) {
+      var r = marked[sid] || {};
+      var sc = getScout(sid);
+      var members = sc ? familyMembers(sc) : [];
+      var to = members.length ? familyBillingScout({ members: members }).id : sid;
+      // The scout mark moves to the family's billing scout; the heads they brought do not move.
+      if (r.scout) {
+        if (!out[to]) out[to] = { scout: 0, adults: 0, siblings: 0 };
+        out[to].scout = 1;
+      }
+      if (r.adults || r.siblings) {
+        if (!out[sid]) out[sid] = { scout: 0, adults: 0, siblings: 0 };
+        out[sid].adults += r.adults || 0;
+        out[sid].siblings += r.siblings || 0;
+      }
+    });
+    return out;
+  }
   // Pure: the charges a line SHOULD have, given what was recorded. One per head.
   function chargeRowsFor(line, marked, roster) {
     var rows = [];
@@ -3393,7 +3578,11 @@
       // Each line against ITS OWN roster. A roster-basis line for a den-limited event
       // raises charges for those dens only — billing the whole pack for Tiger Mania is the
       // exact error this exists to stop.
-      chargeRowsFor(r.line, marked, lineRoster(r.line)).forEach(function (row) { want[chargeKey(row)] = row; });
+      // A per-family fee is one charge for the family, so the roster handed over is one scout
+      // per family — and where the charges come from ATTENDANCE, the marks are collapsed the same
+      // way first. chargeRowsFor itself never learns what a family is.
+      chargeRowsFor(r.line, collapseMarkedToFamilies(r.line, marked), lineBillingRoster(r.line))
+        .forEach(function (row) { want[chargeKey(row)] = row; });
     });
     state.charges.forEach(function (c) { byKey[chargeKey(c)] = c; });
     // Drop charges that should no longer exist — but never one that is settled or paid
@@ -7129,7 +7318,35 @@
       '<label class="fld">Registration renews<input type="month" data-ch="scout-renew" data-id="' + s.id + '" value="' + esc(s.renewalMonth || '') + '"></label>' +
       '<label class="fld">Den label (optional)<input data-ch="scout-denlabel" data-id="' + s.id + '" value="' + esc(s.denLabel || '') + '" placeholder="Wolf — Mrs. K" style="width:160px"></label>' +
       '<label class="fld" style="flex:1 1 200px">Note<input data-ch="scout-note" data-id="' + s.id + '" value="' + esc(s.note || '') + '" placeholder="e.g. application turned in 9/12"></label>' +
-      '</div>';
+      '</div>' +
+      // Brothers and sisters. It changes exactly one thing — a fee priced PER FAMILY is counted
+      // and billed once instead of once per scout — and deliberately nothing else: each scout
+      // still gets their own place, their own dues and their own parent's place at everything
+      // priced per head.
+      (function () {
+        var others = activeScouts().filter(function (o) { return o.id !== s.id; });
+        var mine = familyMembers(s).filter(function (o) { return o.id !== s.id; });
+        var h2 = '<div class="row" style="margin-bottom:10px;align-items:flex-end">' +
+          '<label class="fld">Same family as' +
+          '<select data-ch="scout-family" data-id="' + s.id + '">' +
+          '<option value="">— nobody else in the pack —</option>' +
+          others.map(function (o) {
+            var on = familyKeyOf(o) === familyKeyOf(s);
+            return '<option value="' + o.id + '"' + (on ? ' selected' : '') + '>' + esc(o.name || 'scout') + '</option>';
+          }).join('') +
+          '</select></label>' +
+          '<span class="small muted" style="flex:1 1 240px">' +
+          (mine.length
+            ? 'One family with ' + esc(mine.map(function (o) { return o.name || 'scout'; }).join(', ')) +
+              '. A fee priced <strong>per family</strong> is counted and billed once for them. ' +
+              'Everything priced per head is unchanged \u2014 ' + (mine.length + 1) + ' scouts, ' +
+              (mine.length + 1) + ' places, and a parent\u2019s place each.'
+            : 'Link brothers and sisters so a <strong>per family</strong> fee \u2014 council camping \u2014 is ' +
+              'counted once for them instead of once each. Nothing else changes: each scout keeps their own ' +
+              'place, their own dues and their own parent\u2019s place.') +
+          '</span></div>';
+        return h2;
+      })();
 
     // Wagon / online entry form.
     // Wave 21 — wagon and online sales are Trail's End money too, exactly like a storefront
@@ -7212,22 +7429,58 @@
   // Goal progress base — adds the scout's cash donations only when the goal toggle is on.
   function goalBaseOf(r) { return r.t.sales + r.t.onD + (state.cashThroughTrailsEnd ? cashDonOf(r) : 0); }
 
-  /* ----- Wave 8: reward tiers (dues covered by the pack) ----- */
-  // Tiers earned on the SAME base as goal progress (goalBaseOf). Always work off a copy
-  // sorted ascending by threshold so display + logic agree without mutating stored order.
+  /* ----- Wave 8: reward tiers (what a scout earned the pack) ----- */
+  // OWNER RULING, 2026-08-02: a tier threshold is the COMMISSION a scout has earned the pack —
+  // not the sales they rang up. "Reach $150" means "$150 landed in the pack's account". It is
+  // the only reading under which the two halves of a tier are in the same currency: a reward is
+  // priced in real dollars, so "does this tier pay for itself" becomes a subtraction rather than
+  // a rate sum, and the make-up payment for a missed deadline is exactly the money the pack
+  // didn't get. (Under the old sales basis a family paid a $50 sales gap to close a $15 hole.)
+  //
+  // Earned at each channel's OWN rate, because that is what the scout actually earned the pack:
+  // online money at the online rate, everything else at the base rate — the same split, and the
+  // same per-channel rounding, as computePackTotals. Consequence worth knowing: two scouts with
+  // identical sales can land either side of a tier when one sold online and the other at a
+  // storefront. That is not a flaw, it is the thing being measured.
+  //
+  // Third channel, 2026-08-02: cash the pack KEEPS earns nothing from Trail's End, but the pack
+  // may credit the scout a share of it anyway (cashScoutPct). Rounded on its own like the other
+  // two, and only ever added while the Trail's End toggle is off — with it on, that same cash is
+  // already inside goalBaseOf and has earned real commission, and adding a credit as well would
+  // pay the scout for it twice.
+  function scoutCommissionOf(r) {
+    var rates = commissionRates();
+    if (rates.base == null && rates.online == null && rates.cash == null) return null;
+    var online = r.t.onS + r.t.onD;
+    var other = goalBaseOf(r) - online;
+    return Math.round(online * (rates.online || 0) / 100)
+      + Math.round(other * (rates.base || 0) / 100)
+      + cashScoutCredit(cashDonOf(r));
+  }
+  // The sales that GUARANTEE a commission figure, worked out at the lower of the pack's two
+  // rates — the same rate the goal is derived at. Every other channel earns more per dollar, so
+  // a scout who sells this much reaches the tier whatever their mix; a scout who sells it all at
+  // the better rate gets there sooner. Rounded UP, because a minimum that lands a cent short is
+  // not a minimum. Null until a rate is set.
+  function salesForCommission(cents) {
+    var pct = commissionRates().goal;
+    if (pct == null || pct <= 0 || !cents) return null;
+    return Math.ceil(cents / (pct / 100));
+  }
+  // Whether tiers can be measured at all. With no rate anywhere there is no way to turn what a
+  // scout brought in into what the pack earned, so nothing is earned and the card has to say so
+  // rather than quietly showing every tier at zero scouts. A cash credit rate counts: a pack
+  // running a donations-only drive can measure tiers on that alone.
+  function tierRateMissing() {
+    var rates = commissionRates();
+    return rates.base == null && rates.online == null && rates.cash == null;
+  }
+  // Always work off a copy sorted ascending by threshold so display + logic agree without
+  // mutating stored order.
   function sortedTiers() {
     return state.rewardTiers.tiers.slice().sort(function (a, b) {
       return a.thresholdCents - b.thresholdCents || String(a.id).localeCompare(String(b.id));
     });
-  }
-  // Highest tier whose threshold ≤ base (tiers must be ascending); null if below tier 1.
-  function earnedTier(base, tiers) {
-    var earned = null;
-    for (var i = 0; i < tiers.length; i++) {
-      if (base >= tiers[i].thresholdCents) earned = tiers[i];
-      else break;
-    }
-    return earned;
   }
   // One roll-up reused by the budget, the Totals card, and the standings badges.
   // coveredCount = active scouts whose base ≥ the lowest (dues) tier's threshold.
@@ -7293,26 +7546,27 @@
       var set = out[t.id] = {};
       arrOf(t.madeUp).forEach(function (sid) { set[sid] = 'madeUp'; });
       roster.forEach(function (s) {
-        if (goalBaseOf({ t: totals[s.id] }) >= t.thresholdCents) set[s.id] = 'sold';
+        var earnedCents = scoutCommissionOf({ t: totals[s.id] });
+        if ((earnedCents == null ? 0 : earnedCents) >= t.thresholdCents) set[s.id] = 'earned';
       });
     });
     return out;
   }
-  // The highest tier this scout has reached, per the map. Replaces earnedTier() everywhere a
-  // DEADLINE could apply; earnedTier stays as the pure threshold rule underneath.
+  // The highest tier this scout has reached, per the map — the single reader of tierEarnedMap
+  // for "which level is this scout on", so a deadline and a make-up payment both land here.
   function earnedTierFor(scoutId, tiers, map) {
     var earned = null;
     for (var i = 0; i < tiers.length; i++) if ((map[tiers[i].id] || {})[scoutId]) earned = tiers[i];
     return earned;
   }
   function tierIsClosed(t) { return !!t.dueBy && todayISO() > t.dueBy; }
-  // WHAT A SCOUT HAS TO SELL FOR A TIER TO PAY FOR ITSELF — owner ask, 2026-07-27.
+  // WHAT A TIER IS WORTH, IN BOTH CURRENCIES — owner ask, 2026-07-27, rebased 2026-08-02.
   //
-  // A threshold is a SALES figure ("reach $250 in sales and online donations"), but what the
-  // pack gets from it is the COMMISSION on that — $75 at 30%. The rewards are priced in real
-  // dollars, so the two only meet at the break-even: the sales at which the commission covers
-  // what the tier hands back. Cumulative, because the tiers stack and so does what a scout at
-  // this level walks away with.
+  // The threshold is now the commission itself, so "what the pack gets" needs no conversion and
+  // "does it pay for itself" is threshold minus cover. What DOES need converting is the number a
+  // scout can act on: nobody sells commission. `needSales` is the sales that reach the threshold
+  // at the lower rate, which is the figure to put on a poster. Cover is cumulative, because the
+  // tiers stack and so does what a scout at this level walks away with.
   function tierCumulativeCoverCents(t) {
     var cents = 0;
     sortedTiers().forEach(function (o) {
@@ -7322,12 +7576,15 @@
   }
   function tierBreakEven(t) {
     var cover = tierCumulativeCoverCents(t);
-    var pct = commissionRates().goal;
+    var rates = commissionRates();
     var own = tierCoverCentsPerScout(t);
+    var earns = t.thresholdCents || 0;
     return {
-      cover: cover, own: own, pct: pct,
-      earns: pct == null ? null : Math.round((t.thresholdCents || 0) * pct / 100),
-      sales: (pct == null || pct <= 0 || !cover) ? null : Math.round(cover / (pct / 100))
+      cover: cover, own: own, pct: rates.goal, goalIsOnline: rates.goalIsOnline, split: rates.split,
+      // The threshold IS the commission — no rate involved, which is the whole point of the change.
+      earns: earns,
+      // What a scout has to SELL to get there — the one figure the threshold box cannot say.
+      needSales: salesForCommission(earns)
     };
   }
   // Who is owed a reimbursement, and what the ledger says has gone back. A family-direct line
@@ -7398,6 +7655,11 @@
   }
   // Who missed a tier, by how much, and what it costs them. `makeup` is the gap capped at the
   // fee: paying more to reach a tier than the tier saves you is nobody's rule.
+  //
+  // On the commission basis the shortfall is money, not sales — so paying it hands the pack
+  // exactly what the selling would have. (On the old sales basis a $50 gap earned the pack $15,
+  // and the family was asked for the $50.) `shortSales` is the same gap said the other way, for
+  // the family that would rather hear what it was in popcorn.
   function tierMissedRows(t, map) {
     if (!t.dueBy) return [];
     var totals = computeScoutTotals(t.dueBy);
@@ -7405,9 +7667,13 @@
     var earned = map || tierEarnedMap();
     return activeScouts().filter(function (s) { return !(earned[t.id] || {})[s.id]; })
       .map(function (s) {
-        var base = goalBaseOf({ t: totals[s.id] });
+        var got = scoutCommissionOf({ t: totals[s.id] });
+        var base = got == null ? 0 : got;
         var short = Math.max(0, (t.thresholdCents || 0) - base);
-        return { scout: s, base: base, short: short, cover: cover, makeup: Math.min(short, cover) };
+        return {
+          scout: s, base: base, short: short, cover: cover,
+          shortSales: salesForCommission(short), makeup: Math.min(short, cover)
+        };
       })
       .sort(function (a, b) { return a.short - b.short || a.scout.name.localeCompare(b.scout.name); });
   }
@@ -7488,9 +7754,7 @@
   // The SCOUT share of one line across everyone it applies to — what the pack would pick up
   // if every scout earned it. A tier never covers a head a family brought, so the adult and
   // sibling rates are not here.
-  function tierScoutShareForLine(r) {
-    return (r.line.scoutRateCents || 0) * lineRoster(r.line).length;
-  }
+  function tierScoutShareForLine(r) { return lineFamilyPlanned(r.line); }
   // What a set of collect keys costs the pack across the roster, itemised.
   // What a set of cover keys costs the pack across the roster, itemised — and split by where
   // that money already sits:
@@ -7507,7 +7771,7 @@
       var reimb = lineIsFamilyDirect(r.line);
       COVER_WHO.forEach(function (who) {
         if (!keys[coverKeyOf(r.key, who)]) return;
-        var cents = lineRateForWho(r.line, who) * lineRoster(r.line).length;
+        var cents = lineRateForWho(r.line, who) * lineBillingRoster(r.line).length;
         if (cents <= 0) return;
         lines.push({
           name: (r.line.name || ('Untitled ' + r.kind)) + (who === 'scout' ? '' : ' · ' + who),
@@ -7532,16 +7796,19 @@
     var pt = plannedTier();
     var roster = activeScouts().length;
     var cost = coverCostForKeys(pt ? plannedCoverKeys() : {});
-    var sales = pt ? (pt.thresholdCents || 0) * roster : 0;
     var pct = commissionRates().goal;
-    var commission = (pt && pct != null && pct > 0) ? Math.round(sales * pct / 100) : null;
+    // The promise is a commission figure per scout, so the roster multiplies it directly — the
+    // rate is only needed to say what that means in sales, and the plan no longer depends on it.
+    var commission = pt ? (pt.thresholdCents || 0) * roster : 0;
+    var sales = salesForCommission(commission);
     return {
       planned: pt, roster: roster, sales: sales, commission: commission, pct: pct,
       // picked = the lot. fees = the part that was family income; extra = the part the pack buys
       // outright (an adult or sibling share), which is new spending in A rather than lost income.
       picked: cost.picked, fees: cost.fees, extra: cost.extra, lines: cost.lines,
-      // Positive = the commission on those sales more than pays for the rewards it earns.
-      net: commission == null ? null : commission - cost.picked,
+      // Positive = what the pack earns at that level more than pays for the rewards it promises.
+      // Both sides are commission, so this needs no rate and holds even before one is set.
+      net: commission - cost.picked,
       on: !!pt,
       // Everything above the planned tier, each with its own margin: reaching it means selling
       // the gap up from the tier below, and the commission on that gap is what has to cover
@@ -7556,10 +7823,11 @@
           var k = {}; arrOf(t.covers).forEach(function (x) { k[x] = true; }); return k;
         })());
         var perScout = roster > 0 ? Math.round(extra.picked / roster) : extra.picked;
-        var earns = (pct != null && pct > 0) ? Math.round(gap * pct / 100) : null;
+        // The gap IS the extra commission this level earns, so the margin needs no rate. The
+        // rate only says how much more popcorn that is — the number the scout has to act on.
         return {
-          tier: t, gap: gap, earns: earns, costPerScout: perScout,
-          net: earns == null ? null : earns - perScout
+          tier: t, gap: gap, earns: gap, gapSales: salesForCommission(gap),
+          costPerScout: perScout, net: gap - perScout
         };
       })
     };
@@ -7655,9 +7923,42 @@
         : 'The pack <strong>keeps 100%</strong> — no commission, excluded from the Trail’s End goal, and counted toward the cash donations goal instead.') +
       ' Either way they show on the cash-donations board and fund the pack budget. ' +
       '(Trail’s End calls these Heroes &amp; Helpers donations — recorded per scout in their app.)</p>' +
-      '<p class="small muted" style="margin:6px 0 0">These four settings are shared — the same card sits on Popcorn and on Money, ' +
+      // The scout's share of kept cash. Only offered while the pack keeps it: with the toggle on
+      // the donation earns real commission and a credit on top would count it twice, so the field
+      // is not merely disabled here, it is not on the screen to be misread.
+      (packT.viaTE ? '' : cashCreditField(packT)) +
+      '<p class="small muted" style="margin:6px 0 0">These settings are shared — the same card sits on Popcorn and on Money, ' +
       'because the Kernel sets the goals and the Treasurer needs the rate.</p>' +
       '</div>';
+  }
+  // The cash-credit rate and what it is doing to this season's donations. Split out of the
+  // Season setup card because it is only ever half of that card, and reads better as one block
+  // than as a field at the top and its explanation forty lines further down.
+  function cashCreditField(packT) {
+    var cc = cashCreditTotals();
+    var h = '<div class="row" style="margin-top:8px">' +
+      '<label class="fld">Scout credit on cash (%)' +
+      '<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" ' +
+      'data-ch="cash-scout-pct" value="' + esc(state.cashScoutPct) + '" placeholder="none"></label>' +
+      '</div>' +
+      '<p class="small muted" style="margin:6px 0 0">Of the cash the pack keeps, this much counts toward the ' +
+      '<strong>reward tiers</strong> of the scout who brought it in — the same way commission does for popcorn. ' +
+      'The pack still banks every cent: nothing is paid out and no scout has an account of their own, ' +
+      'which is what Scouting America’s budgeting guidance asks of money raised in the pack’s name. ' +
+      'The rate only decides how much of a donation a tier has a claim on; the rest is money the budget ' +
+      'can spend with nothing owed against it. Leave it blank and cash earns a scout nothing.</p>';
+    if (cc.on) {
+      h += '<p class="small muted" style="margin:6px 0 0"><span class="money">' + fmt(cc.kept) + '</span> kept so far — ' +
+        '<span class="money">' + fmt(cc.credited) + '</span> of it credited to scouts at ' + esc(String(cc.rate)) + '%, ' +
+        '<span class="money">' + fmt(cc.free) + '</span> with no tier claim on it.' +
+        (cc.kept > 0 && cc.credited === 0
+          ? ' <strong>None of it is credited to anybody</strong> — that cash is on storefront blocks with no scouts assigned.'
+          : '') + '</p>';
+    } else if (packT.cashDon > 0) {
+      h += '<p class="small muted" style="margin:6px 0 0">Right now <span class="money">' + fmt(packT.cashDon) +
+        '</span> of cash earns the scouts who brought it in nothing toward their tiers.</p>';
+    }
+    return h;
   }
   // Phase 1 — the "Actual" box on a budget row is gone. Actual is no longer something you
   // type next to the plan; it is what the ledger says was paid. This button reports that
@@ -7787,10 +8088,18 @@
       var famWord = lineDens(l).length ? ' ' + esc(denListLabel(lineDens(l))) : ' active';
       h += '<span class="brow-break"></span>' +
         '<label class="att-mini">per family<input class="money-in" inputmode="decimal" data-ch="line-scout-rate" data-id="' + l.id + '" value="' + dollars(l.scoutRateCents) + '" placeholder="0.00"></label>' +
-        '<span class="small muted brow-note">One fee per family, whoever they bring \u2014 so no adult or sibling ' +
-        'price, and a reward tier covering it covers the lot. Counted once per scout: ' + scoutN + famWord +
-        ' scout' + (scoutN === 1 ? '' : 's') + ', which is one too many for any two of them who are ' +
-        'brothers or sisters. The app has no way to know that yet, and it errs high.</span>';
+        (function () {
+          var fams = familiesOf(lineRoster(l));
+          var linked = scoutN - fams.length;
+          return '<span class="small muted brow-note">One fee per family, whoever they bring \u2014 so no adult or ' +
+            'sibling price, and a reward tier covering it covers the lot. Counted once per family: <strong>' +
+            fams.length + '</strong> famil' + (fams.length === 1 ? 'y' : 'ies') + ' across ' + scoutN + famWord +
+            ' scout' + (scoutN === 1 ? '' : 's') + '. ' +
+            (linked > 0
+              ? 'Brothers and sisters are linked on Scouts \u00b7 Roster, so this is not counting them twice.'
+              : 'If any of them are brothers or sisters, link them on Scouts \u00b7 Roster and this stops counting ' +
+                'the same fee twice.') + '</span>';
+        })();
     } else if (perHead) {
       var denWord = lineDens(l).length ? ' ' + esc(denListLabel(lineDens(l))) : ' active';
       h += '<span class="brow-break"></span>' +
@@ -8023,6 +8332,14 @@
       (fs2.tierExtra
         ? '<tr><td class="fund-sub">…of which reward tiers buy for adults or siblings</td>' +
           '<td class="num money">' + fmt(fs2.tierExtra) + '</td></tr>'
+        : '') +
+      // Covering the leaders is a deliberate, visible cost. It is inside A, never in B — no family
+      // is billed for a leader's place — so popcorn carries it, which is exactly "split it amongst
+      // the scouts": every scout's share of the goal already includes their share of this.
+      (fs2.leaderPlanned
+        ? '<tr><td class="fund-sub">…of which leaders\u2019 places the pack covers' +
+          (fs2.leaderPerScout ? ' <span class="muted">(' + fmt(fs2.leaderPerScout) + ' a scout on the goal)</span>' : '') +
+          '</td><td class="num money">' + fmt(fs2.leaderPlanned) + '</td></tr>'
         : '') +
       '<tr><td class="fund-sub">Carryover from last year</td><td class="num money">' + fmt(fs2.carryover) + '</td></tr>' +
       // Money the pack has decided popcorn will pick up is NOT in B — that is the whole point
@@ -9830,17 +10147,29 @@
     }
     h += '</div>';
 
-    // Cash board — only meaningful while the pack keeps the cash.
+    // Cash board — only meaningful while the pack keeps the cash. A pack that credits a share of
+    // it toward tiers gets a fifth column: the total is what the scout brought in, the credit is
+    // what it earned them, and those are two different numbers a kernel is asked about weekly.
     if (rows.length && !pack.viaTE) {
+      var cc = cashCreditTotals();
       h += '<div class="card"><h2 class="section display">Cash donation standings</h2>' +
-        '<div class="tbl-wrap"><table><caption class="visually-hidden">Cash donation standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront</th><th scope="col" class="num">Wagon</th><th scope="col" class="num">Total cash</th></tr></thead><tbody>';
+        '<div class="tbl-wrap"><table><caption class="visually-hidden">Cash donation standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront</th><th scope="col" class="num">Wagon</th><th scope="col" class="num">Total cash</th>' +
+        (cc.on ? '<th scope="col" class="num">Earned</th>' : '') + '</tr></thead><tbody>';
       rankBy(rows, cashDonOf).forEach(function (r, i) {
         h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + (r.archived ? ' <span class="pill navy">archived</span>' : '') + '</td>' +
           '<td class="num">' + fmt(r.t.storeD) + '</td><td class="num">' + fmt(r.t.wagonD) + '</td>' +
-          '<td class="num" style="font-weight:650">' + fmt(cashDonOf(r)) + '</td></tr>';
+          '<td class="num" style="font-weight:650">' + fmt(cashDonOf(r)) + '</td>' +
+          (cc.on ? '<td class="num money">' + fmt(cashScoutCredit(cashDonOf(r))) + '</td>' : '') + '</tr>';
       });
       h += '</tbody></table></div>' +
-        '<p class="small muted" style="margin:8px 0 0">Cash credited to each scout — their split of storefront-table donations plus wagon donations logged to them (wagon isn’t split). The pack keeps all of it.</p></div>';
+        '<p class="small muted" style="margin:8px 0 0">Cash credited to each scout — their split of storefront-table donations plus wagon donations logged to them (wagon isn’t split). The pack keeps all of it.' +
+        (cc.on
+          ? ' <strong>Earned</strong> is the ' + esc(String(cc.rate)) + '% that counts toward that scout’s reward tiers — ' +
+            '<span class="money">' + fmt(cc.credited) + '</span> of the <span class="money">' + fmt(cc.kept) +
+            '</span> kept, leaving <span class="money">' + fmt(cc.free) + '</span> no tier has a claim on. ' +
+            'It is credit, not a payout: none of it is handed to a scout.'
+          : ' None of it counts toward a tier — set a <strong>scout credit</strong> rate in Season setup if it should.') +
+        '</p></div>';
     }
 
     // Combined board — Trail's End plus cash. Same reason to hide it: with cash routed
@@ -9854,7 +10183,15 @@
           '<td class="num" style="font-weight:650">' + fmt(r.t.combined) + '</td></tr>';
       });
       h += '</tbody></table></div>' +
-        '<p class="small muted" style="margin:8px 0 0">Everything a scout brought in, however it was paid. Reward tiers are earned on the Trail’s End figure, not this one.</p></div>';
+        '<p class="small muted" style="margin:8px 0 0">Everything a scout brought in, however it was paid. ' +
+        // Once cash carries a credit this total is no longer "the bit that counts and the bit
+        // that doesn't" — both halves count, at different rates. Saying tiers ride on Trail's
+        // End alone would be plainly wrong on the same screen that shows the cash credit.
+        (cashCreditOn()
+          ? 'Reward tiers are earned on what the pack <em>keeps</em> from it — commission on the Trail’s End side, ' +
+            'the cash credit on the other — so neither column reads across to a tier on its own.'
+          : 'Reward tiers are earned on the <em>commission</em> the Trail’s End figure pays the pack, not on this total.') +
+        '</p></div>';
     }
 
     // Wave 21 — "Other fundraisers" moved to Money · Fundraisers. It sat at the bottom of
@@ -9993,24 +10330,52 @@
     var planned = plannedTier();
     var configured = tierCoverageConfigured();
 
+    // What a threshold MEANS, said once at the top: it is commission, and the rate that turns it
+    // back into popcorn is named, because a scout can only act on the sales figure.
+    var beRates = commissionRates();
     var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
-      '<p class="small muted" style="margin:0 0 10px">Scouts earn a tier by their <strong>' + baseLabel +
-      '</strong> total — the same figure as the goal standings above. Each tier can cover any ' +
+      '<p class="small muted" style="margin:0 0 10px">A tier threshold is <strong>what the scout earned the pack</strong> — ' +
+      'commission, not sales. Their ' + baseLabel + ' earn it at each channel’s own rate' +
+      (beRates.split
+        ? ' (' + esc(String(beRates.base)) + '% at a storefront or wagon, ' + esc(String(beRates.online)) + '% online)'
+        : '') +
+      // Cash the pack keeps earns no commission, so if it counts toward a tier at all it is
+      // because the pack said so — name the rate here or the board looks wrong to anyone adding
+      // a scout's sales up by hand.
+      (beRates.cash == null ? '' : ', plus ' + esc(String(beRates.cash)) + '% of any cash donation they brought in') +
+      ', and every tier below also says what that is in <strong>sales</strong>, worked out at ' +
+      (beRates.goal == null ? 'your commission rate' : 'your lower rate of ' + esc(String(beRates.goal)) + '%') +
+      ' so the figure is one a scout can hit whatever they sell' +
+      (beRates.cash == null ? '' : ' — cash on top of it, not counted in it') +
+      '. Each tier can cover any ' +
       '<strong>“families pay”</strong> charge, and where a line prices an adult or a sibling too, ' +
       'each of those is its own thing to cover — so one tier can buy the scout’s shirt and a higher one an ' +
       'adult’s. Tiers <strong>stack</strong>: reaching tier 3 also gets you what tiers 1 and 2 cover, so a higher ' +
       'tier only needs to name what it ADDS. A tier that covers nothing is fine too — that’s how you record a ' +
       'prize or a patch. These are pack rewards, separate from Trail’s End’s own program in their app.</p>';
 
+    // Without a rate there is no way to turn a scout's sales into what the pack earned, so every
+    // tier would sit at nought scouts with nothing on screen explaining why. Say it instead.
+    if (tierRateMissing() && sum.tiers.length) {
+      h += '<p class="warn small" style="margin:0 0 10px">No commission rate set, so nothing can be measured — ' +
+        'a threshold is commission earned, and without a rate the pack has earned an unknown amount. ' +
+        'Set it in <strong>Season setup</strong> and every tier below fills in.</p>';
+    }
+
     if (sum.tiers.length) {
       sum.tiers.forEach(function (t, i) {
         var k = sum.perTierCounts[t.id] || 0;
         var covers = arrOf(t.covers);
         h += '<div class="block-card" style="margin-top:8px">' +
-          '<div class="tier-row" style="margin:0">' +
+          // Bottom-aligned because the threshold box now carries a caption and the others don't:
+          // an unlabelled money box between a name and a reward was read as the reward's price,
+          // which is exactly the misreading this whole change is fixing.
+          '<div class="tier-row" style="margin:0;align-items:flex-end">' +
           '<span class="flow-n" aria-hidden="true">' + (i + 1) + '</span>' +
           '<input class="tname" data-ch="tier-name" data-id="' + t.id + '" value="' + esc(t.name) + '" placeholder="Tier name" aria-label="Tier name">' +
-          '<input class="money-in" inputmode="decimal" data-ch="tier-threshold" data-id="' + t.id + '" value="' + dollars(t.thresholdCents) + '" placeholder="0.00" aria-label="Reach amount">' +
+          '<label class="fld">Commission ($)' +
+          '<input class="money-in" inputmode="decimal" data-ch="tier-threshold" data-id="' + t.id + '" value="' + dollars(t.thresholdCents) + '" placeholder="0.00" aria-label="Commission the scout has earned the pack to reach this tier">' +
+          '</label>' +
           '<input class="treward" data-ch="tier-reward" data-id="' + t.id + '" value="' + esc(t.reward) + '" placeholder="Reward (e.g. pack t-shirt)" aria-label="Reward">' +
           '<span class="small muted">' + k + ' scout' + (k === 1 ? '' : 's') + '</span>' +
           // Where this tier stands relative to the one the pack plans on. Navy = the budget is
@@ -10023,33 +10388,47 @@
           '</div>' +
           // The deadline. Sales dated after it do not count toward this tier, so it is part of
           // the tier's definition rather than a reminder — hence it sits with the threshold.
+          // The date box only exists once there IS a deadline, or once somebody asks for one.
+          // Most tiers have none, and an always-present empty date field is both clutter and a
+          // thing to mis-tap — a native date input that has been touched can sit there showing a
+          // date the tier does not have, which is exactly what it looked like.
           '<div class="row" style="margin:8px 0 0;align-items:flex-end">' +
-          '<label class="fld">Reach it by<input type="date" data-ch="tier-due" data-id="' + t.id + '" value="' + esc(t.dueBy || '') + '"></label>' +
+          ((t.dueBy || ui.tierDueOpen[t.id])
+            ? '<label class="fld">Reach it by<input type="date" data-ch="tier-due" data-id="' + t.id + '" value="' + esc(t.dueBy || '') + '"></label>' +
+              (t.dueBy
+                ? '<button type="button" class="btn small ghost" data-act="tier-due-clear:' + esc(t.id) + '">Remove deadline</button>'
+                : '')
+            : '<button type="button" class="btn small ghost" data-act="tier-due-open:' + esc(t.id) + '">+ Add a deadline</button>') +
           '<span class="small muted" style="flex:1 1 200px">' + esc(tierDeadlineText(t)) + '</span>' +
           '</div>' +
           // What the threshold means in the two currencies a pack thinks in: the sales a scout
           // has to ring up, and the commission that leaves the pack with.
           (function () {
             var be = tierBreakEven(t);
+            // The sales figure first, always — it is the only one a scout can act on, and it is
+            // the thing the threshold box does NOT say. "Or more" because the lower rate is a
+            // guarantee: sell the same amount at the better rate and you arrive early.
+            var sell = be.needSales == null
+              ? '<strong>Set a commission rate</strong> to see what that is in sales.'
+              : 'A scout gets there on <strong class="money">' + fmt(be.needSales) + '</strong> of ' +
+                baseLabel + ' — or less, if they sell where the pack earns ' +
+                (be.split ? 'the better ' + esc(String(Math.max(beRates.base, beRates.online))) + '%' : 'more') + '.' +
+                (beRates.cash == null ? '' : ' Cash donations count too, at ' + esc(String(beRates.cash)) + '% of what they bring in.');
             if (!be.cover) {
-              return '<span class="small muted" style="display:block;margin-top:4px">Reaching it means ' +
-                fmt(t.thresholdCents) + ' of sales and online donations' +
-                (be.earns == null ? '' : ', which earns the pack ' + fmt(be.earns) + ' in commission') +
-                '. This tier hands nothing back, so it costs the pack nothing.</span>';
+              return '<span class="small" style="display:block;margin-top:4px;color:var(--ink-soft)">Reaching it means the scout ' +
+                'has earned the pack <strong class="money">' + fmt(be.earns) + '</strong>. ' + sell +
+                ' This tier hands nothing back, so it costs the pack nothing.</span>';
             }
-            if (be.sales == null) {
-              return '<span class="small muted" style="display:block;margin-top:4px">Hands back ' + fmt(be.cover) +
-                ' a scout. Set a commission rate to see what that needs in sales.</span>';
-            }
-            var clears = (t.thresholdCents || 0) >= be.sales;
-            return '<span class="small" style="display:block;margin-top:4px;color:var(--ink-soft)">Reaching it means <strong>' +
-              fmt(t.thresholdCents) + '</strong> of sales → <strong class="money">' + fmt(be.earns) +
-              '</strong> commission at ' + esc(String(be.pct)) + '%, against <strong class="money">' + fmt(be.cover) +
-              '</strong> handed back' + (be.own !== be.cover ? ' by this tier and the ones below it' : '') + '. ' +
+            // Both sides are commission now, so this is a subtraction — no rate in it, and it
+            // cannot disagree with the sales line above, which is derived from the same figure.
+            var clears = be.earns >= be.cover;
+            return '<span class="small" style="display:block;margin-top:4px;color:var(--ink-soft)">Reaching it means the scout ' +
+              'has earned the pack <strong class="money">' + fmt(be.earns) + '</strong>, against <strong class="money">' +
+              fmt(be.cover) + '</strong> handed back' + (be.own !== be.cover ? ' by this tier and the ones below it' : '') + '. ' +
               (clears
-                ? '<span class="pill navy">pays for itself</span>'
-                : 'A scout would need <strong class="money">' + fmt(be.sales) +
-                  '</strong> of sales for the commission to cover it.') + '</span>';
+                ? '<span class="pill navy">pays for itself</span> '
+                : '<span class="pill bad">costs ' + fmt(be.cover - be.earns) + ' a scout</span> ') +
+              sell + '</span>';
           })() +
           // One tier at a time is "the level we plan on". Ticking another moves it; unticking
           // plans on none. A tier below the chosen one is included automatically — coverage
@@ -10097,8 +10476,10 @@
           } else {
             missed.forEach(function (m) {
               h += '<div class="assign-row"><span class="assign-name">' + esc(m.scout.name) +
-                ' <span class="small muted">sold ' + fmt(m.base) + ' of ' + fmt(t.thresholdCents) +
-                ' — short <strong class="money">' + fmt(m.short) + '</strong></span></span>' +
+                ' <span class="small muted">earned the pack ' + fmt(m.base) + ' of ' + fmt(t.thresholdCents) +
+                ' — short <strong class="money">' + fmt(m.short) + '</strong>' +
+                (m.shortSales == null ? '' : ' (' + fmt(m.shortSales) + ' more of sales)') +
+                '</span></span>' +
                 '<span class="small">owes <strong class="money">' + fmt(m.cover) + '</strong></span>' +
                 (m.makeup > 0
                   ? '<button type="button" class="btn small" data-act="tier-makeup:' + esc(t.id) + ':' + esc(m.scout.id) + '">' +
@@ -10107,7 +10488,8 @@
                 '</div>';
             });
             h += '<p class="small muted" style="margin:6px 0 0">They either pay the fee, or pay the difference to reach the tier — ' +
-              'whichever the family chooses. The difference is capped at the fee, because paying more to reach a tier than the tier ' +
+              'whichever the family chooses. The difference is the commission the pack didn’t get, so paying it leaves the pack ' +
+              'exactly where the selling would have. It is capped at the fee, because paying more to reach a tier than the tier ' +
               'saves you is not a rule anybody means. Recording it puts the money in the ledger as a family payment and covers ' +
               'the fee from then on.</p>';
           }
@@ -10150,15 +10532,16 @@
         h += '</div>';
       });
     } else {
-      h += '<div class="empty" style="margin:4px 0 6px">No reward tiers yet. Add one below — for example, reach $600 and the pack covers that scout’s dues.</div>';
+      h += '<div class="empty" style="margin:4px 0 6px">No reward tiers yet. Add one below — for example, earn the pack $150 and it covers that scout’s dues.</div>';
     }
 
     // WHICH TIER DO YOU PLAN ON? Coverage above is what has actually been sold, so in July it is
     // nobody. Naming a tier here is the pack saying "we expect everyone to get this far, and we
     // are budgeting to pay for it" — and everything above that tier is a stretch the budget
     // deliberately leaves out. The check is the whole reason this is safe to offer: a tier
-    // everybody reaches is a known quantity of SALES, and the commission on them either pays for
-    // what was promised or does not.
+    // everybody reaches is a known quantity of COMMISSION, and it either pays for what was
+    // promised or does not. No rate is needed to answer that any more — only to say what the
+    // promise is in popcorn.
     var ta = tierAssumption();
     if (ta) {
       h += '<hr class="divider"><p class="eyebrow">What the plan counts on</p>';
@@ -10173,7 +10556,7 @@
         // pack buying something outright. Calling both "family fees" would be wrong about the
         // second one, and it is the one that adds to A.
         h += '<p class="small" style="margin:0">Planning on <strong>' + esc(ta.planned.name || 'a tier') + '</strong> (' +
-          fmt(ta.planned.thresholdCents) + '): the plan takes on <strong class="money">' + fmt(ta.picked) +
+          fmt(ta.planned.thresholdCents) + ' earned a scout): the plan takes on <strong class="money">' + fmt(ta.picked) +
           '</strong>' +
           (ta.extra
             ? ' \u2014 <strong class="money">' + fmt(ta.fees) + '</strong> of family fees it stops expecting, plus <strong class="money">' +
@@ -10183,12 +10566,12 @@
         if (ta.picked > 0) {
           var reachWord = ta.roster === 1 ? 'scout reaches' : 'scouts reach';
           h += '<p class="small" style="margin:6px 0 0">If all <strong>' + ta.roster + '</strong> ' + reachWord + ' it, ' +
-            'that is <strong class="money">' + fmt(ta.sales) + '</strong> sold' +
-            (ta.commission == null
-              ? ' \u2014 set a commission rate to see what it earns.'
-              : ' \u2192 <strong class="money">' + fmt(ta.commission) + '</strong> commission at ' +
-                esc(String(ta.pct)) + '%, against <strong class="money">' + fmt(ta.picked) +
-                '</strong> of rewards.') + '</p>';
+            'the pack has earned <strong class="money">' + fmt(ta.commission) + '</strong>, against <strong class="money">' +
+            fmt(ta.picked) + '</strong> of rewards' +
+            (ta.sales == null
+              ? ' \u2014 set a commission rate to see what that is in sales.'
+              : ' \u2014 which takes <strong class="money">' + fmt(ta.sales) + '</strong> of sales at ' +
+                esc(String(ta.pct)) + '%.') + '</p>';
           if (ta.net != null) {
             h += '<p class="small" style="margin:4px 0 0">' + (ta.net >= 0
               ? '<span class="pill navy">clears it</span> The commission those sales earn covers it with <strong class="money">' +
@@ -10199,8 +10582,8 @@
         }
       }
       // The stretch tiers, each judged at the MARGIN: one scout going from the tier below to this
-      // one sells the gap, and the commission on that gap is what has to cover the extra fees.
-      // This is the question a pack actually has when it writes a big reward on a poster.
+      // one earns the pack the gap, and that gap is what has to cover the extra fees the level
+      // picks up. This is the question a pack actually has when it writes a reward on a poster.
       if (ta.stretch.length) {
         h += '<p class="eyebrow" style="margin:12px 0 4px">Stretch tiers \u2014 not in the budget</p>';
         ta.stretch.forEach(function (s) {
@@ -10209,15 +10592,17 @@
               ? ' <span class="pill navy">pays for itself</span>'
               : ' <span class="pill bad">costs ' + fmt(-s.net) + ' a scout</span>');
           h += '<div class="assign-row"><span class="assign-name">' + esc(s.tier.name || 'Tier') +
-            ' <span class="small muted">' + fmt(s.tier.thresholdCents) +
-            (s.gap ? ' \u2014 ' + fmt(s.gap) + ' more a scout' : '') +
-            (s.earns == null ? '' : ', earning ' + fmt(s.earns)) +
+            ' <span class="small muted">' + fmt(s.tier.thresholdCents) + ' earned' +
+            (s.gap
+              ? ' \u2014 ' + fmt(s.gap) + ' more a scout' +
+                (s.gapSales == null ? '' : ' (' + fmt(s.gapSales) + ' of sales)')
+              : '') +
             (s.costPerScout ? ' against ' + fmt(s.costPerScout) + ' of cover' : ', covering nothing') +
             '</span></span>' + verdict + '</div>';
         });
         h += '<p class="small muted" style="margin:6px 0 0">Honoured the moment a scout earns one \u2014 they are just not ' +
-          'budgeted for, because nobody should plan a year on the best case. Each line asks whether the extra sales that ' +
-          'earn it pay for it, one scout at a time.</p>';
+          'budgeted for, because nobody should plan a year on the best case. Each line asks whether the extra the pack ' +
+          'earns at that level pays for what it hands back, one scout at a time.</p>';
       }
     }
 
@@ -10260,7 +10645,7 @@
     // Add-tier mini-form.
     h += '<form data-form="add-reward-tier" class="row" style="margin-top:10px">' +
       '<label class="fld">Tier name<input name="name" placeholder="e.g. Dues covered" style="width:150px"></label>' +
-      '<label class="fld">Reach ($)<input class="money-in" inputmode="decimal" name="threshold" placeholder="0.00"></label>' +
+      '<label class="fld">Commission ($)<input class="money-in" inputmode="decimal" name="threshold" placeholder="0.00"></label>' +
       '<label class="fld">Reward<input name="reward" placeholder="e.g. Pack pays dues" style="width:160px"></label>' +
       '<button class="btn primary small" type="submit" style="align-self:flex-end">Add tier</button>' +
       '</form>';
@@ -10783,8 +11168,10 @@
     });
     lines.push('');
     lines.push('Standings — cash donations:');
+    var ccx = cashCreditTotals();
     rankBy(rows, cashDonOf).forEach(function (r, i) {
-      lines.push((i + 1) + '. ' + r.name + ' — ' + fmt(cashDonOf(r)));
+      lines.push((i + 1) + '. ' + r.name + ' — ' + fmt(cashDonOf(r)) +
+        (ccx.on ? ' (' + fmt(cashScoutCredit(cashDonOf(r))) + ' toward their tiers)' : ''));
     });
     return lines.join('\n');
   }
@@ -12692,7 +13079,7 @@
       state.book.openingDate = programYearStartISO(b.programYear);
     }
     state.goalCents = 0;      // re-derived from the new plan
-    state.cashGoalCents = 0;  // (commissionPct + cashThroughTrailsEnd are KEPT)
+    state.cashGoalCents = 0;  // (commissionPct, cashThroughTrailsEnd and cashScoutPct are KEPT)
     // Everyone moves up a den; Arrow of Light scouts crossed over — archived, name kept
     // for history. Wave 19(3): SKIPPED when the Pack tab's "Advance dens" button already
     // advanced this roster for the closing year (densAdvancedYear === closingYear).
@@ -13641,6 +14028,19 @@
     // ordinary family payment, because it really arrived and has to be reconcilable; the fact
     // that the tier is now satisfied goes on the TIER, because that is a decision the pack
     // made, not a transaction. From here the normal waiver machinery covers the fee.
+    if (act.indexOf('tier-due-open:') === 0) {
+      ui.tierDueOpen[act.split(':')[1]] = true;
+      render(); return;
+    }
+    if (act.indexOf('tier-due-clear:') === 0) {
+      var dcId = act.split(':')[1];
+      var dcT = state.rewardTiers.tiers.find(function (t) { return t.id === dcId; });
+      if (!dcT) return;
+      dcT.dueBy = '';
+      // Put the box away with the date, so "no deadline" looks like no deadline.
+      ui.tierDueOpen[dcId] = false;
+      commit(); return;
+    }
     if (act.indexOf('tier-makeup:') === 0) {
       var mkP = act.split(':');
       var mkT = state.rewardTiers.tiers.find(function (t) { return t.id === mkP[1]; });
@@ -14046,6 +14446,10 @@
     if (ch === 'cash-goal') { state.cashGoalCents = toCents(el.value); commit(); return; }
     if (ch === 'stretch-goal') { state.stretchGoalCents = toCents(el.value); commit(); return; }
     if (ch === 'cash-via-te') { state.cashThroughTrailsEnd = el.checked; commit(); return; }
+    // Blank = cash earns a scout nothing, which is what every pack record meant before the
+    // field existed. Kept as typed (like the commission rates) so a half-typed "3" on the way
+    // to "30" doesn't get normalized out from under the cursor.
+    if (ch === 'cash-scout-pct') { state.cashScoutPct = el.value; commit(); return; }
     if (ch === 'pack-name') { state.packName = el.value.trim(); commit(); return; }
     if (ch === 'fr-goal') {
       var frG = getFundraiser(el.dataset.id);
@@ -14133,12 +14537,21 @@
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
-    if (ch === 'scout-name' || ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' || ch === 'scout-den') {
+    if (ch === 'scout-name' || ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' ||
+        ch === 'scout-den' || ch === 'scout-family') {
       var scEd = getScout(el.dataset.id);
       if (!scEd) return;
       // Trimmed on the way in, exactly like a leader's name — a trailing space is invisible
       // and would sort and shorten differently from the same name without one.
-      if (ch === 'scout-name') scEd.name = el.value.trim();
+      if (ch === 'scout-family') {
+        // Joining somebody joins their FAMILY, not just them: the key is taken from the scout
+        // picked, so linking a third to either of two siblings puts all three together. Choosing
+        // nobody makes this scout a family of one again and leaves the others as they were.
+        var tgt = el.value ? getScout(el.value) : null;
+        scEd.familyId = tgt ? familyKeyOf(tgt) : '';
+        // A scout cannot be their own link — that is what an empty familyId already means.
+        if (scEd.familyId === scEd.id) scEd.familyId = '';
+      } else if (ch === 'scout-name') scEd.name = el.value.trim();
       else if (ch === 'scout-renew') scEd.renewalMonth = el.value;
       else if (ch === 'scout-denlabel') scEd.denLabel = el.value;
       else if (ch === 'scout-den') scEd.den = DENS.indexOf(el.value) === -1 ? '' : el.value;
@@ -14490,7 +14903,7 @@
       commit(); return;
     }
     if (kind === 'add-reward-tier') {
-      // Wave 8 — need at least a name or a reach amount to make a meaningful tier.
+      // Wave 8 — need at least a name or a commission figure to make a meaningful tier.
       var tName = String(fd.get('name') || '').trim();
       var tThresh = toCents(fd.get('threshold'));
       var tReward = String(fd.get('reward') || '').trim();
