@@ -810,7 +810,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'DENS',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
-  'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
+  'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS', 'freshCamping',
   'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'CHARGE_WHO',
   'linePerHead', 'linePlannedHeads', 'linePlannedCents',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
@@ -1001,6 +1001,14 @@ const tpCtx = (() => {
     function scoutCommissionOf() { return COMM; }
     function salesForCommission(c) { return NO_SALES ? null : (c ? Math.ceil(c / 0.30) : null); }
     function tierCumulativeCoverCents(t) { return t.cover || 0; }
+    function tierCoverCentsPerScout(t) { return t.fee == null ? (t.cover || 0) : t.fee; }
+    ${slice('arrOf')}
+    // Values a key set: each stub tier declares covers:['k'] and KEY_VALUE prices them, so the
+    // set-difference behaviour can be tested without a budget.
+    var KEY_VALUE = {};
+    function coverValueOfKeys(keys) {
+      var c = 0; Object.keys(keys).forEach(function (k) { c += KEY_VALUE[k] || 0; }); return c;
+    }
     function todayISO() { return '2026-08-02'; }
   `, ctx);
   return ctx;
@@ -1010,29 +1018,56 @@ function tp(opts) {
   Object.assign(tpCtx, {
     TIERS: opts.tiers, MAP: opts.map || {}, SCOUTS: opts.scouts,
     COMM: opts.comm == null ? 0 : opts.comm,
-    NO_RATE: !!opts.noRate, NO_SALES: !!opts.noSales
+    NO_RATE: !!opts.noRate, NO_SALES: !!opts.noSales,
+    KEY_VALUE: opts.keyValue || {}
   });
   tpCtx.TOTALS_CALLS = [];
   return tpCtx.tierProgressRows();
 }
+// Each tier covers a DISTINCT key, priced by TP_KEYS — so "what does reaching this add" is a set
+// difference over keys rather than a subtraction of two running totals.
 const TP_TIERS = [
-  { id: 'b', name: 'Bronze', thresholdCents: 5000, cover: 2000 },
-  { id: 's', name: 'Silver', thresholdCents: 15000, cover: 9500 },
-  { id: 'g', name: 'Gold', thresholdCents: 30000, cover: 20000, dueBy: '2026-11-30' },
-  { id: 'p', name: 'Platinum', thresholdCents: 50000, cover: 30000, dueBy: '2026-07-01' }
+  { id: 'b', name: 'Bronze', thresholdCents: 5000, covers: ['neck'], fee: 2000 },
+  { id: 's', name: 'Silver', thresholdCents: 15000, covers: ['dues'], fee: 7500 },
+  { id: 'g', name: 'Gold', thresholdCents: 30000, covers: ['camp'], fee: 10500, dueBy: '2026-11-30' },
+  { id: 'p', name: 'Platinum', thresholdCents: 50000, covers: ['uniform'], fee: 10000, dueBy: '2026-07-01' }
 ];
+const TP_KEYS = { neck: 2000, dues: 7500, camp: 10500, uniform: 10000 };
 const TP_ONE = [{ id: 'a', name: 'Ada' }];
 
 test('progress is measured toward the next tier a scout can still reach', () => {
-  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 13160 });
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 13160, keyValue: TP_KEYS });
   eq(r.earned.name, 'Bronze', 'the tier already earned');
   eq(r.next.name, 'Silver', 'the tier being worked toward');
   eq(r.short, 1840, 'the gap, in commission');
   eq(r.pct, 88, 'percent of the way there');
   // The one figure a family can act on — nobody sells commission.
   eq(r.shortSales, Math.ceil(1840 / 0.30), 'the gap said in popcorn');
-  // What REACHING it adds, not what the whole ladder is worth: Silver 9500 less Bronze 2000.
+  // What REACHING it adds: the dues key Silver brings, not the neckerchief Bronze already gave.
   eq(r.unlocks, 7500, 'the incremental value of the next tier');
+});
+
+test('a tier that covers what a scout already has adds nothing', () => {
+  // Two tiers pointed at the same line is legal — Bronze and Silver both covering dues, say.
+  // packCoverage unions the keys, so the second one covers nothing extra. Subtracting cumulative
+  // per-tier totals (which is how tierBreakEven works, correctly, for its own question) would
+  // have reported the second tier as worth another full fee.
+  const overlap = [
+    { id: 'b', name: 'Bronze', thresholdCents: 5000, covers: ['dues'], fee: 4000 },
+    { id: 's', name: 'Silver', thresholdCents: 15000, covers: ['dues'], fee: 4000 }
+  ];
+  const [r] = tp({ tiers: overlap, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 6000,
+    keyValue: { dues: 4000 } });
+  eq(r.next.name, 'Silver', 'the next tier');
+  eq(r.unlocks, 0, 'reaching a tier that re-covers the same line is reported as worth another fee');
+  // ...and a tier that adds something on top counts only the addition.
+  const partial = [
+    { id: 'b', name: 'Bronze', thresholdCents: 5000, covers: ['dues'], fee: 4000 },
+    { id: 's', name: 'Silver', thresholdCents: 15000, covers: ['dues', 'camp'], fee: 9000 }
+  ];
+  const [r2] = tp({ tiers: partial, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 6000,
+    keyValue: { dues: 4000, camp: 5000 } });
+  eq(r2.unlocks, 5000, 'only the newly covered share should count');
 });
 
 test('a CLOSED tier is never the next tier, and saying so is not the same as finishing', () => {
@@ -1102,6 +1137,77 @@ test('the tier-progress rows never recompute what "earned" means', () => {
   // Sorts what .map() just built. Sorting a stored array would reorder the saved record.
   ok(/\}\)\.sort\(function/.test(fn[0]), 'the sort is no longer applied to a freshly built array');
   ok(!/state\.scouts\.sort/.test(fn[0]), 'it sorts the stored roster in place');
+});
+
+test('a scout can cover the remaining cost out of pocket, at the capped amount', () => {
+  // Owner ask, 2026-08-02. The mechanism already existed but was reachable only after a deadline.
+  const rows = tp({ tiers: [{ id: 'b', name: 'Bronze', thresholdCents: 5000, cover: 2000, fee: 2000 }],
+    scouts: TP_ONE, map: {}, comm: 4000 });
+  eq(rows[0].short, 1000, 'the gap');
+  eq(rows[0].makeup, 1000, 'the gap is payable when it is below the fee');
+  // Capped at the fee: a scout $50 short of a tier that saves them $20 pays $20, not $50.
+  const capped = tp({ tiers: [{ id: 'b', name: 'Bronze', thresholdCents: 5000, cover: 2000, fee: 2000 }],
+    scouts: TP_ONE, map: {}, comm: 0 });
+  eq(capped[0].short, 5000, 'the gap is the whole threshold');
+  eq(capped[0].makeup, 2000, 'the makeup is not capped at the fee the tier buys');
+  // A prize-only tier picks up no cost, so there is nothing to pay and no button to show.
+  const prize = tp({ tiers: [{ id: 'b', name: 'Bronze', thresholdCents: 5000, cover: 0, fee: 0 }],
+    scouts: TP_ONE, map: {}, comm: 0 });
+  eq(prize[0].makeup, 0, 'a prize-only tier is offering something to pay for');
+  // A scout with nothing ahead of them has nothing to buy.
+  const done = tp({ tiers: TP_TIERS, scouts: TP_ONE,
+    map: { b: { a: 'earned' }, s: { a: 'earned' }, g: { a: 'earned' } }, comm: 31000 });
+  eq(done[0].makeup, 0, 'a scout at the ceiling is offered a payment');
+});
+
+test('the amount on the button is the amount written to the ledger', () => {
+  // Two code paths compute it — the card, and the handler recomputing from tierShortfallRows on
+  // click. If they ever disagree the button becomes a lie about a real payment, so both must be
+  // the same expression over the same inputs.
+  const prog = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const shortfall = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/makeup: next \? Math\.min\(short, cover\) : 0/.test(prog), 'the card no longer caps at the fee');
+  ok(/makeup: Math\.min\(short, cover\)/.test(shortfall), 'the handler path no longer caps at the fee');
+  // Both derive `short` the same way, from the same date basis.
+  ok(/Math\.max\(0, need - base\)/.test(prog) || /Math\.max\(0, \(next\.thresholdCents \|\| 0\) - base\)/.test(prog),
+    'the card computes the gap differently');
+  ok(/Math\.max\(0, \(t\.thresholdCents \|\| 0\) - base\)/.test(shortfall), 'the handler path computes the gap differently');
+  ok(/scoutCommissionOf\(/.test(prog) && /scoutCommissionOf\(/.test(shortfall),
+    'one path measures commission and the other does not');
+  // And the button carries the tier the card says is next, not some other tier.
+  const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-act="tier-makeup:' \+\s*esc\(r\.next\.id\) \+ ':' \+ esc\(r\.scout\.id\)/.test(card),
+    'the pay button targets something other than the next tier and this scout');
+  // Anchored to the BUTTON's own condition. A bare /r\.makeup > 0/ also matches the lead-in
+  // paragraph's rows.some(...) check, so it passed while the button itself was ungated.
+  // Anchored to the BUTTON's own condition. A bare /r\.makeup > 0/ also matches the lead-in
+  // paragraph's rows.some(...) check, so it passed while the button itself was ungated.
+  ok(/\(r\.makeup > 0 && r\.unlocks > 0\s*\n?\s*\? '<button type="button" class="btn small ghost tprog-pay"/.test(card),
+    'the button shows even when there is nothing to pay, or nothing to gain');
+  // Both halves matter. makeup>0 alone would offer a payment for a tier that re-covers a line the
+  // scout already holds — the cap is justified as "the fee the tier saves you", so where it saves
+  // nothing the amount is arbitrary.
+  ok(/r\.unlocks > 0/.test(card), 'a tier that adds no coverage can be sold again');
+  // It spends a family's money, so it takes the 36px floor rather than .btn.small's 32px.
+  // The SELECTOR is the assertion, not just the declaration: `.btn.small` sets 32px at (0,2,0),
+  // so a bare `.tprog-pay` rule at (0,1,0) loses and the button renders 32px while the stylesheet
+  // claims 36. Measured in a browser to confirm; pinned here so it cannot silently regress.
+  ok(/\.btn\.small\.tprog-pay \{[^}]*min-height: 36px/.test(SCRIPT_CSS),
+    'the pay button rule no longer outranks .btn.small, so it is back to a 32px target');
+});
+
+test('paying the difference is money and a decision, and undo keeps the money', () => {
+  // Re-pinned from the progress card's side: the handler is shared, so the new entry point must
+  // not have introduced a second writer of tier credit.
+  const writers = (SCRIPT.match(/\.madeUp = arrOf\(/g) || []).length;
+  eq(writers, 2, 'there is more than one place that grants or revokes tier credit');
+  const mk = /if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/tierShortfallRows\(mkT\)/.test(mk), 'the handler no longer validates against the shared shortfall');
+  ok(/if \(!mkRow \|\| mkRow\.makeup <= 0\) return;/.test(mk),
+    'the handler would charge a scout who owes nothing');
+  const un = /if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(!/state\.ledger = state\.ledger\.filter/.test(un), 'undo deletes the payment');
+  ok(/arm\('unmakeup-/.test(un), 'undo is a single tap');
 });
 
 test('the tier-progress card states each reason it can say nothing', () => {
@@ -3366,8 +3472,10 @@ test('paying the difference counts as reaching the tier', () => {
 
 test('the shortfall is the gap, capped at the fee it buys', () => {
   // Paying more to reach a tier than the tier saves you is not a rule anybody means.
-  const fn = /function tierMissedRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(fn, 'tierMissedRows() not found');
+  const fn = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'tierShortfallRows() not found');
+  ok(!/function tierMissedRows/.test(SCRIPT),
+    'the old name is back — a function called "missed" must not answer for a tier still open');
   ok(/var totals = computeScoutTotals\(t\.dueBy\);/.test(fn[0]), 'the shortfall is measured on the wrong date');
   ok(/short = Math\.max\(0, \(t\.thresholdCents \|\| 0\) - base\)/.test(fn[0]), 'the shortfall is not the gap to the tier');
   // On the commission basis the gap is money, so paying it leaves the pack exactly where the
@@ -3375,7 +3483,18 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
   ok(/var got = scoutCommissionOf\(\{ t: totals\[s\.id\] \}\);/.test(fn[0]),
     'the shortfall is measured in sales, so a family would be asked for more than the pack lost');
   ok(/makeup: Math\.min\(short, cover\)/.test(fn[0]), 'the makeup is not capped at the fee');
-  ok(/if \(!t\.dueBy\) return \[\];/.test(fn[0]), 'a tier with no deadline is reporting people as having missed it');
+  // The gate `if (!t.dueBy) return []` used to live here, and its reason was sound: a tier that is
+  // still open has not been MISSED by anybody, and a function named for missing one must not
+  // answer for it. That requirement is unchanged — it is now met by the NAME (a shortfall is what
+  // every scout below a threshold has, deadline or not) and by keeping the deadline framing at the
+  // one call site that prints it. Pin those two things instead of the refusal, because the refusal
+  // also blocked the owner's ask: let a scout cover the remaining cost out of pocket at any time.
+  ok(!/if \(!t\.dueBy\) return \[\];/.test(fn[0]),
+    'the deadline gate is back, so an open tier offers no shortfall to pay');
+  const report = /Missed the ' \+ esc\(fmtDate\(t\.dueBy\)\)[\s\S]{0,80}/.exec(SCRIPT);
+  ok(report, 'the deadline report heading was not found');
+  ok(/if \(tierIsClosed\(t\) && tierCoverCentsPerScout\(t\) > 0\) \{/.test(SCRIPT),
+    'the "Missed the deadline" report is no longer gated on the deadline having passed');
   const cover = /function tierCoverCentsPerScout\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(cover && /coverableLines\(\)\.forEach/.test(cover[0]),
     'the fee counts lines a tier cannot be pointed at in the first place');
@@ -3933,7 +4052,7 @@ test('proseText escapes first and only ever emits tags it built', () => {
 test('the seeded trips are real content, and are seeded exactly once', () => {
   const ctx = sandbox(NORMALIZE_FNS);
   const trips = ctx.seedCampingTrips();
-  eq(trips.length, 2, 'two council family weekends are seeded');
+  eq(trips.length, 3, 'the two council weekends and the pack\u2019s own Fort Yargo trip are seeded');
   trips.forEach((t) => {
     ok(t.id && t.name && t.where && t.address, `${t.name}: missing header fields`);
     ok(t.sections.length >= 6, `${t.name}: only ${t.sections.length} sections`);
@@ -3942,20 +4061,62 @@ test('the seeded trips are real content, and are seeded exactly once', () => {
     const ids = t.sections.map((s) => s.id);
     eq(new Set(ids).size, ids.length, `${t.name}: duplicate section ids`);
   });
-  eq(new Set(trips.map((t) => t.id)).size, 2, 'the two trips share an id');
+  eq(new Set(trips.map((t) => t.id)).size, 3, 'two of the trips share an id');
+  // The pack's own trip carries a STABLE id, because the one-time add below recognises it by id.
+  // A uid() here would re-add the trip on every single load.
+  ok(trips.some((t) => t.id === 'trip-fort-yargo'), 'the Fort Yargo trip has no stable id');
+  // It is pack-run, and the two rules that follow from that are the whole reason it reads
+  // differently from the council weekends: BALOO, and no BB or archery.
+  const yargo = trips.find((t) => t.id === 'trip-fort-yargo');
+  ok(/BALOO/.test(JSON.stringify(yargo)), 'the pack-run trip does not mention BALOO');
+  ok(/not approved unit activities/.test(JSON.stringify(yargo)),
+    'the pack-run trip does not say why it has no BB or archery');
+  // Last year's dates, labelled with their year — the convention the other two already use, so a
+  // reader can tell a published date from a confirmed one.
+  ok(/\(2026: Fri 27 Mar/.test(yargo.when), 'the Fort Yargo dates are not labelled with their year');
   // The camp is spelled Rainey. Getting this wrong sends a family to the wrong search result.
   ok(/Rainey Mountain/.test(JSON.stringify(trips)), 'Camp Rainey Mountain is not named');
   ok(!/Rainy Mountain/.test(JSON.stringify(trips)), 'the camp is misspelled "Rainy"');
 
   // A record with no camping key gets the seed...
   const fresh = ctx.normalizeState(preMigrationState());
-  eq(fresh.camping.trips.length, 2, 'a pre-camping pack record was not seeded');
-  // ...and a pack that has DELETED both trips must never have them pushed back.
+  eq(fresh.camping.trips.length, 3, 'a pre-camping pack record was not seeded');
+  // FRESHCAMPING ITSELF must carry the flag, and asserting it on normalizeState's output cannot
+  // show that — the migration sets the flag on the way through, so it is true either way. The path
+  // that matters is load()'s OTHER branch: a brand-new record comes from freshState() and is
+  // returned WITHOUT being normalized, so nothing else will ever set it.
+  // Observed before this was fixed: new pack, delete Fort Yargo, reload, and it was back.
+  ok(ctx.freshCamping().yargoAdded === true,
+    'freshCamping does not flag the trip as offered — a new pack that deletes it gets it back');
+  const freshMinusYargo = Object.assign(ctx.normalizeState(preMigrationState()), {
+    camping: { yargoAdded: true, trips: [{ id: 'keep', name: 'Fall', sections: [] }] }
+  });
+  eq(ctx.normalizeState(freshMinusYargo).camping.trips.length, 1,
+    'a pack that deleted Fort Yargo had it pushed back');
+  // ...and a pack that has DELETED every trip must never have them pushed back. This covers the
+  // one-time Fort Yargo add too: an empty camping tab is a decision, not a gap to fill.
   const emptied = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { trips: [] } }));
-  eq(emptied.camping.trips.length, 0, 'the seed came back after the pack deleted every trip');
+  eq(emptied.camping.trips.length, 0, 'something was pushed into a camping tab the pack had cleared');
+  ok(emptied.camping.yargoAdded === true, 'the one-time flag was not set, so it will try again next load');
+  // A record that already has the two council trips DOES get the third, once.
+  const twoTrips = () => Object.assign(preMigrationState(), {
+    camping: { trips: [{ id: 'a', name: 'Fall', sections: [] }, { id: 'b', name: 'Spring', sections: [] }] }
+  });
+  const added = ctx.normalizeState(twoTrips());
+  eq(added.camping.trips.length, 3, 'an existing pack did not receive the Fort Yargo trip');
+  ok(added.camping.trips.some((t) => t.id === 'trip-fort-yargo'), 'the added trip is not Fort Yargo');
+  // ...and only once, however many times normalize runs, and not again if it is then deleted.
+  eq(ctx.normalizeState(added).camping.trips.length, 3, 'the trip was added twice');
+  const deletedAgain = Object.assign(added, {
+    camping: { yargoAdded: true, trips: added.camping.trips.filter((t) => t.id !== 'trip-fort-yargo') }
+  });
+  eq(ctx.normalizeState(deletedAgain).camping.trips.length, 2,
+    'a deliberately deleted Fort Yargo trip came back');
   // Junk is coerced rather than thrown away or trusted.
+  // yargoAdded pre-set: this case is about COERCING junk, and letting the one-time add fire here
+  // too would mean counting two different behaviours in one assertion.
   const messy = ctx.normalizeState(Object.assign(preMigrationState(), {
-    camping: { trips: [{ name: 7, sections: [{ title: 'ok' }, null, 'nope'] }, null, 'nope'] }
+    camping: { yargoAdded: true, trips: [{ name: 7, sections: [{ title: 'ok' }, null, 'nope'] }, null, 'nope'] }
   }));
   eq(messy.camping.trips.length, 1, 'non-object trips were kept');
   eq(messy.camping.trips[0].name, '', 'a non-string name was kept');

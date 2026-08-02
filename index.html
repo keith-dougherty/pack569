@@ -259,7 +259,11 @@
   .perscout { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--ink-soft); }
   .perscout input[type="checkbox"] { min-height: auto; width: auto; padding: 0; margin: 0; flex: 0 0 auto; }
   /* Multi-line notes field: full width, comfortable leading, vertical resize only. */
-  textarea.notes-in { width: 100%; min-height: 68px; line-height: 1.45; resize: vertical; }
+  /* Grows with its content — render() and the input handler set the height from scrollHeight.
+     overflow-y stays auto rather than hidden so a failure to run puts a scrollbar back instead of
+     clipping text. resize stays vertical: a leader scanning a long page can still drag it shorter,
+     and the next keystroke re-grows it. */
+  textarea.notes-in { width: 100%; min-height: 68px; line-height: 1.45; resize: vertical; overflow-y: auto; }
 
   /* ---------- Adventure runs ----------
      An adventure spanning several den meetings: the session list plus one row per scout showing
@@ -690,6 +694,15 @@
     margin-top: 1px; font-size: 0.78rem; color: var(--ink-soft);
   }
   .tprog-pct { margin-left: auto; font-variant-numeric: tabular-nums; }
+  /* Sits between the name and the figure, so the money column stays one axis whether or not a
+     row offers the option (verified: same right edge on rows with and without it). Quiet — it is
+     an option, not the point of the row — but NOT small: .btn.small is 32px, and this control
+     spends a family's money, so it takes the 36px floor the rest of the app holds. */
+  /* .btn.small.tprog-pay, not .tprog-pay — the selector has to OUTRANK `.btn.small`, which sets
+     min-height: 32px at (0,2,0). At (0,1,0) this rule lost and the button measured 32px while the
+     declaration said 36. Same specificity trap as .btiny.armed earlier: a base rule with two
+     classes beats a single-class override, and only measuring the resolved style catches it. */
+  .btn.small.tprog-pay { flex: 0 0 auto; min-height: 36px; padding: 4px 10px; font-size: 0.78rem; }
   .tprog-bar { margin-top: 5px; height: 6px; }
 
   /* Money · Ledger (Phase 0) — same wrapping-row idiom as .erow, with a left rule that
@@ -1946,7 +1959,12 @@
 
      PUBLISHED. Every trip goes into the parent view verbatim. That is the point of the feature
      and it is also the risk, so the editor says so on the page rather than in a comment. */
-  function freshCamping() { return { trips: seedCampingTrips() }; }
+  // yargoAdded is true from the start on a FRESH record, and that is not redundant: the seed
+  // already contains the Fort Yargo trip, so the one-time offer has been made. Without it the
+  // migration below sees an unflagged record, and a leader who deletes the trip gets it back on
+  // the next load — which is precisely what the "never push a deleted trip back" rule forbids.
+  // Verified by doing it: delete, reload, and it returned.
+  function freshCamping() { return { trips: seedCampingTrips(), yargoAdded: true }; }
   function freshTripSection(title, body) {
     return { id: uid(), title: String(title || ''), body: String(body || '') };
   }
@@ -1985,6 +2003,44 @@
     'You do not need a good camp kitchen, matching gear, or any idea what you are doing. You need a dry tent, a bed off the ground, dry spare clothes, and food your kid will actually eat. Everything past that is decoration.\n' +
     '\n' +
     'And ask. Somebody in this pack has a spare tent, a second lantern and a free hand, and would rather lend it than watch you buy one. Say so before the trip rather than at the site — borrowing is completely normal here and nobody thinks less of it.';
+  // A STABLE id for the pack's own Fort Yargo trip. Stable because the one-time add below has to
+  // recognise a record that already has it — a fresh uid() every call would re-add it forever.
+  var YARGO_TRIP_ID = 'trip-fort-yargo';
+  // Why the March trip has no BB range and the April one does — the question every family asks,
+  // and the answer is a rule rather than a preference. Verified 2026-08-02 against Scouting
+  // America's own Range and Target Activities FAQ and the BALOO requirement.
+  var CAMP_PACK_RUN = 'This one is ours, not the council\u2019s, and two things follow from that.\n' +
+    '\n' +
+    'First, a pack overnighter needs a BALOO-trained adult actually on it \u2014 Basic Adult Leader ' +
+    'Outdoor Orientation, an online part plus an overnight in person. Not a formality: it is the ' +
+    'training that covers picking a site, feeding forty people outdoors and what to do when the ' +
+    'weather turns. The council runs BALOO courses and recommends a pack keep more than one leader ' +
+    'current, so a single family\u2019s change of plan cannot cancel a weekend. Hazardous Weather ' +
+    'Training goes with it.\n' +
+    '\n' +
+    'Second, there is no BB shooting and no archery on this trip, and that is not us being cautious. ' +
+    'Archery, BB guns and slingshots are not approved unit activities in Cub Scouting \u2014 they are ' +
+    'allowed at day camp, at long-term camp, and at council or district events with a certified range ' +
+    'master and a proper range. A pack cannot run them, and the rule is explicit that several packs ' +
+    'camping together does not make it a council event either. That is exactly what the spring council ' +
+    'weekend is for; save the shooting for that one.\n' +
+    '\n' +
+    'The trade is worth it. This is a public state park twenty minutes closer than anything else we do, ' +
+    'on paved roads, with hot showers and a phone signal \u2014 which makes it the easiest first ' +
+    'campout in the year for a family that has never done one.';
+  // Where the emergency plan is the same everywhere: know it before you need it, and get the
+  // camp's own specifics at check-in rather than trusting a page written a year ago.
+  var CAMP_EMERGENCY = 'Read this once now so nobody is reading it for the first time in the dark.\n' +
+    '\n' +
+    '- Ask at check-in for two things: where the nearest hospital is, and how to reach camp staff ' +
+    'overnight. Write them on the same paper as your medical forms. They change, and this page does not.\n' +
+    '- Three whistle blasts means \u201cI need help\u201d. Teach it in the car on the way. Every child ' +
+    'carries a whistle as one of the Six Essentials, and it works when shouting does not.\n' +
+    '- Thunder means stop. Not lightning \u2014 thunder. Everyone into hard-topped vehicles or a solid ' +
+    'building, count heads by den, and wait it out. A dining fly is not shelter from lightning.\n' +
+    '- A missing child: whistle, stop everything, headcount by den immediately, then search in pairs ' +
+    'and tell camp staff or a ranger straight away. Minutes matter more than dignity.\n' +
+    '- Keep the pack first-aid kit somewhere everybody has been shown, not in a leader\u2019s boot.';
   function seedCampingTrips() {
     var fall = freshTrip('Fall Family Camping');
     fall.where = 'Scoutland, on Lake Lanier';
@@ -2044,8 +2100,38 @@
         'Honestly, eat before you arrive on Friday. Setting up in daylight is worth more than a hot Friday meal, and you will not regret it at 9pm.\n' +
         '\n' +
         'Do the shopping and the chopping at home. The camp menus that work are the ones where the cooking is really assembly: foil packets, taco meat browned in your own kitchen, pancake mix already in a bottle that only needs water, hot dogs. Keep raw meat below ready-to-eat food in the cooler, and bring a thermometer if you are cooking chicken.'),
+      freshTripSection('A weekend, roughly',
+        'The council sets the real timetable and hands it out at check-in. This is the shape it takes.\n' +
+        '\n' +
+        'Friday\n' +
+        '- Arrive from 6pm, check in, get your campsite.\n' +
+        '- Put the tent up while it is still light. That is the whole reason to leave home early.\n' +
+        '- Something simple to eat, a short opening, and bed.\n' +
+        '\n' +
+        'Saturday\n' +
+        '- Breakfast at your own site.\n' +
+        '- Flags, then the program runs as stations you rotate through at your own pace: BB guns and archery, fishing, crafts, Scout skills, hiking, nature, field games. Some years there is a scavenger hunt.\n' +
+        '- Lunch and dinner at your site.\n' +
+        '- Campfire at Council Rock in the evening \u2014 skits and songs, and the part the children actually remember.\n' +
+        '- The fall weekend usually adds trick-or-treating round the campsites, so pack a costume.\n' +
+        '\n' +
+        'Sunday\n' +
+        '- Breakfast, then a short chapel service most years.\n' +
+        '- Strike camp, police the site, and be out by 11am.'),
+      freshTripSection('Weather, and what mid-October does',
+        'Gainesville in mid-October is the kindest weather of anything we do, and that is the trap: you pack for the afternoon and get caught by the night.\n' +
+        '\n' +
+        'Days are usually in the 70s and pleasant. Nights drop to the 40s or 50s, and a clear night by the lake feels colder than the number does. A summer sleeping bag with nothing under it is the commonest mistake on this trip, and the person who suffers is a seven-year-old who cannot tell you why they cannot sleep. Bring a sleeping mat for every person, not just the children.\n' +
+        '\n' +
+        'Rain is less likely than in spring but perfectly possible. A tarp under the tent \u2014 cut smaller than the floor, tucked under, never poking out \u2014 and a second one over the picnic table cover it.\n' +
+        '\n' +
+        'It runs rain or shine. Fees are non-refundable, though the council will usually credit them to another council event in the same calendar year.'),
       freshTripSection('Fire, knives and who does what', CAMP_AGES),
       freshTripSection('Sleeping arrangements and supervision', CAMP_SAFETY),
+      freshTripSection('If something goes wrong', CAMP_EMERGENCY +
+        '\n' +
+        '\n' +
+        'Scoutland is a staffed council camp with a road in, so help is closer here than it looks. Get the camp\u2019s own overnight number and the nearest hospital at check-in, and write them next to your medical forms.'),
       freshTripSection('If it is your first campout', CAMP_FIRST_TIME)
     ];
 
@@ -2108,11 +2194,118 @@
         'Every family cooks its own meals, over a campfire or your own stove. Plan Friday dinner, Saturday breakfast, lunch and dinner, and Sunday breakfast — you are out by 10 on Sunday, so keep that one to something you can eat cold if the morning runs away from you.\n' +
         '\n' +
         'Shop and chop at home. Keep raw meat below ready-to-eat food in the cooler. A hot drink after dark is worth the trouble of carrying the kettle.'),
+      freshTripSection('A weekend, roughly',
+        'The council sets the real timetable and hands it out at check-in, along with the Friday leaders\u2019 meeting. This is the shape it takes.\n' +
+        '\n' +
+        'Friday\n' +
+        '- Parking opens 5:30pm, check-in 6pm. You are given a campsite; you do not choose it.\n' +
+        '- Friday is the ONLY day you can drive up to your site, and passes are handed out a few at a time to keep the mountain road moving. Unload and bring the car straight back down. Share vehicles if you can.\n' +
+        '- Every vehicle then lives in the lower lot \u2014 a grass field about a mile below the campsites \u2014 until Sunday. There is a shuttle if you would rather not walk back up.\n' +
+        '- Tent up, simple dinner, leaders\u2019 meeting, bed.\n' +
+        '\n' +
+        'Saturday\n' +
+        '- The gates are locked all day. Whatever you forgot, you are doing without.\n' +
+        '- Program stations: BB shooting and archery, fishing on Lake Toccoa, crafts, STEM, outdoor games, Scout skills. Partial adventures and rank work get signed off through the day.\n' +
+        '- Meals at your own site, except Saturday dinner, which is a pack group meal \u2014 beef or turkey, roughly $5\u2013$10 a head, with the money and your headcount collected beforehand so there is enough.\n' +
+        '- Campfire programme at the Stewart Amphitheater in the evening.\n' +
+        '\n' +
+        'Sunday\n' +
+        '- Gates reopen so you can drive up and load straight into the car.\n' +
+        '- A staff member inspects your site before you are allowed to leave. Out by 10am, which is earlier than it sounds when you are packing a wet tent.'),
+      freshTripSection('Weather, and what late April does up there',
+        'Rabun County is mountains, not Piedmont, and it runs colder and wetter than home. Late April can give you a warm afternoon and a night in the 30s in the same 24 hours.\n' +
+        '\n' +
+        'Pack layers rather than one thick coat, and treat the sleeping kit as the thing that matters most: a bag rated well below what the forecast says, and a mat under every person. Cold comes up out of the ground.\n' +
+        '\n' +
+        'Rain is likely enough to plan for rather than hope about, and a wet tent on a mountain does not dry before Sunday. Bring a second tarp for over the picnic table, and keep one complete change of dry clothes sealed in a bag that does not get opened for anything else.\n' +
+        '\n' +
+        'It runs rain or shine. Fees are transferable but not refundable.'),
       freshTripSection('Fire, knives and who does what', CAMP_AGES),
       freshTripSection('Sleeping arrangements and supervision', CAMP_SAFETY),
+      freshTripSection('If something goes wrong', CAMP_EMERGENCY +
+        '\n' +
+        '\n' +
+        'This is the one where it matters most, because there is no cell service and the gates are shut all Saturday. You cannot ring for help from your campsite and you cannot drive out. So: find out at check-in where the camp office is, who is on call overnight, and where the nearest hospital is \u2014 and tell somebody at home when to expect a call, so silence does not read as an emergency. Clayton is four miles away, which is close on a map and not close on that road in the dark.'),
       freshTripSection('If it is your first campout', CAMP_FIRST_TIME)
     ];
-    return [fall, spring];
+    // THE PACK'S OWN TRIP, added 2026-08-02 from the pack's Fort Yargo guide and packing lists.
+    // Those documents are LAST YEAR'S (they describe 27–29 March 2026, which has been and gone),
+    // so the dates and prices below follow the same convention the other two trips use: the season
+    // in words, the last-known dates labelled with their year, and an intro that says to confirm.
+    var yargo = freshTrip('Pack Camping — Fort Yargo');
+    yargo.id = YARGO_TRIP_ID;
+    yargo.where = 'Fort Yargo State Park, Winder';
+    yargo.address = '210 South Broad Street, Winder, GA 30680';
+    yargo.when = 'A weekend in late March (2026: Fri 27 Mar – Sun 29 Mar)';
+    yargo.arrive = 'Friday — check in at the park office, open 8:00 am – 5:00 pm';
+    yargo.depart = 'Sunday, out by 12 noon';
+    yargo.cost = 'Campsite fee, booked through Georgia State Parks · plus $5 per vehicle per day to park, or a state parks annual pass';
+    yargo.url = 'https://gastateparks.org/FortYargo';
+    yargo.intro = 'The pack’s own campout, and the gentlest one we do — an hour up I-85, paved roads to the site, hot showers, and a phone signal. Confirm the dates, the campsite booking and the parking with the park each year; the ones above are what we ran last spring.';
+    yargo.sections = [
+      freshTripSection('What to expect',
+        'Fort Yargo is a 1,814-acre Georgia state park on the edge of Winder, about an hour from Atlanta. It is built around Lake Marbury, a 260-acre lake, and the 1792 log fort the park is named for still stands — one of the oldest buildings in the state, and a short walk from the car park.\n' +
+        '\n' +
+        'What that means for a weekend with Cub Scouts: drive-up campsites with picnic tables and fire rings, some with water and electric if you book them that way, and modern toilet blocks with hot showers. Paved roads throughout, so no low-clearance worries and no shuttling gear up a mountain. A camp store for ice and firewood, and Winder five minutes away for everything it does not have. There is a small camp store, but bring what you need — the hours move around.\n' +
+        '\n' +
+        'The park is open to the public while we are in it, which is the main difference from a council camp. Quiet hours run 10pm to 7am and are enforced. Dogs are allowed on a six-foot lead if your family brings one.\n' +
+        '\n' +
+        'It runs rain or shine. Campsite fees are generally not refundable once booked.'),
+      freshTripSection('A pack trip, not a council one', CAMP_PACK_RUN),
+      freshTripSection('Before you go',
+        '- Book through Georgia State Parks and tell the pack your site number, so we are not scattered across the park.\n' +
+        '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Under 72 hours it is parts A and B only, no doctor’s signature. Bring the paper and your insurance card.\n' +
+        '- Sort parking before you arrive: $5 per vehicle per day, or a Georgia State Parks annual pass if you have one.\n' +
+        '- Put the tent up in the garden first. Every family that skips this does it for the first time in the dark, on a gravel pad, with a tired six-year-old.\n' +
+        '- Charge a headlamp for every person, children included. A child with their own light is a child who is not frightened.\n' +
+        '- Fishing needs a Georgia licence for adults; check the current rules and buy online before you leave. Children are treated differently — confirm the age rather than guessing.\n' +
+        '- Talk about the buddy system in the car. Nobody walks anywhere alone, including to the toilets at night, and in a public park that matters more than it does at a council camp.'),
+      freshTripSection('Weather, and why March is the hard part',
+        'Winder sits at about 900 feet, so spring arrives earlier here than it does in the mountains — and then changes its mind.\n' +
+        '\n' +
+        'Expect mornings around 45–50°F, afternoons 65–70°F, and evenings back down to the low 50s by 9pm. A cold front can put the night into the 30s, which is the single thing families get wrong: a summer sleeping bag and no mat is a miserable night, and it is the child who feels it first. Bring a bag rated to 35°F or lower, a sleeping mat for everyone, and warm clothes to sleep in that are not the clothes you wore all day.\n' +
+        '\n' +
+        'Rain is normal in March and usually brief. Thunderstorms are possible; see the emergency section. A tarp under the tent — cut smaller than the floor, tucked in, never poking out — and a second tarp or canopy over the picnic table turn a wet weekend from a disaster into an anecdote.\n' +
+        '\n' +
+        'Ticks are already active by late March in Georgia. Check everybody nightly, and bring a proper tick tool rather than tweezers.'),
+      freshTripSection('What to bring',
+        'The Cub Scout Six Essentials live in your Scout’s own daypack and stay with them all weekend: first-aid kit, water bottle, flashlight, trail food, sun protection, whistle.\n' +
+        '\n' +
+        'Sleeping\n' +
+        '- Tent, and a ground tarp cut smaller than the tent floor.\n' +
+        '- Sleeping bag rated to 35°F or lower, and a sleeping mat or airbed for every person — the cold comes up from the ground, not down from the air.\n' +
+        '- Warm sleep clothes, kept dry in a bag all day. Tomorrow’s clothes go in the bottom of the sleeping bag overnight.\n' +
+        '- A spare blanket. It weighs nothing in a car and rescues a bad night.\n' +
+        '\n' +
+        'Wearing\n' +
+        '- Layers, not one thick coat: base layer, fleece, waterproof shell. Wool or synthetic, not cotton — cotton stays wet and cold.\n' +
+        '- A proper rain jacket, and rain trousers if you have them. March earns them.\n' +
+        '- Long trousers for the evening, four or five pairs of socks, a warm hat and light gloves.\n' +
+        '- Two pairs of shoes. If the first pair soaks through on Saturday morning there is nothing else to wear.\n' +
+        '- Class A uniform for the flag ceremony and campfire; the yellow Class B pack shirt for Saturday, which is what lets leaders pick our scouts out of a public park at a glance.\n' +
+        '\n' +
+        'Camp\n' +
+        '- Camp chairs — adult ones are too big for small scouts, so bring their size too.\n' +
+        '- A lantern for the site and a headlamp per person.\n' +
+        '- Quarters, in case the showers are coin-operated, and cash for the camp store.\n' +
+        '- A folding wagon if you own one. Drive-up sites make this optional rather than essential.\n' +
+        '- Bikes and helmets: the paved trails are the best thing here for a seven-year-old.\n' +
+        '- Fishing kit if you have it, and a tick tool, bug spray and sunscreen.'),
+      freshTripSection('Food',
+        'Every family cooks for itself unless the pack says otherwise beforehand. Plan five meals: Friday dinner, three on Saturday, and Sunday breakfast, plus snacks.\n' +
+        '\n' +
+        'March-specific: make at least two of them hot, and bring a way to make hot drinks in the morning. Standing in the cold waiting for cereal is how a good weekend goes wrong before 8am. Prep at home — chop, marinate, pre-mix the pancake batter — and pack a breakfast box and a dinner box so nobody is excavating a cool box in the dark.\n' +
+        '\n' +
+        'Keep food in the car or a closed cool box overnight. Raccoons and opossums work this park properly and will open anything left out. Firewood must be local or heat-treated — do not bring wood from out of state.'),
+      freshTripSection('Fire, knives and who does what', CAMP_AGES),
+      freshTripSection('Sleeping arrangements and supervision', CAMP_SAFETY),
+      freshTripSection('If something goes wrong', CAMP_EMERGENCY +
+        '\n' +
+        '\n' +
+        'Fort Yargo makes all of that easier than the mountain camps do: there is generally a good phone signal, rangers are on site, and Winder is five minutes away. From the pack’s own guide — confirm at check-in, because these move — the park office is (770) 867-3489 and the nearest hospital is Barrow Regional Medical Center on North Broad Street in Winder. For anything urgent, call 911. Poison Control is 1-800-222-1222.'),
+      freshTripSection('If it is your first campout', CAMP_FIRST_TIME)
+    ];
+    return [fall, spring, yargo];
   }
   function campingTrips() {
     var c = state.camping;
@@ -2385,6 +2578,27 @@
         if (typeof s.body !== 'string') s.body = '';
       });
     });
+    // ONE-TIME ADD of the pack's Fort Yargo trip (2026-08-02). seedCampingTrips only ever runs on
+    // a record with no `camping` object at all, so a pack that already had the two council trips
+    // would never see a third one added to the seed — this is the only way it reaches them.
+    //
+    // Guarded by a flag, not by "is the trip missing". Those are different questions: a leader who
+    // deletes the trip on purpose has answered the second one, and re-adding it every load would
+    // be the app arguing with them. The flag records that the offer was MADE, which happens once.
+    // ⚠ AND ONLY INTO A TAB THAT STILL HAS TRIPS IN IT. The rule this sits beside — a pack that
+    // deleted every trip must never have them pushed back — is about not arguing with a deliberate
+    // deletion, and it applies here too: a pack that cleared the camping tab does not camp, and
+    // making a page appear anyway is the app overruling them. A pack that still has the two council
+    // weekends is a pack that uses this tab, and gets the third. The flag is set either way, so the
+    // offer is made once and never reconsidered.
+    if (d.camping.yargoAdded !== true) {
+      d.camping.yargoAdded = true;
+      if (d.camping.trips.length &&
+          !d.camping.trips.some(function (t) { return t.id === YARGO_TRIP_ID; })) {
+        var seededYargo = seedCampingTrips().filter(function (t) { return t.id === YARGO_TRIP_ID; })[0];
+        if (seededYargo) d.camping.trips.push(seededYargo);
+      }
+    }
     if (!d.packName) d.packName = 'Pack 569';
     if (!d.budget || typeof d.budget !== 'object') d.budget = freshBudget();
     if (typeof d.budget.programYear !== 'number') d.budget.programYear = defaultProgramYear();
@@ -7343,6 +7557,12 @@
     for (var wI = 0; wI < wraps.length; wI++) {
       wraps[wI].classList.toggle('scrollable', wraps[wI].scrollWidth > wraps[wI].clientWidth + 1);
     }
+    // Owner ask, 2026-08-02: "make the detail box grow with the text instead of being a scroll
+    // view." A camping section runs to several hundred words and an eight-row box showed about a
+    // tenth of it, so editing one meant scrolling a window inside a scrolling page — you could
+    // never see the paragraph you were changing. Same pass as above, for the same reason.
+    var grows = document.querySelectorAll('textarea.notes-in');
+    for (var gI = 0; gI < grows.length; gI++) autoGrow(grows[gI]);
     // Preserve scroll on in-place edits; reset only on navigation.
     if (ui.resetScroll) { ui.resetScroll = false; window.scrollTo(0, 0); }
     else window.scrollTo(0, y);
@@ -8889,6 +9109,20 @@
   // scout can act on: nobody sells commission. `needSales` is the sales that reach the threshold
   // at the lower rate, which is the figure to put on a poster. Cover is cumulative, because the
   // tiers stack and so does what a scout at this level walks away with.
+  // What a SET of cover keys is worth, counting each key once. tierCumulativeCoverCents below
+  // sums tier by tier, which double-counts when two tiers are pointed at the same line — fine for
+  // what it is used for (tierBreakEven's "does this tier pay for itself"), wrong for "what does
+  // reaching the next one ADD", because packCoverage unions the keys and a key covered twice
+  // covers nothing extra.
+  function coverValueOfKeys(keys) {
+    var cents = 0;
+    coverableLines().forEach(function (r) {
+      COVER_WHO.forEach(function (who) {
+        if (keys[coverKeyOf(r.key, who)]) cents += lineRateForWho(r.line, who);
+      });
+    });
+    return cents;
+  }
   function tierCumulativeCoverCents(t) {
     var cents = 0;
     sortedTiers().forEach(function (o) {
@@ -8975,15 +9209,25 @@
     });
     return cents;
   }
-  // Who missed a tier, by how much, and what it costs them. `makeup` is the gap capped at the
-  // fee: paying more to reach a tier than the tier saves you is nobody's rule.
+  // WHO IS SHORT OF A TIER, by how much, and what it costs them. `makeup` is the gap capped at
+  // the fee: paying more to reach a tier than the tier saves you is nobody's rule.
   //
   // On the commission basis the shortfall is money, not sales — so paying it hands the pack
   // exactly what the selling would have. (On the old sales basis a $50 gap earned the pack $15,
   // and the family was asked for the $50.) `shortSales` is the same gap said the other way, for
   // the family that would rather hear what it was in popcorn.
-  function tierMissedRows(t, map) {
-    if (!t.dueBy) return [];
+  //
+  // RENAMED from tierMissedRows, and the `if (!t.dueBy) return []` gate is gone with it (owner
+  // ask, 2026-08-02: let a scout cover the remaining cost out of pocket). The gate was there for
+  // a good reason — a tier that is still open has not been MISSED by anybody, and a function
+  // called "missed" answering for one would have been a lie. The honest fix is the name, not the
+  // refusal: this computes a SHORTFALL, which every scout below a threshold has whether or not a
+  // deadline exists. The deadline framing now lives only where it belongs — at the call site that
+  // prints "Missed the … deadline", which is still gated on tierIsClosed().
+  //
+  // computeScoutTotals('') is unfiltered, so an open tier is measured against everything sold to
+  // date, which is exactly what a live shortfall means.
+  function tierShortfallRows(t, map) {
     var totals = computeScoutTotals(t.dueBy);
     var cover = tierCoverCentsPerScout(t);
     var earned = map || tierEarnedMap();
@@ -9002,9 +9246,8 @@
   // PROGRESS TOWARD THE NEXT TIER — owner ask, 2026-08-02: "a view somewhere that tracks and
   // shows each scout's progress towards earning their next rewards tier."
   //
-  // tierMissedRows() above already answers a RETROSPECTIVE question — who missed a tier that has
-  // closed — and it returns nothing at all for a tier with no dueBy (`if (!t.dueBy) return []`).
-  // This is the prospective one, for every scout, whether or not a deadline exists.
+  // tierShortfallRows() above answers "how far short is this scout of THIS tier", one tier at a
+  // time. This picks WHICH tier is the one ahead of them, and is what the card iterates.
   //
   // It reads tierEarnedMap(), which is the point. That map's own comment says it is the ONE map
   // read by coverage, the waivers, the badges and the deadline report "so those four can never
@@ -9036,6 +9279,13 @@
       if (!byDate[key]) byDate[key] = computeScoutTotals(key || null);
       return byDate[key];
     }
+    // Cached per tier: tierCoverCentsPerScout walks every coverable line, and there is one row
+    // per scout all asking about the same handful of tiers.
+    var coverByTier = {};
+    function coverOf(t) {
+      if (coverByTier[t.id] == null) coverByTier[t.id] = tierCoverCentsPerScout(t);
+      return coverByTier[t.id];
+    }
     return activeScouts().map(function (s) {
       var earned = earnedTierFor(s.id, tiers, map);
       var next = null, closedAhead = false;
@@ -9050,15 +9300,34 @@
       var base = got == null ? 0 : got;
       var need = next ? (next.thresholdCents || 0) : 0;
       var short = next ? Math.max(0, need - base) : 0;
+      // What it would cost to buy the rest of the way in — the SAME expression the tier-makeup
+      // handler recomputes from tierShortfallRows, so the figure on the button and the figure
+      // written to the ledger cannot drift apart. Capped at what this tier actually covers,
+      // because paying more to reach a tier than the tier saves you is nobody's rule; a
+      // prize-only tier therefore offers nothing to pay.
+      var cover = next ? coverOf(next) : 0;
+      // The keys this scout already holds: every tier the shared map marks for them, unioned,
+      // exactly the way packCoverage does it. Then the keys `next` would add on top.
+      var addedKeys = {};
+      if (next) {
+        var held = {};
+        tiers.forEach(function (o) {
+          if ((map[o.id] || {})[s.id]) arrOf(o.covers).forEach(function (k) { held[k] = true; });
+        });
+        arrOf(next.covers).forEach(function (k) { if (!held[k]) addedKeys[k] = true; });
+      }
       return {
         scout: s, earned: earned, next: next, closedAhead: closedAhead,
         base: base, need: need, short: short,
+        cover: cover, makeup: next ? Math.min(short, cover) : 0,
         // The one figure a family can act on. `salesForCommission` is null when the pack has no
         // goal rate, so this stays null rather than inventing a number — nobody sells commission.
         shortSales: next ? salesForCommission(short) : null,
-        // Cumulative cover minus what they already have: what REACHING it adds, not what the
-        // whole ladder is worth. tierCumulativeCoverCents already stacks the tiers below.
-        unlocks: next ? Math.max(0, tierCumulativeCoverCents(next) - (earned ? tierCumulativeCoverCents(earned) : 0)) : 0,
+        // What reaching it ADDS, as a set difference rather than a subtraction of two sums.
+        // Two tiers can be pointed at the same line — Bronze and Silver both covering dues, say —
+        // and the second one then adds nothing, because packCoverage unions the keys. Subtracting
+        // cumulative totals would have reported that second tier as worth another full fee.
+        unlocks: next ? coverValueOfKeys(addedKeys) : 0,
         pct: next ? (need > 0 ? Math.min(100, Math.round(base / need * 100)) : 100) : 100
       };
     }).sort(function (a, b) {
@@ -11647,7 +11916,17 @@
       '<p class="small muted" style="margin:0 0 10px">A tier is reached on the ' +
       '<strong>commission a scout has earned the pack</strong>, not on what they sold. ' +
       'The “in popcorn” figure is what the gap means at the pack’s lower rate — ' +
-      'sell it all online and they get there sooner.</p>';
+      'sell it all online and they get there sooner.</p>' +
+      // Said once here rather than on twelve rows.
+      (rows.some(function (r) { return r.makeup > 0 && r.unlocks > 0; })
+        ? '<p class="small muted" style="margin:0 0 10px"><strong>Pay</strong> records that a family ' +
+          'covered the difference out of pocket. What they pay is the commission the pack did not get, ' +
+          'capped at the fee the tier would have saved them — so the pack ends up exactly where the ' +
+          'selling would have left it. It goes in the ledger as a family payment and the scout counts ' +
+          'as having reached the tier from then on. Undo is on ' +
+          '<button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" ' +
+          'data-section="rewards">Popcorn · Rewards</button></p>'
+        : '');
     rows.forEach(function (r) {
       var name = esc(r.scout.name || 'Unnamed scout');
       var segs = [];
@@ -11670,6 +11949,21 @@
       }
       h += '<div class="tprog">' +
         '<div class="tprog-main"><span class="tprog-name">' + name + '</span>' +
+        // Pay the rest out of pocket. Offered only where reaching the tier actually saves this
+        // scout money — a prize-only tier has `makeup` 0, and `unlocks` 0 catches the other case:
+        // a tier pointed at a line they ALREADY have covered by a lower one. The cap's entire
+        // justification is "the fee the tier would have saved them", so where it saves them
+        // nothing the figure is arbitrary and offering it would be false. They can still sell
+        // their way there — the gap is still on the row — this only declines to sell it to them.
+        // Wording is deliberate: "make up the difference", not "buy the tier". What is being paid
+        // is the commission the pack did not get, which is why it is capped at the fee and why the
+        // pack ends up exactly where the selling would have left it.
+        (r.makeup > 0 && r.unlocks > 0
+          ? '<button type="button" class="btn small ghost tprog-pay" data-act="tier-makeup:' +
+            esc(r.next.id) + ':' + esc(r.scout.id) + '" title="Records ' + fmt(r.makeup) +
+            ' as a family payment in the ledger and counts this scout as having reached ' +
+            esc(r.next.name || 'the tier') + '">Pay ' + fmt(r.makeup) + '</button>'
+          : '') +
         '<span class="tprog-fig money">' + (r.next ? fmt(r.short) : '—') + '</span></div>' +
         '<div class="tprog-meta">' + segs.join(' ') +
         (r.next ? '<span class="tprog-pct">' + r.pct + '%</span>' : '') + '</div>' +
@@ -12224,7 +12518,7 @@
         // Who missed it, and the two ways out. Shown once the deadline has passed and only
         // where the tier actually picks something up — a prize tier has no shortfall to pay.
         if (tierIsClosed(t) && tierCoverCentsPerScout(t) > 0) {
-          var missed = tierMissedRows(t, tierEarned);
+          var missed = tierShortfallRows(t, tierEarned);
           h += '<p class="eyebrow" style="margin:10px 0 4px">Missed the ' + esc(fmtDate(t.dueBy)) + ' deadline</p>';
           if (!missed.length) {
             h += '<p class="small" style="margin:0">Everybody reached it. Nothing to bill.</p>';
@@ -12784,7 +13078,9 @@
           tinyDangerBtn('camp-del-sec:' + t.id + ':' + s.id, 'Delete this section') +
           '</div>' +
           '<textarea class="notes-in" data-ch="trip-sec-body" data-id="' + esc(t.id) + '" data-sec="' + esc(s.id) + '" ' +
-          'rows="8" placeholder="What families need to know. Blank line for a new paragraph; start a line with - for a bullet." ' +
+          // rows is only the height before the grow pass runs, so a small number avoids a short
+          // section briefly reserving eight rows of empty box on first paint.
+          'rows="3" placeholder="What families need to know. Blank line for a new paragraph; start a line with - for a bullet." ' +
           'aria-label="Section text">' + esc(s.body) + '</textarea>';
       } else {
         h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +
@@ -15392,6 +15688,15 @@
     if (printAutoOpened) { printAutoOpened = false; ui.overlay = null; render(); }
   });
 
+  // Grow a textarea to its own content. Height is set from scrollHeight, so there is never
+  // anything to scroll — but `overflow-y` stays `auto` rather than `hidden` on purpose: if this
+  // ever failed to run, hidden would CLIP the text with no way to reach it, whereas auto just
+  // puts the scrollbar back and nothing is lost.
+  function autoGrow(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = (el.scrollHeight + 2) + 'px';
+  }
   // Dollar fields (text money-in) update live as you type — caret is restored on re-render.
   // Wave 18(14): the liveEdit flag makes commit() render now but debounce save+sync.
   document.addEventListener('input', function (e) {
@@ -15403,6 +15708,11 @@
     // Wave 11 — keep the new-storefront name draft live so it survives re-renders while queuing dates.
     var sfName = e.target.closest('input[data-ch="sf-new-name"]');
     if (sfName) ui.sfDraft.name = sfName.value;
+    // Grow as you type. Deliberately NOT routed through handleChange: that commits and
+    // re-renders, and re-rendering on every keystroke inside a long body would fight the caret.
+    // The text still saves on change/blur exactly as before — this only changes the box's height.
+    var grow = e.target.closest('textarea.notes-in');
+    if (grow) autoGrow(grow);
   });
   // On blur/change everything commits — money fields reformat here (e.g. "150" → "150.00").
   document.addEventListener('change', function (e) {
@@ -16015,7 +16325,7 @@
       var mkT = state.rewardTiers.tiers.find(function (t) { return t.id === mkP[1]; });
       var mkS = getScout(mkP[2]);
       if (!mkT || !mkS) return;
-      var mkRow = tierMissedRows(mkT).filter(function (r) { return r.scout.id === mkS.id; })[0];
+      var mkRow = tierShortfallRows(mkT).filter(function (r) { return r.scout.id === mkS.id; })[0];
       if (!mkRow || mkRow.makeup <= 0) return;
       if (arrOf(mkT.madeUp).indexOf(mkS.id) === -1) mkT.madeUp = arrOf(mkT.madeUp).concat([mkS.id]);
       state.ledger.push({
