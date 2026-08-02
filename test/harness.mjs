@@ -989,6 +989,54 @@ test('the parent view never carries the ledger', () => {
   ok(!/\bbook\b/.test(fn[0]), 'buildParentView references the book (opening/statement balances)');
 });
 
+test('a meeting\u2019s internal note never reaches ANY outbound surface', () => {
+  // Owner ask, 2026-08-02: two notes on a meeting, one for parents and one for leaders only.
+  // A meeting note leaves the app FOUR ways, and only one of them is the parent app — so
+  // checking buildParentView alone would be checking a quarter of the boundary:
+  //   buildParentView  the published doc parents read
+  //   monthlyDigest    the copy-to-parents newsletter text
+  //   the .ics export  imported into BAND, or subscribed in Google/Apple/Outlook
+  //   agendaDetail     the printed leader sheet — the ONE place it is meant to appear
+  const outbound = ['buildParentView', 'monthlyDigest'];
+  outbound.forEach(function (name) {
+    const fn = new RegExp('function ' + name + '\\([\\s\\S]*?\\n  \\}').exec(SCRIPT);
+    ok(fn, name + '() not found');
+    ok(!/noteInternal/.test(fn[0]), name + ' publishes the leaders-only note');
+  });
+  // The ICS builder is not a single named function, so scan the block that writes DESCRIPTION.
+  const ics = /function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(ics, 'buildICS() was not found — the ICS guard is not scanning anything');
+  ok(/icsEscape\(ev\.note\)/.test(ics[0]), 'buildICS no longer writes the published note, so this guard is aimed at the wrong code');
+  ok(!/noteInternal/.test(ics[0]), 'the .ics export carries the leaders-only note');
+  // ...and it DOES appear where it is supposed to: the leader-facing printable agenda.
+  ok(/m\.noteInternal/.test(SCRIPT), 'the internal note is never rendered anywhere');
+  ok(/line\('Leaders only', esc\(m\.noteInternal\)\)/.test(SCRIPT),
+    'the printable agenda no longer shows the internal note');
+  // The published field keeps its meaning. Flipping which field publishes would silently
+  // un-publish every note already written — including the location parents rely on.
+  const pv = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/detail: String\(e\.note \|\| ''\)/.test(pv), 'the published meeting detail is no longer e.note');
+  // The handler must not route an unknown mtg-* key into the PUBLISHED note. It used to end in a
+  // catch-all `else mtg.note = el.value`, which would have caught mtg-note-internal itself.
+  const h = /if \(ch === 'mtg-kind'\)[\s\S]{0,700}/.exec(SCRIPT);
+  ok(h, 'the meeting change handler was not found');
+  ok(/else if \(ch === 'mtg-note'\) mtg\.note = el\.value;/.test(h[0]),
+    'the published note is assigned from a catch-all else again');
+  ok(/else if \(ch === 'mtg-note-internal'\) mtg\.noteInternal = el\.value;/.test(h[0]),
+    'the internal note has no handler branch');
+  // ...AND that it is reachable. The branch chain sits inside a gate that is itself an
+  // allowlist of mtg-* keys, so the branch above can exist and never run. It did: the first
+  // version of this change added the branch, not the gate, and typing in the field saved
+  // nothing — while this very test passed on dead code. Assert the gate too.
+  const gate = /if \(ch === 'mtg-kind' \|\|[\s\S]{0,240}?\) \{/.exec(SCRIPT);
+  ok(gate, 'the meeting handler gate was not found');
+  ok(/ch === 'mtg-note-internal'/.test(gate[0]),
+    'mtg-note-internal is not in the handler gate, so its branch is unreachable');
+  // Both fields say who reads them — the whole point of the split.
+  ok(/Parents see this/.test(SCRIPT), 'the published note field does not name its audience');
+  ok(/Leaders only \\u00b7 never published/.test(SCRIPT), 'the internal note field does not name its audience');
+});
+
 /* ================================================================
    Money redesign — Phase 2: events split out of the budget (DESIGN-money.md 3.1).
    ================================================================ */
@@ -1312,8 +1360,19 @@ test('a family rate never reaches the pack’s plan', () => {
   // every one of them.
   const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
   const bg = freshLine({ basis: 'per-head', scoutRateCents: 1500, adultRateCents: 1500, siblingRateCents: 800 });
-  eq(linePlannedHeads(bg, 10, 4), { scouts: 10, leaders: 0 }, 'planned heads');
+  eq(bg.includeAdults, false, 'a new line must not plan for parents until somebody says so');
+  eq(linePlannedHeads(bg, 10, 4), { scouts: 10, leaders: 0, adults: 0 }, 'planned heads');
   eq(linePlannedCents(bg, 10, 4), 15000, 'ten scouts at $15 — the parents are not the pack’s to plan');
+  // OWNER ASK 2026-08-02: an event priced PER PERSON at the door can opt in, per line. The ruling
+  // above is intact — what it forbade was inventing a parent on every line at once, and that is
+  // exactly what this asserts is still off by default. A sibling rate is never planned either way.
+  bg.includeAdults = true;
+  eq(linePlannedHeads(bg, 10, 4), { scouts: 10, leaders: 0, adults: 10 }, 'one parent per SCOUT, not per family');
+  eq(linePlannedCents(bg, 10, 4), 30000, 'ten scouts and ten parents at $15 — the sibling rate stays out');
+  // A per-family fee is one fee for whoever comes, so it has no parent head to add even ticked.
+  const fam = freshLine({ basis: 'per-family', scoutRateCents: 3500, adultRateCents: 9900, includeAdults: true });
+  eq(linePlannedHeads(fam, 10, 4, 8), { scouts: 8, leaders: 0, adults: 0 }, 'a per-family fee gained a parent head');
+  eq(linePlannedCents(fam, 10, 4, 8), 28000, 'eight families at $35, and nothing for the adult rate');
 });
 
 test('the pack plans for leaders only when it is paying for them', () => {
@@ -1323,7 +1382,7 @@ test('the pack plans for leaders only when it is paying for them', () => {
   const camp = freshLine({ basis: 'per-head', scoutRateCents: 2000 });
   eq(linePlannedCents(camp, 10, 4), 20000, 'unticked: scouts only');
   camp.includeLeaders = true; camp.leaderRateCents = 2000;
-  eq(linePlannedHeads(camp, 10, 4), { scouts: 10, leaders: 4 }, 'planned heads');
+  eq(linePlannedHeads(camp, 10, 4), { scouts: 10, leaders: 4, adults: 0 }, 'planned heads');
   eq(linePlannedCents(camp, 10, 4), 28000, 'ticked: 10 scouts + 4 leaders at $20');
   const reg = freshLine({ basis: 'per-head', scoutRateCents: 8500, includeLeaders: true, leaderRateCents: 6500 });
   eq(linePlannedCents(reg, 10, 4), 111000, '$85 a scout and $65 a leader');
@@ -1335,7 +1394,7 @@ test('Phase 3a: a flat line ignores the roster entirely', () => {
   const { linePlannedCents, linePlannedHeads, freshLine } = sandbox(PRICE_FNS);
   const charter = freshLine({ basis: 'flat', flatCents: 10000, scoutRateCents: 999 });
   eq(linePlannedCents(charter, 50), 10000, 'a charter fee is a charter fee');
-  eq(linePlannedHeads(charter, 50, 9), { scouts: 0, leaders: 0 }, 'no heads are counted');
+  eq(linePlannedHeads(charter, 50, 9), { scouts: 0, leaders: 0, adults: 0 }, 'no heads are counted');
 });
 
 test('Phase 3a: "the pack pays, but somebody else is paid directly" is not expressible', () => {
@@ -1537,14 +1596,37 @@ test('a covered adult share is priced at the ADULT rate, and is new pack spendin
   eq(lineRateForWho(shirt, undefined), 1200, 'no head kind means the scout');
   const cost = /function coverCostForKeys\(keys\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(cost, 'coverCostForKeys() not found');
-  ok(/if \(who === 'scout' && !reimb\) fees \+= cents; else extra \+= cents;/.test(cost[0]),
-    'the two kinds of covered money are not kept apart');
+  // THREE destinations, not two. A scout share of a line the pack collects leaves B; an adult or
+  // sibling share adds to A; and ANY share of a paid-direct line adds to A as a reimbursement,
+  // the scout's included — the pack never collected it, so paying it back is spending. The last
+  // two used to be summed and printed under one label reading "…for adults or siblings", which
+  // described a council-fee refund as buying something for a parent.
+  ok(/if \(reimb\) \{ extra \+= cents; extraReimburse \+= cents; \}/.test(cost[0]),
+    'a reimbursement is not tracked apart from an adult or sibling share');
+  // "Not planned" rather than "not the scout" since 2026-08-02: with one-parent-per-scout ticked,
+  // that parent's fee IS in the plan, so covering it must reduce expected income like a scout
+  // share rather than invent a second cost on top of the one already sitting in A.
+  ok(/var planned = who === 'scout' \|\| \(who === 'adult' && r\.line\.includeAdults && !linePerFamily\(r\.line\)\);/.test(cost[0]),
+    'the rule is not "did the plan count on income for this share?"');
+  ok(/else if \(!planned\) \{ extra \+= cents; extraHeads \+= cents; \}/.test(cost[0]),
+    'an unplanned adult or sibling share is not tracked as its own kind of pack spending');
+  ok(/else fees \+= cents;/.test(cost[0]),
+    'a covered scout share no longer leaves expected fees');
+  ok(/extraHeads: extraHeads, extraReimburse: extraReimburse/.test(cost[0]),
+    'the split is computed but not returned');
   ok(/lineRateForWho\(r\.line, who\) \* lineBillingRoster\(r\.line\)\.length/.test(cost[0]),
     'a share is not priced at its own rate across whoever the line actually bills');
   const fs2 = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/var tierExtra = coverCostForKeys\(assumeCov\)\.extra;\s*\n\s*expenses \+= tierExtra;/.test(fs2[0]),
+  ok(/var tierCost = coverCostForKeys\(assumeCov\);\s*\n\s*var tierExtra = tierCost\.extra;\s*\n\s*expenses \+= tierExtra;/.test(fs2[0]),
     'a covered adult share never reaches A, so the pack plans to buy shirts with no money for them');
   ok(/tierExtra: tierExtra,/.test(fs2[0]), 'the figure is not reported for the worksheet to show');
+  ok(/tierExtraHeads: tierCost\.extraHeads, tierExtraReimburse: tierCost\.extraReimburse,/.test(fs2[0]),
+    'the worksheet cannot tell an adult share from a council-fee refund');
+  // And the worksheet prints them as two separate, correctly-named rows.
+  ok(/…of which reward tiers buy for adults or siblings<\/td>' \+\s*\n\s*'<td class="num money">' \+ fmt\(fs2\.tierExtraHeads\)/.test(SCRIPT),
+    'the adults-or-siblings row still prints the combined figure');
+  ok(/…of which reward tiers pay a council fee back to families/.test(SCRIPT),
+    'a reimbursement has no row of its own, so it is reported as buying something for an adult');
   // The Budget card must agree with the worksheet about it.
   const cb = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(/var tierExtra = tierExtraPackCostCents\(\);\s*\n\s*var planned = actPlanned \+ expPlanned \+ tierExtra;/.test(cb[0]),
@@ -1685,8 +1767,18 @@ test('Phase 4: a family-funded event counts as income before anyone has attended
     'a family-funded line with no charges yet contributes nothing to income');
   // ...and the fallback is what FAMILIES would be billed, not the whole planned cost: a leader's
   // place is in linePlanned and no family is ever billed for one.
-  ok(/function lineFamilyPlanned\(l\) \{ return \(l\.scoutRateCents \|\| 0\) \* lineBillingRoster\(l\)\.length; \}/.test(SCRIPT),
-    'expected family income is not the scout share');
+  // ...and the fallback is the scout share PLUS a planned parent where the line says one comes
+  // (2026-08-02), never the whole planned cost: a leader's place is in linePlanned and no family
+  // is ever billed for one.
+  const famFn = /function lineFamilyPlanned\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(famFn, 'lineFamilyPlanned() not found');
+  ok(/linePlannedShare\(l, 'scout'\) \+ linePlannedShare\(l, 'adult'\)/.test(famFn[0]),
+    'expected family income is not the scout share plus the planned parent');
+  ok(!/leaderRateCents/.test(famFn[0]), 'what families are billed includes a leader rate');
+  // And the planned parent only exists where the line says one comes.
+  const shareFn = /function linePlannedShare\(l, who\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(shareFn && /l\.includeAdults && !linePerFamily\(l\)/.test(shareFn[0]),
+    'a line that plans one parent per scout does not expect that parent’s fee as income');
 });
 
 test('Phase 4: the Budget card and the goal share one arithmetic', () => {
@@ -2437,6 +2529,205 @@ test('the row does not repeat the month its group already states', () => {
 });
 
 /* ================================================================
+   Making the budget list scannable — owner, 2026-08-02: "make our budget line list easier to
+   read and scan, the way it currently looks, it's kind of hard on the eyes."
+
+   Every test here pins a DECISION about the list, because each one is a change somebody could
+   undo in good faith while tidying up. The first is not typography at all: no amount of it
+   rescues a list whose ORDER is arbitrary.
+   ================================================================ */
+
+const inSlotCtx = (() => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    ${slice('activitiesInSlot')}
+    ${slice('dateInProgramYear')}
+    ${slice('programYearStartISO')}
+    ${slice('programYearEndISO')}
+    ${slice('PROGRAM_START_MONTH')}
+    ${slice('pad2')}
+    function eventForLine(a) { return EVENTS.find(function (e) { return e.id === a.eventId; }) || null; }
+    function lineSlot(a) { var ev = eventForLine(a); return ev ? ev.slot : -1; }
+    var EVENTS = [];
+    var state = { budget: { programYear: 2026, activities: [] } };`, ctx);
+  return ctx;
+})();
+
+function inSlotNames(rows) {
+  inSlotCtx.EVENTS = rows.map((r, i) => ({ id: 'e' + i, slot: r.slot === undefined ? 3 : r.slot, date: r.date }));
+  inSlotCtx.state.budget.activities = rows.map((r, i) => ({ id: 'a' + i, name: r.name, eventId: 'e' + i }));
+  return inSlotCtx.activitiesInSlot(3).map((a) => a.name);
+}
+
+test('a month lists its activities in DATE order, not the order they were added', () => {
+  // Keith's real October, in the array order his record actually held it: the group read
+  // "Oct 17, Oct 24, Oct 25, Oct 10, Oct 2".
+  eq(inSlotNames([
+    { name: 'Jamboree', date: '2026-10-17' },
+    { name: 'Fishing Derby', date: '2026-10-24' },
+    { name: 'Trunk or Treat', date: '2026-10-25' },
+    { name: 'Corn Maze', date: '2026-10-10' },
+    { name: 'Fall Camping', date: '2026-10-02' }
+  ]), ['Fall Camping', 'Corn Maze', 'Jamboree', 'Fishing Derby', 'Trunk or Treat'],
+  'the month group is still in whatever order the array happens to hold');
+});
+
+test('an undated line sorts after the dated ones, and ties are stable', () => {
+  // Undated last matches unbudgetedActivities(). Same-date lines fall back to the NAME so the
+  // order does not depend on which was typed first — two rows swapping places between renders
+  // is its own kind of unreadable.
+  eq(inSlotNames([
+    { name: 'No date at all', date: '' },
+    { name: 'Zebra', date: '2026-10-09' },
+    { name: 'Apple', date: '2026-10-09' }
+  ]), ['Apple', 'Zebra', 'No date at all'], 'undated/tied ordering is wrong');
+});
+
+test('sorting the month group does not reorder the stored budget', () => {
+  // .filter() hands back a fresh array, so .sort() on it is safe — but only as long as it stays
+  // a filter. Sorting state.budget.activities in place would silently reorder the saved record
+  // and sync that reordering to every other leader.
+  const fn = /function activitiesInSlot\(slot\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/state\.budget\.activities\.filter\(/.test(fn), 'no longer filters into a new array');
+  ok(!/state\.budget\.activities\.sort\(/.test(fn), 'sorts the stored array in place');
+});
+
+test('the money is one column whether the row shows a figure or a field', () => {
+  // These were a <span> and an <input> with different box geometry and an 11px padding fudge to
+  // fake the alignment, so the right edge of the column moved from row to row.
+  const rule = /\.brow \.bmoney \{[^}]*\}/.exec(SCRIPT_CSS);
+  ok(rule, '.brow .bmoney rule not found');
+  ok(/width:/.test(rule[0]) && /padding:/.test(rule[0]) && /text-align: right/.test(rule[0]),
+    'the shared money box no longer sets width, padding and alignment in one place');
+  ok(!/span\.bmoney \{[^}]*padding-right: 11px/.test(SCRIPT_CSS),
+    'the padding fudge that faked the alignment is back');
+  ok(/\.brow span\.bmoney \{[^}]*border: 1px solid transparent/.test(SCRIPT_CSS),
+    'the figure does not reserve the border width the field spends, so they cannot line up');
+});
+
+test('the row fields are quiet at rest and reveal themselves on demand', () => {
+  // A month of activities was ten bordered input boxes stacked up, and the boxes were the
+  // highest-contrast marks on the card — louder than any figure inside them.
+  ok(/\.brow input\.bname, \.brow input\.bmoney \{[^}]*border-color: transparent/.test(SCRIPT_CSS),
+    'the name and cost fields are bordered at rest again');
+  ok(/\.brow:hover input\.bname[^{]*\{[^}]*border-color: var\(--line\)/.test(SCRIPT_CSS),
+    'hover no longer reveals that the row is editable');
+  ok(/\.brow input\.bname:focus[^{]*\{[^}]*border-color: var\(--line\)/.test(SCRIPT_CSS),
+    'focus no longer draws the field it is in — quiet must not mean invisible to the keyboard');
+  // The one exception: an EMPTY name has no text to read, so on a touch screen (no hover) there
+  // would be nothing at all to say it is a field.
+  ok(/\.brow input\.bname:placeholder-shown \{[^}]*border-color: var\(--line\)/.test(SCRIPT_CSS),
+    'a brand-new unnamed row gives no sign it can be typed into');
+  ok(!/\.brow input\.bmoney:placeholder-shown/.test(SCRIPT_CSS),
+    'every free activity is back to wearing a box around the word "Cost"');
+});
+
+test('the payer rail is legible in BOTH themes', () => {
+  // --navy is a BACKGROUND token in dark mode — it is what the topbar is filled with — so
+  // #1C2F47 on a #202935 card measured 1.08:1 and the rail simply did not exist on the theme
+  // the app opens in by default. --good is a foreground token in both.
+  ok(/\.brow\.pays-families::after \{[^}]*var\(--good\)/.test(SCRIPT_CSS),
+    'the families-pay rail is painted in something other than --good');
+  ok(!/\.brow\.pays-families::after \{[^}]*var\(--navy\)/.test(SCRIPT_CSS),
+    'the rail is back on --navy, which is invisible on a dark card');
+  // Solid vs dashed is what actually separates the two, because they are within 1.2:1 of each
+  // other in luminance in both themes.
+  ok(/\.brow\.pays-direct::after \{[^}]*dashed/.test(SCRIPT_CSS),
+    'paid-direct is no longer told apart by anything but colour');
+  // And pack-pays gets NO rail: it is the default and the majority, and a marker on every row
+  // marks nothing.
+  ok(!/\.brow\.pays-pack::after/.test(SCRIPT_CSS), 'the default arrangement has grown a marker');
+  const fn = /function budgetLineRow\(l, scoutN, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/lineFamilyFunded\(l\) \? \(l\.paidDirectTo \? ' pays-direct' : ' pays-families'\) : ''/.test(fn),
+    'the rail no longer follows who actually pays');
+  // Redundant encoding: the words stay in the sentence, so nothing here depends on colour.
+  const sum = /function lineSummarySegments\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/families pay the pack/.test(sum) && /pack pays/.test(sum),
+    'who pays is now carried by the rail alone');
+});
+
+test('the summary breaks between facts, never through one', () => {
+  ok(/\.brow-meta \.bsum \.bseg \{[^}]*white-space: nowrap/.test(SCRIPT_CSS),
+    'a segment can wrap inside itself again — "Activities & outings" comes apart');
+  // The separator belongs to the segment AFTER it. Emitted between them it can end a line,
+  // which leaves a dot pointing at nothing.
+  ok(/\.bseg \+ \.bseg::before \{[^}]*content:/.test(SCRIPT_CSS),
+    'the interpunct is not drawn inside the following segment');
+  const fn = /function lineSummaryHtml\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'lineSummaryHtml() not found');
+  ok(!/join\(' <span class="bdot">/.test(fn[0]),
+    'the segments are joined by a dot element again, which can dangle at a line break');
+  // Segments are the single source and lineSummaryHtml is the only consumer. There is no
+  // plain-text twin: splitting one sentence across two builders is how they drift, and keeping
+  // an uncalled one alive behind a passing test is worse than not having it.
+  ok(!/function lineSummaryText\(/.test(SCRIPT),
+    'a second, uncalled builder for the same sentence is back');
+});
+
+test('the summary is sized so the actions never get pushed onto their own line', () => {
+  // With flex-wrap on, a line breaks on items' hypothetical sizes BEFORE any of them is allowed
+  // to shrink. A summary sized to its own content therefore pushed the whole action cluster down
+  // and left a band of empty row beside it — worse than the ragged version it replaced.
+  const rule = /\.brow-meta \.bsum \{[^}]*\}/.exec(SCRIPT_CSS);
+  ok(rule, '.brow-meta .bsum rule not found');
+  ok(/flex: 1 1 \d+px/.test(rule[0]),
+    'the summary is back on a content-sized basis, so the actions will wrap away from it');
+});
+
+test('the three row actions travel as one cluster', () => {
+  // Ragged is the enemy of scanning: five rows of "Record actual" starting at five different
+  // x-positions read as five different things.
+  const fn = /function budgetLineRow\(l, scoutN, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const acts = /<span class="bacts">[\s\S]*?<\/span>'/.exec(fn);
+  ok(acts, 'the actions are no longer wrapped in one cluster');
+  ok(/actualBtn\(l\.id\)/.test(acts[0]), 'Record actual left the cluster');
+  ok(/data-act="line-options"/.test(acts[0]), 'Options left the cluster');
+  ok(/tinyDangerBtn\(opts\.delAct/.test(acts[0]), 'the remove button left the cluster');
+  ok(/\.brow-meta \.bacts \{[^}]*margin-left: auto/.test(SCRIPT_CSS),
+    'the cluster no longer holds a column of its own');
+  // ...and it goes back to the left edge on a phone, where the row is read down its left side.
+  ok(/@media \(max-width: 520px\) \{[\s\S]*?\.brow-meta \.bacts \{[^}]*margin-left: -4px/.test(SCRIPT_CSS),
+    'on a phone the actions are stranded at the far right of a full-width sentence');
+});
+
+test('destroying a line is not the loudest thing on the card', () => {
+  // Red answers "am I about to destroy something?", which is a question asked on the way to the
+  // control — not from across the page by five ✕s in a list where nothing is wrong.
+  // In the BASE rule, so it reaches all 20 call sites and — critically — cannot outrank
+  // `.btiny.armed`. A descendant copy at (0,3,0) beat `.btiny.armed { color: #FFF }` at (0,2,0)
+  // and computed --bad on a --bad fill: the confirm step was invisible in light mode. Dark mode
+  // survived on a (0,4,0) theme override, which is why it went unseen.
+  ok(/\n  \.btiny \{[^}]*color: var\(--ink-soft\)/.test(SCRIPT_CSS),
+    'the remove button is red at rest again');
+  ok(/\.btiny:hover, \.btiny:focus-visible \{[^}]*color: var\(--bad\)/.test(SCRIPT_CSS),
+    'reaching for it no longer turns it red');
+  // The lookbehind is load-bearing: without it `border-color: var(--bad)` satisfies the pattern,
+  // and .btiny.armed legitimately sets that. Only the INK is forbidden here.
+  ok(!/\.btiny[^{]*\.armed \{[^}]*(?<![-\w])color: var\(--bad\)/.test(SCRIPT_CSS),
+    'an .armed selector sets color:--bad again — that is --bad text on the --bad fill .armed draws');
+  ok(/\.btiny\.armed \{[^}]*background: var\(--bad\)/.test(SCRIPT_CSS),
+    '.armed no longer fills itself, so there is nothing to read the ink against');
+  // No local copies left to drift or to re-open the specificity fight.
+  ok(!/\.brow-meta \.btiny/.test(SCRIPT_CSS), 'a per-list copy of the rule is back');
+  ok(!/\.adult-chip \.btiny \{[^}]*color:/.test(SCRIPT_CSS), 'the .adult-chip copy is back');
+  // It is a destructive control and it keeps its 36px target.
+  ok(/\n  \.btiny \{[^}]*min-height: 36px/.test(SCRIPT_CSS),
+    'the delete target has been shrunk below the 36px the rest of the app uses');
+});
+
+test('a month heading reads as a label, not as another activity', () => {
+  // At body size and body weight it was indistinguishable from an activity name, so the eye had
+  // to work out which lines were headings. All four group headings use the one treatment.
+  ok(/\.bmonth-head \.bmonth-name \{[^}]*text-transform: uppercase/.test(SCRIPT_CSS),
+    'the group heading is no longer set apart from the rows under it');
+  const rb = /function renderBudget\(\) \{[\s\S]*?\n    return h;\n  \}/.exec(SCRIPT)[0];
+  eq((rb.match(/class="spread bmonth-head"/g) || []).length, 4,
+    'not every budget group heading uses the shared treatment');
+  ok(!/<div class="bmonth"><div class="spread" style="margin-bottom:4px">/.test(rb),
+    'a group heading is back to a bare <strong> at body size');
+});
+
+/* ================================================================
    Den-limited events — Webelos Woods is not a bill for the Tigers
    ================================================================ */
 // The helper run is a chain of one-line declarations, so slicing the first of them carries
@@ -2704,7 +2995,17 @@ test('the editor asks for a per-scout price, not a per-head guess', () => {
   ok(fn, 'lineOptionControls() not found');
   ok(fn[0].includes('>per scout<'), 'the scout rate is not labelled per scout');
   ok(fn[0].includes('Include registered leaders'), 'there is no way to include leaders');
-  ok(!/adults\/scout|an assumption/.test(fn[0]), 'the invented-parents assumption is still on screen');
+  // The July ruling killed `adultsFrom: 'assumption'` + `adultsPerScout` — a NUMBER of invented
+  // parents, applied to every per-head line at once. A per-line CHECKBOX is the sanctioned way
+  // back (owner ask, 2026-08-02: the Christmas party is priced per person), so this guard now
+  // names the thing it forbids instead of matching the loose phrase "an assumption", which my own
+  // explanatory comment tripped.
+  ok(!/adultsPerScout|adultsFrom|adults\/scout/.test(fn[0]),
+    'the invented-parents assumption is back in the editor');
+  ok(!/data-ch="line-adults-per-scout"/.test(fn[0]), 'a per-scout adult COUNT input is back');
+  ok(/type="checkbox" data-ch="line-include-adults"/.test(fn[0]),
+    'the per-person option is not a checkbox — a count would be the old bug again');
+  ok(fn[0].includes('One parent per scout'), 'there is no way to price a line per person');
   // The family rates are asked for on every line a family is billed for — whether the pack
   // collects it or the council does — but never on a per-family fee, which has no separate heads.
   const fam = /if \(\(mode === 'families' \|\| mode === 'direct'\) && !perFamily\) \{[\s\S]*?\n    \}/.exec(fn[0]);
@@ -2788,10 +3089,22 @@ test('a charge already waived is not taken off twice', () => {
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(/return \(chargeIsOpen\(c\) && c\.who === who\) \? n \+ \(c\.amountCents \|\| 0\) : n;/.test(fn[0]),
     'the deduction counts settled charges, or charges for a head the tier did not cover');
-  // With nothing charged yet only the SCOUT share has a planning figure to fall back on: an
-  // adult head nobody has recorded is not money any family owes.
-  ok(/: \(who === 'scout' \? tierScoutShareForLine\(r\) : 0\);/.test(fn[0]),
+  // With nothing charged yet, a covered share falls back to what the PLAN expects from it. That
+  // used to be "the scout share or nothing", which was the same thing until a line could plan one
+  // parent per scout — so this now asserts the behaviour rather than the old expression, and
+  // linePlannedShare is what guarantees an UNPLANNED adult head still falls back to zero.
+  ok(/: linePlannedShare\(r\.line, who\);/.test(fn[0]),
+    'the fallback is not what the plan expects from that share');
+  const shareCtx = vm.createContext({});
+  vm.runInContext(
+    `${slice('linePerHead')}\n${slice('linePerFamily')}\n${slice('linePlannedShare')}\n${slice('freshLine')}\n` +
+    `${slice('uid')}\nfunction lineBillingRoster() { return [1, 2, 3]; }`, shareCtx);
+  const linePlannedShare = shareCtx.linePlannedShare;
+  const line = shareCtx.freshLine({ basis: 'per-head', scoutRateCents: 1200, adultRateCents: 1500, siblingRateCents: 800 });
+  eq(linePlannedShare(line, 'adult'), 0,
     'an unrecorded adult head is being treated as forgone family income');
+  eq(linePlannedShare(line, 'sibling'), 0, 'a sibling head is never planned income');
+  ok(linePlannedShare(line, 'scout') > 0, 'the scout share must still have a planning figure');
 });
 
 test('the plan is priced at the CHOSEN tier, and checked against the sales that earn it', () => {
@@ -3264,11 +3577,14 @@ test('a leader’s place is the pack’s cost, never family income', () => {
   ok(fn, 'fundingSummary() not found');
   ok(/: lineFamilyPlanned\(l\);/.test(fn[0]), 'the fees fallback is not the family share');
   ok(!/: linePlanned\(l\);/.test(fn[0]), 'the fees fallback still counts the leaders’ places');
-  // A one-liner, so match to the end of ITS line — a greedy block match would swallow the next
-  // function, which does mention a leader rate, and the assertion would pass for the wrong reason.
-  const fam = /function lineFamilyPlanned\(l\) \{[^\n]*\}/.exec(SCRIPT);
-  ok(fam && /scoutRateCents/.test(fam[0]) && !/leaderRateCents/.test(fam[0]),
+  // It became a block when it learned about a planned parent, so match to its own closing brace
+  // at function indent — the previous single-line match would now silently find nothing.
+  const fam = /function lineFamilyPlanned\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fam, 'lineFamilyPlanned() not found');
+  ok(/linePlannedShare\(l, 'scout'\)/.test(fam[0]) && !/leaderRateCents/.test(fam[0]),
     'what families are billed includes a leader rate');
+  const shareBlk = /function linePlannedShare\(l, who\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(shareBlk && !/leaderRateCents/.test(shareBlk[0]), 'a planned SHARE includes a leader rate');
   // A is still the whole cost — the pack really is spending it.
   const cb = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(/actPlanned \+= linePlanned\(a\);/.test(cb[0]), 'the planned figure stopped counting the leaders');
@@ -3409,12 +3725,12 @@ test('a checkbox and its label are styled wherever they are used', () => {
    Camping — a page per campout, published to parents. 2026-08-02
    ===================================================================== */
 
-test('campText escapes first and only ever emits tags it built', () => {
+test('proseText escapes first and only ever emits tags it built', () => {
   // A section body is prose a leader typed into a textarea and it is republished verbatim to
   // every parent in the pack. If anything here can emit an attacker-chosen tag, the parent
   // view is the delivery mechanism.
-  const ctx = sandbox(['esc', 'campText']);
-  const run = (s) => ctx.campText(s);
+  const ctx = sandbox(['esc', 'proseText']);
+  const run = (s) => ctx.proseText(s);
   ok(!/<script>/.test(run('<script>alert(1)</script>')), 'a script tag survived');
   ok(run('<b>hi</b>').includes('&lt;b&gt;hi&lt;/b&gt;'), 'markup is not escaped');
   ok(!/onerror/.test(run('<img src=x onerror=alert(1)>').replace(/&[a-z]+;/g, '')) === false ||
@@ -3425,9 +3741,41 @@ test('campText escapes first and only ever emits tags it built', () => {
   eq(run('one\ntwo'), '<p>one<br>two</p>', 'a single newline is a line break, not a paragraph');
   eq(run('one\n\ntwo'), '<p>one</p><p>two</p>', 'a blank line starts a new paragraph');
   eq(run('- a\n- b'), '<ul class="camp-list"><li>a</li><li>b</li></ul>', 'a run of dashes is a list');
-  // A mixed block is NOT a list — a heading line followed by bullets must not lose the heading.
-  ok(run('Sleeping\n- pad\n- bag').indexOf('<ul') === -1, 'a mixed block was flattened into a list');
-  ok(run('Sleeping\n- pad').includes('Sleeping<br>- pad'), 'the mixed block lost its bullets');
+  // A HEADING LINE FOLLOWED BY BULLETS MUST NOT LOSE THE HEADING. That requirement is unchanged
+  // and is what these assertions exist for. What changed is how it is met.
+  //
+  // It used to be met by refusing to build a list at all: the old all-or-nothing test
+  // (`bullets.length === lines.length`) failed on any mixed block, so the whole thing fell to
+  // <p>…<br>…</p> and the heading was safe because NOTHING was marked up. The old assertions
+  // pinned that symptom — `indexOf('<ul') === -1`, and the literal `'Sleeping<br>- pad'` — rather
+  // than the requirement. The cost was that the shape people actually write came out as a solid
+  // paragraph with literal hyphens in it, on the page a parent reads once, on a phone, while the
+  // textarea's own placeholder promised "start a line with - for a bullet".
+  //
+  // Runs honour the requirement properly: the heading becomes its own element and the bullets
+  // become a real list. So the assertions now pin the requirement — the heading survives, and it
+  // is never swallowed into an <li> — plus the thing the old shape could not deliver.
+  const mixed = run('Sleeping\n- pad\n- bag');
+  ok(mixed.includes('Sleeping'), 'the mixed block lost its heading');
+  ok(!/<li>[^<]*Sleeping/.test(mixed), 'the heading was swallowed into a list item');
+  ok(mixed.includes('<ul class="camp-list">'), 'the bullets under a heading are still not a list');
+  ok(!/[-•]\s/.test(mixed), 'a literal dash is still being rendered to the reader');
+  eq(run('Sleeping\n- pad'),
+    '<p class="camp-sub">Sleeping</p><ul class="camp-list"><li>pad</li></ul>',
+    'a one-line heading over a list is not a label plus a list');
+  // The label treatment must not swallow a real lead-in SENTENCE — terminal punctuation is the
+  // test, so a Youth Protection preamble stays a paragraph instead of becoming small caps.
+  ok(run('This part is not flexible.\n- one').startsWith('<p>This part is not flexible.</p>'),
+    'a punctuated lead-in sentence was demoted to a small-caps label');
+  // Runs alternate correctly, and trailing prose after a list is its own paragraph. ('one' is
+  // short, unpunctuated and introduces the list, so it IS a label — that is the heuristic, not a
+  // slip. 'three' follows the list and introduces nothing, so it stays a paragraph.)
+  eq(run('one\n- two\nthree'),
+    '<p class="camp-sub">one</p><ul class="camp-list"><li>two</li></ul><p>three</p>',
+    'runs are not being grouped by kind');
+  // A long lead-in is prose even without terminal punctuation — 48 chars is the cut.
+  ok(run('Everything in this list is provided by the pack for you\n- one').startsWith('<p>Everything'),
+    'a long lead-in line was demoted to a small-caps label');
   eq(run('a\r\nb'), '<p>a<br>b</p>', 'CRLF from a pasted document is not handled');
 });
 
@@ -3860,8 +4208,14 @@ test('Home pairs two figures measured against the same thing', () => {
   // percentage it looks like $3,778 of progress that counts for nothing.
   const card = /\/\* ----- Needs you ----- \*\/[\s\S]*?Looking ahead: /.exec(SCRIPT);
   ok(card, 'the Needs you card was not found');
-  ok(/<span class="l">Sold<\/span>/.test(card[0]), 'Home does not show what the goal is measured against');
-  ok(/fmt\(packT\.teEligible\)/.test(card[0]), 'the Sold tile is not the Trail’s End eligible figure');
+  // The tile that names the goal's BASE must be there — but not under the label "Sold", which
+  // claimed the figure was sales when teEligible also carries online (and sometimes cash)
+  // donations. It is the numerator of the "Of goal" percentage beside it, so it is labelled for
+  // that. The assertion pins the intent (a tile, off teEligible, named for what it measures)
+  // rather than one particular word.
+  ok(/<span class="l">Toward goal<\/span>/.test(card[0]), 'Home does not show what the goal is measured against');
+  ok(!/<span class="l">Sold<\/span>/.test(card[0]), '"Sold" is back — teEligible is not sales');
+  ok(/fmt\(packT\.teEligible\)/.test(card[0]), 'the goal-base tile is not the Trail’s End eligible figure');
   ok(!/fmt\(bud0\(\)\.fundsIn\)/.test(card[0]), 'the Funds in tile is back beside a goal percentage');
   ok(!/<span class="l">Funds in<\/span>/.test(card[0]), 'the Funds in label is back on Home');
   // Both tiles now come off teEligible/teGoal, so they can never disagree.
@@ -3904,6 +4258,175 @@ test('the A/B/C worksheet can wrap its labels, and groups its rows', () => {
   const carryAt = tbl[0].indexOf('Carryover from last year');
   ok(grpAt > leadersAt && grpAt < carryAt,
     'the Income label is not between the last "…of which" row and the first income row');
+});
+
+test('a year of Scouting, priced for a family that earns no tier', () => {
+  // Owner ask: what does a year cost a family if they reach no tiers? Every other family figure
+  // in this app is netted down by something (a tier's covers leave B, earned coverage stops
+  // standing, the pack fronts and recovers). This one is deliberately GROSS — the most a family
+  // can be asked for, which is the number you quote to somebody deciding whether they can join.
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `${slice('scoutsInDens')}
+     ${slice('linePerHead')}
+     ${slice('linePerFamily')}
+     ${slice('lineThroughPack')}
+     ${slice('lineFamilyFunded')}
+     ${slice('familyYearCostForDen')}
+     ${slice('familyYearCost')}
+     ${slice('DENS')}
+     function activeScouts() { return SCOUTS; }
+     function allBudgetLines() { return LINES.map(function (l) { return { kind: 'activity', line: l }; }); }
+     function lineDens(l) { return l.dens || []; }`, ctx);
+  ctx.SCOUTS = [{ id: 'a', den: 'Wolf' }, { id: 'b', den: 'Lion' }, { id: 'c', den: '' }];
+  ctx.LINES = [
+    { name: 'Registration', basis: 'per-head', scoutRateCents: 8500, fundedBy: 'families', paidDirectTo: '', dens: [] },
+    { name: 'Blue & Gold', basis: 'per-head', scoutRateCents: 4200, adultRateCents: 5600, siblingRateCents: 2000, fundedBy: 'families', paidDirectTo: '', dens: [] },
+    { name: 'Spring camp', basis: 'per-head', scoutRateCents: 3500, fundedBy: 'families', paidDirectTo: 'Council', dens: [] },
+    { name: 'Tigermania', basis: 'per-head', scoutRateCents: 2000, fundedBy: 'families', paidDirectTo: 'Council', dens: ['Lion', 'Tiger'] },
+    { name: 'Fall campout', basis: 'per-family', scoutRateCents: 3000, adultRateCents: 9900, fundedBy: 'families', paidDirectTo: '', dens: [] },
+    { name: 'Charter fee', basis: 'flat', flatCents: 10000, fundedBy: 'pack', paidDirectTo: '', dens: [] },
+    { name: 'Awards', basis: 'per-head', scoutRateCents: 4900, fundedBy: 'pack', paidDirectTo: '', dens: [] },
+    { name: 'Flat family thing', basis: 'flat', flatCents: 7700, fundedBy: 'families', paidDirectTo: '', dens: [] }
+  ];
+  const wolf = vm.runInContext("familyYearCostForDen('Wolf')", ctx);
+  // 85 + 42 + 35 + 30 = 192. NOT the Tiger-only event, NOT the two pack-funded lines, and NOT
+  // the flat family line — a flat figure is a pack-wide total, not a per-family price.
+  eq(wolf.scout, 19200, 'a Wolf: 85 registration + 42 banquet + 35 spring camp + 30 per-family campout');
+  // OWNER RULING: one adult per scout is EXPECTED, not optional — a Cub Scout does not attend
+  // alone. So the headline is scout + adult, and pricing only the scout is wrong by the whole
+  // adult column.
+  eq(wolf.adult, 5600, 'only Blue & Gold prices an adult; the per-family line must not');
+  eq(wolf.expected, 24800, 'the expected cost is the scout AND the one adult who brings them');
+  eq(wolf.throughPack, 21300, 'through the pack: 85 + (42+56) + 30');
+  eq(wolf.direct, 3500, 'paid direct: the 35 spring camp, which prices no adult');
+  eq(wolf.throughPack + wolf.direct, wolf.expected,
+    'the two halves must add up to the EXPECTED figure, or the expansion ties to nothing on screen');
+  // A per-family line prices ONE fee for whoever comes, so it contributes no adult or sibling.
+  eq(wolf.lines.find((l) => l.name === 'Fall campout').adult, 0,
+    'a per-family line must not add an adult price on top of its single fee');
+  eq(wolf.sibling, 2000, 'only Blue & Gold prices a sibling — siblings stay out of the headline');
+  ok(!wolf.lines.some((l) => l.name === 'Charter fee' || l.name === 'Awards'),
+    'a line the pack pays costs a family nothing and must not be listed');
+  ok(!wolf.lines.some((l) => l.name === 'Flat family thing'), 'a flat line was priced per family');
+  // A den-limited event reaches only its dens.
+  const lion = vm.runInContext("familyYearCostForDen('Lion')", ctx);
+  eq(lion.expected - wolf.expected, 2000, 'the Lion should pay Tigermania and the Wolf should not');
+  const none = vm.runInContext("familyYearCostForDen('')", ctx);
+  eq(none.expected, wolf.expected, 'a scout with no den is in no den-limited event, like the Wolf');
+  // One row per den that HAS scouts — never a price for an empty rank.
+  const rows = vm.runInContext('familyYearCost()', ctx);
+  eq(rows.map((r) => r.den), ['Lion', 'Wolf', ''], 'a den with nobody in it was quoted a price');
+});
+
+test('the year-cost card says what it excludes, and points at the tiers', () => {
+  const fn = /function renderFamilyYearCost\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderFamilyYearCost() not found');
+  const flat = fn[0].replace(/'\s*\+\s*'/g, '');
+  ok(/no reward tier at all/.test(flat), 'the card does not say the figure assumes no tier is earned');
+  ok(/nothing the pack pays for out of its own funds/.test(flat),
+    'the card does not say pack-funded lines are excluded');
+  // The owner's correction: one adult per scout is expected, and the card has to say both that
+  // it counts one per scout AND that a two-scout family only has to send one parent — otherwise
+  // the figure looks like it is double-charging them.
+  ok(/one scout and the adult who brings them/.test(flat),
+    'the headline does not say it includes the accompanying adult');
+  ok(/counted <strong>per scout<\/strong>/.test(flat), 'the per-scout adult rule is not stated');
+  ok(/two scouts only has to send one parent/.test(flat),
+    'the card does not admit that a two-scout family needs only one parent');
+  ok(/Siblings are extra/.test(flat), 'the card does not say siblings are optional');
+  // The three tier states, because "you have tiers but none is planned on" is the one that
+  // silently makes the funding worksheet wrong — it must not read the same as having none.
+  ok(/No reward tiers set yet/.test(fn[0]), 'the no-tiers case is not handled');
+  ok(/none is named as the one the plan counts on/.test(fn[0].replace(/' \+\s*'/g, '')),
+    'a pack with tiers but no planned tier is not warned');
+  ok(/The plan counts on <strong>/.test(fn[0]), 'the planned-tier case is not named');
+  // The row is the app's existing expandable pattern, which already has Enter/Space for free.
+  ok(/class="list-row' \+ \(open \? ' open' : ''\) \+ '" data-act="year-cost-toggle"/.test(fn[0]),
+    'the row is not a .list-row, so keyboard activation will not reach it');
+  ok(/\(e\.key === 'Enter' \|\| e\.key === ' '\) && e\.target\.matches\('\.list-row\[data-act\]/.test(SCRIPT),
+    'the generic keyboard handler for .list-row is gone');
+  // data-name is in SIG_ATTRS, so focus survives the re-render the toggle causes.
+  ok(/var SIG_ATTRS = \[[^\]]*'name'/.test(SCRIPT), 'data-name is not a focus signature attribute');
+});
+
+test('a reward tier can carry the small print the covers list cannot hold', () => {
+  // Owner ask: a stretch tier that reimburses uniform items next year against an itemised
+  // receipt, listing the eligible items. `covers` is charges the app can waive and could never
+  // express that — so a tier gets prose too, rendered through the same escaped renderer the
+  // campout pages use.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const norm = (tier) => {
+    const d = preMigrationState();
+    d.rewardTiers = { duesCents: 0, planOnTierId: '', tiers: [Object.assign({ id: 't1', thresholdCents: 73000 }, tier)] };
+    return ctx.normalizeState(d).rewardTiers.tiers[0];
+  };
+  eq(norm({}).note, '', 'a tier with no note must normalize to empty, not undefined');
+  eq(norm({ note: '- Neckerchief\n- Handbook' }).note, '- Neckerchief\n- Handbook', 'the note was not kept verbatim');
+  eq(norm({ note: 42 }).note, '', 'a non-string note was trusted');
+  // Rendered, never trusted: the same escape-first renderer as the campout sections.
+  const blk = /function tierNoteBlock\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(blk, 'tierNoteBlock() not found');
+  ok(/proseText\(note\)/.test(blk[0]), 'the note is not run through the escaping prose renderer');
+  ok(!/innerHTML|' \+ note \+ '/.test(blk[0]), 'the note is interpolated raw somewhere');
+  ok(/esc\(note\)/.test(blk[0]), 'the textarea does not escape its own value');
+  // A read-only leader sees a note that exists, and no empty furniture when there is none.
+  ok(/if \(!canEdit\(\)\) \{\s*\n\s*if \(!note\.trim\(\)\) return '';/.test(blk[0]),
+    'a read-only screen shows an empty labelled box');
+  // Stored verbatim — trimming would eat the newline before the next bullet.
+  const chBlock = /if \(ch === 'tier-name' \|\| ch === 'tier-threshold'[\s\S]*?commit\(\); return;\n    \}/.exec(SCRIPT);
+  ok(chBlock && /else if \(ch === 'tier-note'\) tier\.note = el\.value;/.test(chBlock[0]),
+    'the note is not saved, or is trimmed on the way in');
+  ok(/h \+= tierNoteBlock\(t\);/.test(SCRIPT), 'the block is never rendered');
+});
+
+test('the prose renderer is not named after the first thing that used it', () => {
+  // It renders campout sections AND reward-tier notes now. A general helper called campText is
+  // the kind of thing the next person copy-pastes instead of reusing.
+  ok(/function proseText\(s\) \{/.test(SCRIPT), 'proseText() not found');
+  // Call sites and declarations only — the comment above proseText names the old function on
+  // purpose, because "why is this not called campText" is a question worth having answered.
+  ok(!/campText\s*\(/.test(SCRIPT), 'something still calls campText');
+  ok(!/function campText/.test(SCRIPT), 'campText is still declared');
+});
+
+test('a line priced per person plans the parent, and knows who is paying for them', () => {
+  // Owner ask: "the Christmas party is budgeted at $7 per scout but it really needs to be per
+  // person — scout + 1 parent + leaders." $7 x 13 scouts + 13 parents + 4 leaders = $210.
+  const { linePlannedCents, freshLine } = sandbox(PRICE_FNS);
+  const party = freshLine({
+    basis: 'per-head', scoutRateCents: 700, adultRateCents: 700,
+    includeAdults: true, includeLeaders: true, leaderRateCents: 700
+  });
+  eq(linePlannedCents(party, 13, 4), 21000, '13 scouts + 13 parents + 4 leaders at $7');
+  // Ticking the box prefills the parent rate from the scout rate — one tick and a party is right.
+  const ch = /} else if \(bk === 'include-adults'\) \{[\s\S]*?\n      \}/.exec(SCRIPT);
+  ok(ch, 'the include-adults handler is missing');
+  ok(/if \(bl\.includeAdults && !bl\.adultRateCents\) bl\.adultRateCents = bl\.scoutRateCents \|\| 0;/.test(ch[0]),
+    'ticking per-person does not prefill the parent rate, so the line silently plans $0 parents');
+  // Absent on an older record → false. It must NOT be inferred from the old assumption field,
+  // or every line that once had it quietly puts parents back in the plan.
+  const nctx = sandbox(NORMALIZE_FNS);
+  const d = preMigrationState();
+  const after = nctx.normalizeState(d);
+  after.budget.activities.concat(after.budget.expenses).forEach((l) => {
+    eq(l.includeAdults, false, `${l.name}: a carried-over line must not plan for parents`);
+  });
+  const norm = /l\.includeAdults = l\.includeAdults === true;/.exec(SCRIPT);
+  ok(norm, 'includeAdults is not normalized to a boolean');
+  const migrate = /if \(typeof l\.includeLeaders !== 'boolean'\) \{[\s\S]*?\n      \}/.exec(SCRIPT);
+  ok(migrate && !/includeAdults/.test(migrate[0]),
+    'includeAdults is inferred from the old adultsFrom field, reviving the bug the July ruling removed');
+  // Who pays decides where it lands: pack-pays is spending, families-pay is expected income.
+  const rep = /function adultPlannedCents\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(rep, 'adultPlannedCents() not found');
+  ok(/if \(lineFamilyFunded\(l\)\) return;/.test(rep[0]),
+    'a families-pay parent is reported as pack spending, which double-counts it against the fees row');
+  ok(/!l\.includeAdults \|\| linePerFamily\(l\)/.test(rep[0]),
+    'it counts lines that plan no parent, or a per-family fee that has no parent head');
+  // A rollover must carry the flag or next year's party silently loses half its heads.
+  ok((SCRIPT.match(/includeAdults: x\.includeAdults, adultRateCents: x\.adultRateCents,/g) || []).length === 2,
+    'the close-out projections drop the per-person flag');
 });
 
 test('the source is text, with no control characters hiding in it', () => {

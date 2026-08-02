@@ -10,6 +10,20 @@
     --ink: #22303F;
     --ink-soft: #5B6875;
     --line: #E0D6BF;
+    /* THE APP HAS TWO KINDS OF RULE, and until now only one token for both. --line is a
+       CONTAINER edge: a card border, a divider between sections — something that says "a
+       different thing starts here". A rule between two rows of the SAME list is not that; it is
+       a tracking aid, and drawn at container weight it competes with the container it sits in.
+       That conflation is why ten separate row idioms had each independently reached for `dashed`
+       to make their rules look lighter than the card around them. A dash pattern is the noisiest
+       separator available — a 300px dashed border is forty small marks where a hairline is one —
+       so every list in the app buzzed. Same disease the budget rows had (chrome drawn round every
+       entry, louder than the entry itself), wearing a different costume.
+       Naming the second kind of rule is the fix; then nothing needs to be dashed.
+       Derived rather than duplicated into all four theme blocks, and mixed toward TRANSPARENT
+       rather than toward a surface colour, so it is also right on .block-card, inside an overlay
+       and on the printed page — wherever it happens to be laid over. */
+    --line-soft: color-mix(in srgb, var(--line) 62%, transparent);
     --accent: #C8820A;        /* popcorn gold */
     --accent-soft: #F4E3C2;
     --accent-text: #8A5A06;
@@ -272,7 +286,20 @@
   /* The only <a> tags in the app. Left alone they render as browser-default blue on a dark
      navy card, which is both off-brand and the worst contrast on the page. Scoped rather than
      a bare `a {}` so this stays a Camping decision until something else needs links. */
-  .camp-facts a, .camp-body a { color: var(--accent); text-underline-offset: 2px; }
+  /* A label over a list inside a prose section — quieter than the items under it, because the
+     items are the content. Same small-caps idiom as .eyebrow and .bmonth-name. */
+  .camp-body .camp-sub {
+    margin: 12px 0 4px;
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .camp-body .camp-sub:first-child { margin-top: 0; }
+  /* --accent-text, not --accent. These are the two things a parent actually taps — "Open in Maps"
+     and the council page — and in LIGHT mode #C8820A on #FFFDF7 measured 3.10:1, under the 4.5:1
+     body-text bar. Dark was fine at 7.07:1, which is exactly why it went unseen: dark is the
+     default theme. --accent-text is the SAME VALUE as --accent in dark (byte-identical there) and
+     lifts light to 5.82:1. The links stay underlined, so nothing was ever colour-only. */
+  .camp-facts a, .camp-body a { color: var(--accent-text); text-underline-offset: 2px; }
   .camp-facts a:hover, .camp-body a:hover { text-decoration-thickness: 2px; }
   .camp-facts a:focus-visible, .camp-body a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   @media (max-width: 420px) {
@@ -367,7 +394,7 @@
     padding: 10px 12px; margin: 0 0 10px; font-size: 0.86rem;
   }
   .mo-line { display: flex; gap: 8px; padding: 3px 0; align-items: baseline; flex-wrap: wrap; }
-  .mo-line + .mo-line { border-top: 1px dashed var(--line); }
+  .mo-line + .mo-line { border-top: 1px solid var(--line-soft); }
   .mo-key {
     flex: 0 0 92px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 700;
     letter-spacing: 0.03em; text-transform: uppercase;
@@ -377,14 +404,23 @@
     flex: 0 0 132px; text-transform: none; font-size: 0.78rem; font-weight: 650;
     color: var(--ink); font-variant-numeric: tabular-nums;
   }
-  .dot-store { background: var(--accent); }
-  .dot-store-open { background: transparent; border: 1.6px solid var(--accent); }
+  /* --accent-text, not --accent. These sit on .cal-cell.has, which is filled --accent-soft —
+     so a gold dot on a gold-tinted cell measured 2.50:1 in light mode, under the 3:1 floor for
+     a non-text indicator, and the hollow variant is only a 1.6px ring of it. In the legend below
+     the grid the same dot sits on --surface and reads fine, so the legend looked right while the
+     grid did not. --accent-text is the SAME COLOUR in dark mode (6.10:1, bit-unchanged) and
+     lifts light mode to 4.69:1. */
+  .dot-store { background: var(--accent-text); }
+  .dot-store-open { background: transparent; border: 1.6px solid var(--accent-text); }
   .dot-pack { background: var(--evt-pack); }
   .dot-act { background: var(--good); }
   .dot-mtg { background: var(--evt-meeting); }
   .ev { padding: 8px 0; border-bottom: 1px solid var(--line); }
   .ev:last-child { border-bottom: none; }
   .ev-meeting { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin: 8px 0; }
+  /* Which audience a note field goes to, said at the field. Sits tight above its own input. */
+  .note-cap { margin: 8px 0 3px; }
+  .note-cap-int { color: var(--bad); }
   .ev-badge {
     display: inline-block; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.04em;
     padding: 2px 7px; border-radius: 99px; vertical-align: middle;
@@ -392,19 +428,39 @@
   .badge-den { background: var(--evt-meeting-soft); color: var(--evt-meeting); }
   .badge-pack { background: var(--evt-pack); color: var(--evt-pack-ink); }
   .badge-act { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
-  .arow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .arow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line-soft); }
   .arow:last-of-type { border-bottom: none; }
   .arow .aname { flex: 1 1 140px; min-height: 36px; min-width: 0; }
   .arow .adate { flex: 0 0 auto; min-height: 36px; }
   .arow input.money-in { width: 88px; min-height: 36px; }
   .bmonth { padding: 4px 0; }
   .bmonth + .bmonth { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 12px; }
+  /* The month is a LABEL, not an entry. At body size and body weight it read as another
+     activity name, so the eye had to work out which lines were headings and which were rows.
+     The rule above already does the dividing; this only has to name the group, so it goes
+     small-caps and quiet — the rows are the content and should be the loudest thing here. */
+  .bmonth-head { margin-bottom: 3px; }
+  .bmonth-head .bmonth-name {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  /* Destructive, and REPEATED — one per row of every list in the app. Red at rest made five ✕s
+     the loudest marks on a card where nothing was wrong; red answers "am I about to destroy
+     something?", a question asked on the way to the control, not from across the page.
+     This lives in the BASE rule, and that is the whole point. Two descendant overrides had
+     already reached this same conclusion independently (.adult-chip, then .brow-meta) — and the
+     .brow-meta one silently broke the ARMED state in light mode: at (0,3,0) it outranked
+     `.btiny.armed { color: #FFF }` at (0,2,0), so the confirm step computed --bad on a --bad
+     fill, contrast 1.00, invisible. Dark mode survived on a (0,4,0) theme override, which is
+     exactly why it went unnoticed. Set it once, here, and .armed keeps its own complete
+     treatment below.
+     NOTE: .armed is deliberately NOT in the hover selector for that reason. */
   .btiny {
-    appearance: none; border: 1px solid transparent; background: transparent; color: var(--bad);
+    appearance: none; border: 1px solid transparent; background: transparent; color: var(--ink-soft);
     border-radius: 7px; font-size: 0.9rem; cursor: pointer; min-height: 36px; min-width: 36px; padding: 0;
   }
-  .btiny:hover { border-color: var(--bad); }
-  .erow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .btiny:hover, .btiny:focus-visible { color: var(--bad); border-color: var(--bad); }
+  .erow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
   .erow:last-of-type { border-bottom: none; }
   .erow .ename { flex: 1 1 150px; min-height: 36px; min-width: 0; }
   .erow input.money-in { width: 92px; min-height: 36px; }
@@ -413,35 +469,128 @@
      The old row laid eight controls of equal weight across two wrapped lines with a dashed
      rule between activities, so a month read as a wall of repeated "Flat cost / Other /
      Pack pays". Now: NAME and MONEY on the first line, because those are what gets scanned;
-     everything else as a sentence underneath that opens on demand. */
+     everything else as a sentence underneath that opens on demand.
+
+     SECOND PASS (owner, 2026-08-02: "make our budget line list easier to read and scan, the
+     way it currently looks it's kind of hard on the eyes"). The first pass fixed the
+     information ORDER and left the CHROME alone, and the chrome turned out to be most of what
+     was tiring: a month of activities was ten bordered input boxes stacked up, and the boxes
+     were the highest-contrast marks on the card — louder than any figure inside them. Four
+     changes, all about giving the eye fixed things to run down:
+       1. the fields go quiet until a pointer or a caret arrives;
+       2. the money lands on ONE axis whether the row shows a field or a figure;
+       3. the actions stop trailing a variable-length sentence and take a column;
+       4. an inset hairline separates rows, instead of a box drawn around every one. */
   .brow {
-    padding: 9px 11px;
+    position: relative;
+    padding: 8px 10px;
     border: 1px solid transparent;
     border-radius: 10px;
     transition: background-color 0.12s ease, border-color 0.12s ease;
   }
-  .brow + .brow { margin-top: 4px; }
+  .brow + .brow { margin-top: 3px; }
+  /* A rule BETWEEN entries rather than a border around each: it separates without adding a
+     fifth rectangle to look at. Inset to the row's own padding so it reads as a divider inside
+     a list, and pulled at the active row AND its next neighbour so it never cuts across the
+     rounded fill that hover, focus and open draw. */
+  .brow + .brow::before {
+    content: ''; position: absolute; left: 10px; right: 10px; top: -2px;
+    border-top: 1px solid var(--line); opacity: 0.5;
+  }
+  .brow:hover::before, .brow:focus-within::before, .brow.open::before,
+  .brow:hover + .brow::before, .brow:focus-within + .brow::before,
+  .brow.open + .brow::before { opacity: 0; }
   .brow:hover, .brow:focus-within { background: var(--surface-2); border-color: var(--line); }
   .brow.open { background: var(--surface-2); border-color: var(--line); }
-  .brow-main { display: flex; align-items: center; gap: 10px; }
+  /* Whose money it is, as a marker instead of three identical grey words buried mid-sentence.
+     Same idiom the ledger already uses for money in vs money out (.lrow.entry) and for the same
+     reason: it is the distinction a treasurer scans for. Only the two FAMILY arrangements are
+     marked — pack-pays is the default and the majority, and a marker on every row marks
+     nothing. Dashed where families pay somebody else direct, because none of that money ever
+     enters the pack's books. The sentence underneath still says it in words, so nothing here
+     depends on colour, and it is drawn as a pseudo-element so the row's own hover border can
+     keep changing colour without fighting it. */
+  .brow::after { content: ''; position: absolute; left: 1px; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; }
+  /* --good, not --navy. In DARK mode --navy is a background token (it is what the topbar is
+     filled with), so #1C2F47 on a #202935 card measured 1.08:1 — the rail was invisible on
+     exactly the theme this app opens in by default. --good is a foreground token in both
+     themes: 7.0:1 dark and 6.34:1 light against the card, 6.01 / 5.19 against the fill hover
+     and open draw. It also happens to be the right MEANING, and the same one the ledger's
+     left rule already carries: green is money coming in, which is what a families-pay-the-pack
+     line is to the pack. */
+  .brow.pays-families::after { background: var(--good); opacity: 0.8; }
+  /* Money that never enters the books gets a BROKEN rule — and the solid/dashed difference is
+     what actually carries it, because these two rails are within 1.2:1 of each other in
+     luminance and nobody should have to tell them apart by hue. */
+  .brow.pays-direct::after { width: 0; border-left: 3px dashed var(--ink-soft); opacity: 0.7; }
+  .brow-main { display: flex; align-items: center; gap: 8px; }
+  /* Quiet fields. The name and the flat cost are edited in place, and at rest they should read
+     as the text they contain — a border is a promise that you CAN type here, which only needs
+     keeping once somebody reaches for it. Touch targets are unchanged; only the paint is. */
+  .brow input.bname, .brow input.bmoney { background: transparent; border-color: transparent; }
+  .brow:hover input.bname, .brow:hover input.bmoney { border-color: var(--line); }
+  .brow input.bname:focus, .brow input.bmoney:focus { background: var(--surface); border-color: var(--line); }
+  /* One exception, and only for the NAME. A quiet field reads as the text it holds — which works
+     until it holds nothing, and a row fresh out of "+ Add activity" is exactly that: on a touch
+     screen there is no hover to reveal the box, so an unnamed row would be a grey word with no
+     hint that it is a field. An unnamed row is unfinished and should invite. An unPRICED one is
+     not — plenty of activities legitimately cost the pack nothing — so the cost stays quiet
+     rather than putting a box round the word "Cost" on every free event, which is where the
+     old design came in. */
+  .brow input.bname:placeholder-shown { border-color: var(--line); }
+  /* An empty flat cost must not read like a value. Right-aligned in the money column with no
+     box, the placeholder was the same weight as $260.00 two rows up. */
+  .brow input.bmoney::placeholder { font-weight: 500; color: var(--ink-soft); opacity: 0.75; }
   /* The name gets the room. It used to sit in a fixed 140–180px box and truncate on almost
      every seeded activity — "School Night — join & recruitin". */
   .brow .bname {
-    flex: 1 1 auto; min-width: 0; min-height: 38px;
+    flex: 1 1 auto; min-width: 0; min-height: 36px;
+    padding-left: 5px; padding-right: 5px;
     font-size: 0.95rem; font-weight: 600;
   }
+  /* ONE axis for the money, whether the row shows a figure or a field. These were a <span> and
+     an <input> with different box geometry and an 11px padding fudge to fake alignment, so the
+     right edge of the column moved from row to row — a flat row's input box stuck out past
+     every per-head figure above it. Identical width and padding on both, transparent border on
+     the span, and the digits line up straight down the page. */
   .brow .bmoney {
-    flex: 0 0 auto; width: 108px; text-align: right;
-    font-variant-numeric: tabular-nums; font-weight: 650;
+    flex: 0 0 auto; width: 102px; min-height: 36px;
+    padding: 0 7px; text-align: right;
+    font-variant-numeric: tabular-nums; font-weight: 650; font-size: 0.95rem;
   }
-  span.bmoney { padding-right: 11px; font-size: 0.95rem; }
-  .brow-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 5px; padding-left: 2px; }
+  .brow span.bmoney {
+    display: flex; align-items: center; justify-content: flex-end;
+    border: 1px solid transparent;
+  }
+  .brow-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 1px; padding-left: 5px; }
+  /* The basis is deliberately SMALL, not `auto`. With flex-wrap on, a line breaks on the items'
+     hypothetical sizes before any of them is allowed to shrink — so a summary sized to its own
+     content pushed the whole action cluster onto a line of its own and left a band of empty row
+     beside it. A short basis keeps the actions up on line one and lets the sentence wrap inside
+     itself, which is what it is for. */
   .brow-meta .bsum {
-    flex: 1 1 140px; min-width: 0;
+    flex: 1 1 120px; min-width: 0;
     font-size: 0.78rem; color: var(--ink-soft);
   }
+  /* Break BETWEEN the facts, never through one. The summary used to wrap wherever it ran out of
+     room, so "Activities & outings" came apart and stranded a word on a line of its own under
+     the date, while the buttons centred themselves against the two-line block. */
+  .brow-meta .bsum .bseg { white-space: nowrap; }
+  /* And the separator travels with the segment AFTER it, never the one before. Emitted between
+     them it could end a line — "…families pay the pack ·" with the wrap after it — which is a
+     dangling separator pointing at nothing. As a ::before inside the next segment's own nowrap
+     box it can only ever start a continuation line, where a leading dot reads as "still the
+     same sentence". */
+  .brow-meta .bsum .bseg + .bseg::before { content: '\00B7\00A0'; opacity: 0.5; }
   .brow-meta .bdot { opacity: 0.5; margin: 0 1px; }
-  .brow-meta .bwhen { min-height: 26px; padding: 2px 8px; font-size: 0.78rem; }
+  /* Inside a month group the date is the scan anchor — and, now that the rows are in date
+     order, a ladder the eye can run down. It was the same soft grey as everything else on the
+     line, so there was no ladder to run down. */
+  .brow-meta .bwhen { min-height: 26px; padding: 2px 6px; font-size: 0.78rem; font-weight: 650; color: var(--ink); }
+  /* The actions get a column of their own instead of trailing whatever length the sentence
+     happened to be. Ragged is the enemy of scanning: five rows of "Record actual" starting at
+     five different x-positions read as five different things. */
+  .brow-meta .bacts { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 2px; }
   /* Both of these sit on the quiet line, so neither should shout. Options is a disclosure,
      not an action; "Record actual" only earns emphasis once there IS an actual to read. */
   .brow-meta .bopts {
@@ -498,15 +647,20 @@
   .den-chip.on { background: var(--accent); border-color: var(--accent); color: #1A1408; }
   .den-chip input { margin: 0; }
   /* On a phone the summary wraps to two lines and shoves the actions onto a third, so they
-     end up scattered. Give it the whole line and let the actions sit together under it. */
+     end up scattered. Give it the whole line and let the actions sit together under it —
+     left-anchored, because a narrow column reads down its left edge and a cluster pushed to the
+     far right ends up orphaned from the row it belongs to. */
   @media (max-width: 520px) {
     .brow-meta .bsum { flex: 1 1 100%; }
-    .brow-meta .lpost { margin-left: -6px; }
+    .brow-meta .bacts { margin-left: -4px; }
+    /* The widest figure this column has to hold is five digits and a comma. On a 375px screen a
+       102px well is room the NAME needs more — that is where the truncation lands. */
+    .brow .bmoney { width: 88px; }
   }
 
   /* Money · Ledger (Phase 0) — same wrapping-row idiom as .erow, with a left rule that
      tells money in from money out at a glance without relying on colour alone. */
-  .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
   .lrow:last-of-type { border-bottom: none; }
   .lrow.entry { border-left: 3px solid var(--bad); padding-left: 8px; }
   .lrow.entry.in { border-left-color: var(--good); }
@@ -516,10 +670,30 @@
   .lrow input.money-in { width: 96px; min-height: 36px; }
   .lrow input[type="date"] { min-height: 36px; }
   .lrow .lbal { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  /* Reconcile rows: a tick you can actually hit, then ONE money axis. Scoped to .rec-row so the
+     four other .perscout surfaces (season setup, entries, fundraisers, inventory) are untouched. */
+  .rec-row { cursor: pointer; }
+  .rec-row > input[type="checkbox"] {
+    width: 20px; height: 20px; min-height: 20px; margin: 0; padding: 0;
+    flex: 0 0 auto; accent-color: var(--accent);
+  }
+  .rec-row .rec-when { flex: 0 0 62px; font-variant-numeric: tabular-nums; }
+  .rec-row .lname { flex: 1 1 120px; min-width: 0; }
+  .rec-row .rec-ref { flex: 0 0 auto; }
+  /* margin-left:auto pins it to the row's right edge whether or not a check number precedes it. */
+  .rec-row .rec-amt {
+    flex: 0 0 92px; margin-left: auto; text-align: right;
+    font-variant-numeric: tabular-nums; font-weight: 650; color: var(--ink);
+  }
+  @media (max-width: 520px) {
+    /* The description takes its own line; the tick, date and figure stay together on the first. */
+    .rec-row .lname { flex: 1 1 100%; order: 3; }
+    .rec-row .rec-ref { order: 4; }
+  }
   .lrow .lmore { flex: 0 0 auto; }
   .lrow .perscout { white-space: nowrap; }
   .ldetail { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0 2px; }
-  .tier-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .tier-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
   .tier-row:first-of-type { border-top: 1px solid var(--line); }
   .tier-row .tname { flex: 1 1 130px; min-height: 36px; min-width: 0; }
   .tier-row .treward { flex: 1 1 130px; min-height: 36px; min-width: 0; }
@@ -534,14 +708,14 @@
   }
   .list-row {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
-    padding: 12px 4px; border-bottom: 1px solid var(--line); cursor: pointer;
+    padding: 12px 4px; border-bottom: 1px solid var(--line-soft); cursor: pointer;
   }
   .list-row:last-child { border-bottom: none; }
   .list-row:hover .lr-name { color: var(--accent-text); }
   .lr-name { font-weight: 650; }
   .assign-row {
     display: flex; align-items: center; gap: 8px; padding: 6px 0;
-    border-bottom: 1px dashed var(--line); flex-wrap: wrap;
+    border-bottom: 1px solid var(--line-soft); flex-wrap: wrap;
   }
   .assign-row:last-of-type { border-bottom: none; }
   .assign-name { flex: 1 1 120px; font-weight: 600; }
@@ -622,7 +796,7 @@
     .sync-pill { padding: 4px 7px; }
     .sync-pill .sync-lbl { display: none; }
   }
-  .leader-row { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+  .leader-row { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
   .leader-row:last-of-type { border-bottom: none; }
   .leader-row input { min-height: 36px; }
   .pill.bad { background: var(--bad); color: #FFF; }
@@ -708,7 +882,7 @@
   .rsvp-list { margin-top: 4px; }
   .rsvp-row {
     display: flex; align-items: center; gap: 8px; padding: 6px 0;
-    border-bottom: 1px dashed var(--line); flex-wrap: wrap;
+    border-bottom: 1px solid var(--line-soft); flex-wrap: wrap;
   }
   .rsvp-row:last-child { border-bottom: none; }
   .rsvp-name { flex: 1 1 110px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
@@ -742,7 +916,7 @@
   .adults-in { width: 60px; min-height: 36px; padding: 4px 6px; text-align: center; font-variant-numeric: tabular-nums; }
   .att-row {
     display: flex; align-items: center; gap: 8px; padding: 8px 0;
-    border-bottom: 1px dashed var(--line); cursor: pointer; font-size: 0.92rem;
+    border-bottom: 1px solid var(--line-soft); cursor: pointer; font-size: 0.92rem;
   }
   .att-row:last-child { border-bottom: none; }
   .att-row input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
@@ -773,7 +947,7 @@
   .list-row.wk-past { opacity: 0.55; }
   /* Phase 4 — the 510-278 A/B/C worksheet. */
   .fund-tbl { width: 100%; margin: 4px 0 0; font-size: 0.86rem; }
-  .fund-tbl td { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .fund-tbl td { padding: 4px 0; border-bottom: 1px solid var(--line-soft); }
   /* THE LABELS ARE SENTENCES. The global `th, td { white-space: nowrap }` is right for the data
      grids — they sit in a .tbl-wrap and scroll sideways — but this table has no wrapper, so a
      long label could not wrap and could not scroll: it pushed the table to 542px inside a 349px
@@ -894,8 +1068,8 @@
     border-radius: 99px;
     padding: 3px 4px 3px 10px;
   }
-  .adult-chip .btiny { min-height: 24px; min-width: 24px; font-size: 0.8rem; line-height: 1; color: var(--ink-soft); }
-  .adult-chip .btiny:hover { border-color: var(--bad); color: var(--bad); }
+  /* Size only — the colour behaviour now comes from the base .btiny rule. */
+  .adult-chip .btiny { min-height: 24px; min-width: 24px; font-size: 0.8rem; line-height: 1; }
 
   /* ---------- Wave 17 ---------- */
   /* Season-setup consolidation + treasurer aids reuse existing classes/tokens
@@ -969,7 +1143,7 @@
   .acct-list { display: flex; flex-direction: column; }
   .acct-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dashed var(--line);
+    flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line-soft);
   }
   .acct-row:last-child { border-bottom: none; }
   .acct-who { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
@@ -1006,7 +1180,7 @@
   }
   .pv-stand {
     display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-    padding: 8px 2px; border-bottom: 1px dashed var(--line);
+    padding: 8px 2px; border-bottom: 1px solid var(--line-soft);
   }
   .pv-stand:last-child { border-bottom: none; }
   .pv-rank { min-width: 1.8em; text-align: right; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
@@ -1478,10 +1652,26 @@
   //   families · ''         vendor ← PACK ← families. Out, then back in per family.
   //   families · 'Council'  Council ← families. The pack is not in this transaction.
   // ---------------------------------------------------------------------------
-  // WHOSE HEADS THE PACK BUDGETS FOR — owner ruling, 2026-07-27.
+  // WHICH HEADS ARE PRICED INTO THE PLAN — owner ruling, 2026-07-27.
   //
-  // THE PACK COVERS SCOUTS AND REGISTERED LEADERS. NOBODY ELSE. Parents and siblings pay
-  // their own way, so they must never appear in the pack's planned figure.
+  // THE PLAN PRICES SCOUT HEADS AND REGISTERED-LEADER HEADS. NOBODY ELSE'S. Parents and
+  // siblings never appear in the pack's planned figure.
+  //
+  // READ THAT AS "WHOSE HEADS ARE COUNTED", NOT "WHO THE PACK PAYS FOR". Conflating the two
+  // has caused real confusion (three times over, 2026-08-02), because the answer to "who
+  // ultimately pays" is different for every row and is what the reward tiers act on:
+  //
+  //   head                          in A?   back in B?   who ends up paying
+  //   scout, families-pay line      yes     yes, as fee  the FAMILY — the pack only fronts it
+  //   scout, pack-pays line         yes     no           the pack
+  //   registered leader             yes*    never        the pack, always   (*if includeLeaders)
+  //   parent / sibling              NO      no           the family, outside the plan entirely
+  //
+  // Which is exactly why a tier lands in two different places. Covering a SCOUT share adds
+  // nothing to A — that head was always priced in; the tier just stops the fee coming back in
+  // B, so popcorn pays what the family would have. Covering an ADULT or SIBLING share has to be
+  // ADDED to A, because that head was never priced anywhere. Same tier mechanism, opposite
+  // side of the worksheet, and the difference is this table rather than anything about tiers.
   //
   // What this replaces: `adultsFrom: 'assumption'` + `adultsPerScout` (default 1) invented one
   // parent per scout and multiplied them by the adult rate, so a per-head line with any adult
@@ -1506,6 +1696,22 @@
       id: uid(), name: '', basis: 'flat',
       scoutRateCents: 0, leaderRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
       includeLeaders: false,
+      // PER PERSON, not per scout — owner ask, 2026-08-02: "the Christmas party is budgeted at
+      // $7 per scout but it really needs to be per person: scout + 1 parent + leaders."
+      //
+      // This is the ONE thing the July ruling forbade, brought back the only way that ruling
+      // allows: as a checkbox on the line that needs it, never an assumption applied to all of
+      // them. What it killed was `adultsFrom: 'assumption'` + `adultsPerScout` (default 1),
+      // which silently invented a parent on EVERY per-head line with any adult rate and
+      // overstated what the pack had to raise. Ticked here, on this line, by somebody who knows
+      // the party charges per head at the door, it is simply the truth about the cost.
+      //
+      // `adultRateCents` is unchanged and means what it always did: the price of ONE ADULT HEAD.
+      // Who pays for it is `fundedBy`, as ever. This flag only decides whether the PLAN counts
+      // one per scout — which is why it also changes what families are expected to owe on a
+      // families-pay line, and why a tier covering that adult share then behaves like a covered
+      // scout share (the income was planned) instead of adding to A.
+      includeAdults: false,
       fundedBy: 'pack', paidDirectTo: '', category: 'other',
       // Has a person actually answered "who is paid for this?" on this line — as opposed to it
       // holding whatever the upgrade from the old familyPays boolean assigned? The old model
@@ -1622,6 +1828,20 @@
       dens: [],           // kind 'activity' only — which dens it is FOR; [] = the whole pack
       name: '',           // kind 'activity' only — meetings derive their label
       date: '', time: '', endTime: '', location: '', note: '',
+      // TWO notes on a meeting (owner ask, 2026-08-02): one parents read, one only leaders do.
+      //
+      // `note` stays the PUBLISHED one and this is the deliberate half of the decision. Every
+      // note already written was written into a field that publishes, and it publishes FOUR ways
+      // (buildParentView, monthlyDigest's copy-to-parents text, the .ics that gets imported into
+      // BAND, and the printable agenda). Making `note` the internal one would have silently
+      // un-published every existing note — including the location, which is the thing parents
+      // most rely on — so instead `note` keeps doing exactly what it already did and the new
+      // field starts empty. No migration, and nothing a parent can see today disappears.
+      //
+      // ⚠ noteInternal MUST NOT reach any outbound surface. It is absent from buildParentView
+      // (an allowlist — never spread it), from monthlyDigest, and from the ICS export. A harness
+      // test fails if it appears in any of the three.
+      noteInternal: '',
       slot: 0,            // program month; for a dated event, derived from the date
       sourceUid: '',      // round-trips ICS so a re-import updates rather than duplicates
       // kind 'den' only — the ONE adventure this meeting works toward (owner, 2026-08-02:
@@ -1874,23 +2094,54 @@
     if (!n) return 'Untitled trip';
     return n.length > 22 ? n.slice(0, 21).trim() + '…' : n;
   }
-  // A section body is plain text a leader typed, so it is escaped first and then given the
-  // small amount of structure people actually use: blank lines separate paragraphs, and a run
-  // of lines starting "- " becomes a list. Nothing else — this is not a markdown renderer, and
-  // it must never be able to emit a tag that was not built here.
-  function campText(s) {
+  // ANY block of prose a leader typed — a campout section, a reward-tier note. Escaped first,
+  // then given the small amount of structure people actually use: blank lines separate
+  // paragraphs, and a run of lines starting "- " becomes a list. Nothing else — this is not a
+  // markdown renderer, and it must never be able to emit a tag that was not built here.
+  // (Was `campText` until a tier note wanted the same treatment. A general renderer with a
+  // camping-specific name is the kind of thing that gets copy-pasted rather than reused.)
+  function proseText(s) {
     var src = String(s == null ? '' : s).replace(/\r\n?/g, '\n');
     if (!src.trim()) return '';
+    // Local, not hoisted: the Node harness slice-evaluates this function on its own, and keeping
+    // it self-contained is what makes that possible.
+    var BULLET_LINE = /^\s*[-•]\s+/;
     return src.split(/\n{2,}/).map(function (para) {
       var lines = para.split('\n').filter(function (l) { return l.trim() !== ''; });
       if (!lines.length) return '';
-      var bullets = lines.filter(function (l) { return /^\s*[-•]\s+/.test(l); });
-      if (bullets.length === lines.length) {
-        return '<ul class="camp-list">' + lines.map(function (l) {
-          return '<li>' + esc(l.replace(/^\s*[-•]\s+/, '')) + '</li>';
-        }).join('') + '</ul>';
-      }
-      return '<p>' + lines.map(function (l) { return esc(l); }).join('<br>') + '</p>';
+      // GROUP THE PARAGRAPH INTO RUNS OF ONE KIND. The test used to be all-or-nothing —
+      // `bullets.length === lines.length`, "every line is a bullet or none is" — so the shape
+      // people actually write, a lead-in line followed by its items ("Sleeping", then four things
+      // to pack), FAILED it and fell through to the <p>…<br>…</p> branch. It came out as one solid
+      // paragraph with LITERAL hyphens in it. That is how "What to bring" and the Youth Protection
+      // tenting rules rendered, while "Before you go" two cards above got a real list — same page,
+      // same authoring syntax, two different treatments. And the textarea's own placeholder
+      // promises "start a line with - for a bullet", so the app was breaking its own documented
+      // promise on the page a parent reads once, on a phone, looking for the packing list.
+      var runs = [];
+      lines.forEach(function (l) {
+        var isB = BULLET_LINE.test(l), last = runs[runs.length - 1];
+        if (last && last.bullet === isB) last.lines.push(l);
+        else runs.push({ bullet: isB, lines: [l] });
+      });
+      return runs.map(function (r, i) {
+        if (r.bullet) {
+          return '<ul class="camp-list">' + r.lines.map(function (l) {
+            return '<li>' + esc(l.replace(BULLET_LINE, '')) + '</li>';
+          }).join('') + '</ul>';
+        }
+        // A short, unpunctuated single line that INTRODUCES a list is a label, not a sentence —
+        // and it should be quieter than the items under it, because the items are the content.
+        // "Sleeping" / "Wearing" / "Camp" used to sit at body size and weight, indistinguishable
+        // from the things listed beneath them. The terminal-punctuation test is what keeps a real
+        // lead-in SENTENCE ("This part is Youth Protection, and it is not flexible.") out of small
+        // caps — it ends in a full stop, so it stays a paragraph.
+        var lead = r.lines[0].trim(), next = runs[i + 1];
+        if (r.lines.length === 1 && next && next.bullet && lead.length <= 48 && !/[.?!:]$/.test(lead)) {
+          return '<p class="camp-sub">' + esc(lead) + '</p>';
+        }
+        return '<p>' + r.lines.map(function (l) { return esc(l); }).join('<br>') + '</p>';
+      }).join('');
     }).join('');
   }
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
@@ -2180,6 +2431,12 @@
         if (fromLeaders) l.adultRateCents = 0;
       }
       l.leaderRateCents = centsOf(l.leaderRateCents);
+      // One parent per scout in the PLAN (2026-08-02). Absent → false, so no existing line's
+      // planned figure moves. It is deliberately NOT inferred from `adultsFrom: 'assumption'`:
+      // that field was the bug the July ruling removed, and reviving it here would quietly put
+      // parents back into the plan on every line that once had it — which is exactly the
+      // overstatement this flag has to be opted into to avoid.
+      l.includeAdults = l.includeAdults === true;
       // A leader rate with the box unticked is money nobody is planning to spend, and a
       // ticked box with no rate costs nothing — both are harmless, and neither is worth
       // second-guessing what somebody typed.
@@ -2301,6 +2558,7 @@
           date: typeof m.date === 'string' ? m.date : '',
           time: parseLegacyTime(m.time),
           note: typeof m.note === 'string' ? m.note : '',
+          noteInternal: typeof m.noteInternal === 'string' ? m.noteInternal : '',
           slot: dateToSlot(m.date),
           adventure: typeof m.adventure === 'string' ? m.adventure : ''
         }));
@@ -2361,6 +2619,9 @@
       e.endTime = parseLegacyTime(e.endTime);
       e.location = typeof e.location === 'string' ? e.location : '';
       e.note = typeof e.note === 'string' ? e.note : '';
+      // Absent on every record written before this existed → '', which is "nothing internal
+      // recorded" and is exactly what those meetings meant.
+      e.noteInternal = typeof e.noteInternal === 'string' ? e.noteInternal : '';
       e.slot = (typeof e.slot === 'number' && isFinite(e.slot)) ? Math.min(11, Math.max(0, Math.floor(e.slot))) : 0;
       if (e.date) e.slot = dateToSlot(e.date);   // a date always wins over a stored slot
       e.sourceUid = typeof e.sourceUid === 'string' ? e.sourceUid : '';
@@ -2618,6 +2879,11 @@
       // The deadline to reach it (owner ruling, 2026-07-27). Absent → '' , which is a tier with
       // no deadline: reach it any time in the season, exactly as before.
       tier.dueBy = typeof tier.dueBy === 'string' ? tier.dueBy : '';
+      // Free prose about the reward (owner ask, 2026-08-02). The `covers` list above is the
+      // machine-readable half — charges the app can waive — and a great many real rewards are
+      // not that shape at all: "we reimburse these uniform items next year against an itemised
+      // receipt", and then the list of eligible items. Absent → '' , so no tier changes.
+      tier.note = typeof tier.note === 'string' ? tier.note : '';
       // Scouts who paid the difference instead of selling it. Scout ids, never resolved here —
       // normalizeState does not resolve references; a stale id simply matches nobody.
       if (!Array.isArray(tier.madeUp)) tier.madeUp = [];
@@ -2789,6 +3055,7 @@
     rsvpOpen: {},        // Wave 2 — { eventKey: true } expanded RSVP blocks (not persisted)
     attOpen: {},         // Wave 2 — { meetingId: true } expanded attendance blocks
     collectOpen: {},     // Wave 3 — { expenseId: true } expanded fee-collection grids
+    yearCostOpen: {},    // { den: true } expanded rows on "What a year costs a family" ('' = no den)
     advOpen: {},         // Wave 3 — { scoutId: true } expanded per-scout elective rows
     sfDraft: { name: '', dates: [] }, // Wave 11 — transient new-storefront draft (name + queued dates); NOT persisted
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
@@ -2997,6 +3264,23 @@
   }
   function getFundraiser(id) { return state.fundraisers.find(function (f) { return f.id === id; }); }
   function activeScouts() { return state.scouts.filter(function (s) { return !s.archived; }); }
+  // RENDER ORDER IS NEVER THE STORED ORDER. state.scouts is kept name-sorted at the two sites
+  // that ADD scouts (add-scout, Trail's End import) — but the rename handler is not one of them,
+  // and renaming is the whole point of that field ("a typo in a child's name is the one thing in
+  // here nobody should have to live with"). So the moment a leader fixed a spelling, that scout
+  // was stranded at their old alphabetical position — in the roster, the advancement table, the
+  // family dropdown, AND the attendance roll-call a leader ticks names off at the door. A record
+  // saved before those write-site sorts existed was never sorted at all.
+  // Sorting a COPY here means no rendered list can inherit either problem. Deliberately NOT a
+  // sort in the rename handler: that would reorder the stored array and sync a reorder to every
+  // other leader mid-keystroke. Stable tiebreak on id so two scouts sharing a name never swap
+  // places between renders.
+  function byScoutName(list) {
+    return list.slice().sort(function (a, b) {
+      return String(a.name || '').localeCompare(String(b.name || '')) ||
+        String(a.id).localeCompare(String(b.id));
+    });
+  }
   // ---------------------------------------------------------------------------
   // FAMILIES — brothers and sisters, 2026-07-27.
   //
@@ -3054,7 +3338,34 @@
     // Phase 2 — one pass over events[] replaces the old meetings[] + activities[] pair.
     // Consumers switch on ev.kind rather than on which array the row came out of.
     state.events.forEach(function (ev) { if (ev.date && monthKey(ev.date) === mk) push(ev.date, { type: 'event', ev: ev }); });
+    // A DAY HAPPENS IN TIME ORDER, and this was handing back array order: every storefront
+    // first (they are pushed first), then events in the order somebody created or imported them.
+    // state.storefronts is date-sorted by sortStorefronts(); state.events is never sorted at all.
+    // So a Saturday with a 9:00 storefront, a 4:00 activity and a 6:30 pack meeting listed in
+    // whatever order the records happened to exist — and worse, the month grid can only fit
+    // three dots per cell (evs.slice(0, 3)), so on a busy day those three were an ARBITRARY
+    // three rather than the day's first three.
+    // Sorted here, once, because four callers read this map and all four want the same answer.
+    // These arrays are built in this function, so nothing stored is reordered.
+    Object.keys(map).forEach(function (day) { map[day].sort(cmpDayEvent); });
     return map;
+  }
+  // When one calendar entry starts: an event's own time, or a storefront's earliest block.
+  function dayEventTime(e) {
+    if (e.type === 'storefront') {
+      var start = '';
+      (e.sf.blocks || []).forEach(function (b) { if (b.start && (!start || b.start < start)) start = b.start; });
+      return start;
+    }
+    return e.ev.time || '';
+  }
+  // Untimed things sort after timed ones — an all-day activity has no claim on 9am — then by
+  // kind, then by id, so a day never swaps two of its own rows between renders.
+  function cmpDayEvent(a, b) {
+    var ak = a.type === 'storefront' ? a.sf.id : a.ev.id;
+    var bk = b.type === 'storefront' ? b.sf.id : b.ev.id;
+    return (dayEventTime(a) || '99:99').localeCompare(dayEventTime(b) || '99:99') ||
+      a.type.localeCompare(b.type) || String(ak).localeCompare(String(bk));
   }
 
   /* ---------------- Math ---------------- */
@@ -3384,11 +3695,16 @@
         // `standing` long ago, and counting it again would take it off twice. With no charges
         // raised yet, the scout share falls back to the planning figure — an adult share does
         // not, because nothing bills a family for a head nobody has recorded.
+        // With no charges raised yet, a covered share falls back to what the PLAN expects from
+        // that share. It used to fall back to 0 for anything but the scout, on the grounds that
+        // nothing bills a family for a head nobody has recorded — true until a line could plan
+        // one parent per scout (2026-08-02). Leaving it at 0 there kept the parent's fee in B
+        // while a tier had already promised to waive it, so the goal came out short by it.
         var mine = rows.length
           ? rows.reduce(function (n, c) {
             return (chargeIsOpen(c) && c.who === who) ? n + (c.amountCents || 0) : n;
           }, 0)
-          : (who === 'scout' ? tierScoutShareForLine(r) : 0);
+          : linePlannedShare(r.line, who);
         mine = Math.min(mine, owed);
         if (mine <= 0) return;
         owed -= mine;
@@ -3399,7 +3715,8 @@
     // An adult or sibling share the pack has taken on is NEW spending: those rates are never
     // planned (they are what a family owes for the heads it brings), so buying adult shirts as a
     // reward has to enter A or the cost sits nowhere at all.
-    var tierExtra = coverCostForKeys(assumeCov).extra;
+    var tierCost = coverCostForKeys(assumeCov);
+    var tierExtra = tierCost.extra;
     expenses += tierExtra;
     var otherFr = 0;
     state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
@@ -3422,8 +3739,11 @@
       tierAssumed: tierAssumed,
       incomeLines: incomeLines, familyDirect: familyDirect,
       pct: pct, pctOk: pctOk, salesGoal: salesGoal,
-      // What a covered non-scout share added to A, so the worksheet can show it as its own line.
+      // What a covered share added to A, so the worksheet can show it as its own line — and
+      // split by cause, because "we bought an adult a shirt" and "we paid a council fee back"
+      // are different sentences and printing both under the first one was simply wrong.
       tierExtra: tierExtra,
+      tierExtraHeads: tierCost.extraHeads, tierExtraReimburse: tierCost.extraReimburse,
       // What covering the pack's leaders costs, and what that is per scout once popcorn carries it.
       leaderPlanned: leaderPlanned,
       leaderPerScout: (salesGoal != null && scouts > 0 && leaderPlanned > 0)
@@ -3603,12 +3923,23 @@
   // month grid: that grid is labelled from the program year, so filing a July-2026 event
   // into it would head the group "July 2028" and be wrong by two years without saying so.
   // outOfYearActivities() collects them under their real month instead.
+  // IN DATE ORDER, which it was not: the month group listed lines in the order they happen to
+  // sit in state.budget.activities, so an October that had been edited over a season read
+  // "Oct 17, Oct 24, Oct 25, Oct 10, Oct 2". Nothing about that is scannable, and no amount of
+  // typography rescues a list whose order is arbitrary. Undated lines sort after the dated ones
+  // — the same convention unbudgetedActivities() already uses — then by name so the order is
+  // stable rather than dependent on when each was added.
   function activitiesInSlot(slot) {
     return state.budget.activities.filter(function (a) {
       var ev = eventForLine(a);
       if (!ev) return false;
       if (ev.date && !dateInProgramYear(ev.date, state.budget.programYear)) return false;
       return lineSlot(a) === slot;
+    }).sort(function (a, b) {
+      var da = (eventForLine(a) || {}).date || '', db = (eventForLine(b) || {}).date || '';
+      if (!!da !== !!db) return da ? -1 : 1;
+      if (da !== db) return da < db ? -1 : 1;
+      return (a.name || '').localeCompare(b.name || '');
     });
   }
   function outOfYearActivities() {
@@ -3647,15 +3978,25 @@
   // to the scout count — which is the right answer when nobody is linked, and was the only answer
   // before families existed.
   function linePlannedHeads(l, scoutN, leaderN, familyN) {
-    if (!linePerHead(l)) return { scouts: 0, leaders: 0 };
-    if (linePerFamily(l)) return { scouts: familyN == null ? scoutN : familyN, leaders: 0 };
-    return { scouts: scoutN, leaders: l.includeLeaders ? (leaderN || 0) : 0 };
+    if (!linePerHead(l)) return { scouts: 0, leaders: 0, adults: 0 };
+    // A per-family fee is ONE fee for whoever the family brings, so there are no separate adult
+    // or leader heads to count — that is the whole point of the basis.
+    if (linePerFamily(l)) return { scouts: familyN == null ? scoutN : familyN, leaders: 0, adults: 0 };
+    return {
+      scouts: scoutN,
+      leaders: l.includeLeaders ? (leaderN || 0) : 0,
+      // One parent per scout, and only where the line says so. Every scout who is billed brings
+      // an adult, so the count is the scout count — not the family count: two siblings at a
+      // per-head party are two scouts and, for budgeting, two adults.
+      adults: l.includeAdults ? scoutN : 0
+    };
   }
   function linePlannedCents(l, scoutN, leaderN, familyN) {
     if (!linePerHead(l)) return l.flatCents || 0;
     var hd = linePlannedHeads(l, scoutN, leaderN, familyN);
     return (l.scoutRateCents || 0) * hd.scouts +
-      (l.leaderRateCents || 0) * hd.leaders;
+      (l.leaderRateCents || 0) * hd.leaders +
+      (l.adultRateCents || 0) * hd.adults;
   }
   // Does this money pass through the pack's bank account? A line with a payee named in
   // paidDirectTo never does — families pay THEM — so it must never move the pack's balance,
@@ -3697,11 +4038,11 @@
   // event afterwards can never hide a reply that was given or a head that was counted.
   function eventRoster(ev, recorded) {
     var dens = ev ? (ev.kind === 'den' && ev.den ? [ev.den] : eventDens(ev)) : [];
-    return state.scouts.filter(function (s) {
+    return byScoutName(state.scouts.filter(function (s) {
       if (recorded && recorded[s.id]) return true;
       if (s.archived) return false;
       return !dens.length || dens.indexOf(s.den) !== -1;
-    });
+    }));
   }
   // "Webelos", "Webelos and Arrow of Light", "Tiger, Wolf and Bear".
   function denListLabel(dens) {
@@ -3725,7 +4066,43 @@
   // the whole point of the include-leaders box, and counting it as money families will hand over
   // tells the pack to raise LESS than it needs by exactly the leaders' cost. (linePlanned is the
   // right figure for A — what the pack plans to spend. This is the other half of that line.)
-  function lineFamilyPlanned(l) { return (l.scoutRateCents || 0) * lineBillingRoster(l).length; }
+  // What the PLAN expects from ONE SHARE of a line, across everyone it bills. One function, so the
+  // fees fallback, the scout-share figure a tier gets credited with, and the adult-share figure
+  // cannot diverge — they did briefly, and a tier covering only the scout share was credited the
+  // parent's money along with it.
+  //   scout    always planned
+  //   adult    planned only where the line says one parent comes per scout
+  //   sibling  never planned — nothing requires a sibling to attend anything
+  function linePlannedShare(l, who) {
+    if (!linePerHead(l)) return 0;
+    var heads = lineBillingRoster(l).length;
+    if (who === 'adult') {
+      return (l.includeAdults && !linePerFamily(l)) ? (l.adultRateCents || 0) * heads : 0;
+    }
+    if (who === 'sibling') return 0;
+    return (l.scoutRateCents || 0) * heads;
+  }
+  // Everything families are expected to put in for a line: the scout, plus the one parent where
+  // the line plans for one. A leader's place is still never family income — that is the pack
+  // covering its own, which is what this function was written to stop counting as a family fee.
+  function lineFamilyPlanned(l) {
+    return linePlannedShare(l, 'scout') + linePlannedShare(l, 'adult');
+  }
+  // What the plan spends on PARENTS' places, across every line the pack handles. Reported for the
+  // same reason the leaders' figure is: A grows by it, and a pack that has started paying for
+  // parents should be able to see how much of its goal that is rather than discover it as a gap.
+  function adultPlannedCents() {
+    var cents = 0;
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      if (!lineThroughPack(l) || !l.includeAdults || linePerFamily(l)) return;
+      // Only where the PACK is paying. On a families-pay line the parent's place is planned
+      // income, not planned spending, and it is already counted in the fees row.
+      if (lineFamilyFunded(l)) return;
+      cents += (l.adultRateCents || 0) * lineBillingRoster(l).length;
+    });
+    return cents;
+  }
   // What the pack plans to spend on LEADERS' places, across every line it handles. Reported so a
   // pack covering its leaders can see what that costs and what it adds to each scout's goal.
   function leaderPlannedCents() {
@@ -3800,6 +4177,75 @@
       return { family: fam, scouts: fam.members, cents: cents };
     }).filter(function (f) { return f.cents > 0; });
   }
+  // WHAT A YEAR OF SCOUTING COSTS A FAMILY, WITH NO TIER EARNED — owner ask, 2026-08-02.
+  //
+  // Every other family figure in this app is netted down by something: fees a tier covers leave
+  // B, coverage already earned stops standing, the pack fronts and recovers. This is the one a
+  // parent asks at the joining meeting and a committee needs before it sets a tier: the full
+  // out-of-pocket year for a family whose scout sells nothing at all.
+  //
+  // It is therefore deliberately GROSS. No tier coverage, no waivers, no forgiveness — the
+  // worst case, which is also the honest one to quote to somebody deciding whether they can
+  // afford it. And it is per DEN, because den-limited events are most of what makes two
+  // families' years differ.
+  //
+  // OWNER RULING, 2026-08-02: ONE ADULT PER SCOUT IS EXPECTED, NOT OPTIONAL. A Cub Scout does
+  // not attend alone — a parent comes — so a family-cost quote that prices only the scout is
+  // wrong by the whole adult column. It is budgeted at one adult PER SCOUT even though a family
+  // with two scouts only has to send one parent: that is the conservative direction for a
+  // quote, and it is how the pack would plan the heads.
+  //
+  // This does NOT change the pack's own plan. A is still scouts and registered leaders and
+  // nobody else — parents pay their own way, which is exactly why their share belongs in this
+  // figure and not in A.
+  //
+  //   scout     what one scout owes, whether the pack collects it or a council does
+  //   adult     the one accompanying adult, on every line that prices one — expected, and so
+  //             part of the headline figure rather than an optional extra beside it
+  //   expected  scout + adult, which is what a family with one scout actually pays
+  //   sibling   a younger brother or sister brought along. Genuinely optional, so it stays
+  //             separate — no pack requires a sibling to attend anything.
+  function familyYearCostForDen(den) {
+    var one = [{ id: '_one', den: den || '' }];
+    var out = { den: den || '', scout: 0, adult: 0, sibling: 0, throughPack: 0, direct: 0, lines: [] };
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      if (!lineFamilyFunded(l)) return;                      // the pack pays it: costs a family nothing
+      if (!linePerHead(l)) return;                           // a flat line is not a per-family price
+      if (!scoutsInDens(one, lineDens(l)).length) return;     // not this den's event
+      var direct = !lineThroughPack(l);
+      var sc = l.scoutRateCents || 0;
+      // A per-family line is ONE fee for whoever the family brings, so it has no adult or
+      // sibling price to add — that is the whole point of the basis.
+      var ad = linePerFamily(l) ? 0 : (l.adultRateCents || 0);
+      var sb = linePerFamily(l) ? 0 : (l.siblingRateCents || 0);
+      if (!sc && !ad && !sb) return;
+      out.scout += sc; out.adult += ad; out.sibling += sb;
+      // The two halves split the EXPECTED cost — scout plus the one adult — because that is the
+      // figure they are reconciling. Splitting the scout share alone would tie to nothing on
+      // screen once the adult is in the headline.
+      if (direct) out.direct += sc + ad; else out.throughPack += sc + ad;
+      out.lines.push({
+        name: l.name || ('Untitled ' + r.kind), scout: sc, adult: ad, sibling: sb,
+        direct: direct, payee: l.paidDirectTo || '', perFamily: linePerFamily(l)
+      });
+    });
+    // What a family with one scout actually pays: the scout and the adult who brings them.
+    out.expected = out.scout + out.adult;
+    out.lines.sort(function (a, b) {
+      return (b.scout + b.adult) - (a.scout + a.adult) || a.name.localeCompare(b.name);
+    });
+    return out;
+  }
+  // One row per den that actually has scouts. An empty den is left out: quoting a year's cost
+  // for a rank nobody holds invites planning around a scout who does not exist.
+  function familyYearCost() {
+    var seen = {};
+    activeScouts().forEach(function (s) { seen[s.den || ''] = true; });
+    return DENS.concat(['']).filter(function (dn) { return seen[dn]; })
+      .map(function (dn) { return familyYearCostForDen(dn); })
+      .filter(function (r) { return r.expected > 0 || r.sibling > 0; });
+  }
   // The same figure for a ONE-SCOUT family in each den that has scouts — the shape a leader can
   // actually put in a newsletter ("Wolves, budget $70"). Dens with nobody in them are left out:
   // quoting a price for an empty den invites planning around a scout who does not exist.
@@ -3826,6 +4272,9 @@
     if (!linePerHead(l)) return '';
     if (linePerFamily(l)) return 'family ' + fmt(l.scoutRateCents || 0);
     var bits = ['scout ' + fmt(l.scoutRateCents || 0)];
+    // A planned parent is named before the family rates below, because it is a PLANNING rate on
+    // this line — the same status as the leader rate, not the charge-from-attendance ones.
+    if (l.includeAdults) bits.push('parent ' + fmt(l.adultRateCents || 0));
     if (l.includeLeaders) bits.push('leader ' + fmt(l.leaderRateCents || 0));
     // The family rates are only ever real money where families are billed through the pack.
     // A rate left behind on a pack-funded line raises nothing and is planned as nothing, so
@@ -4764,7 +5213,7 @@
     DENS.forEach(function (den) {
       if (scopeDens.length && scopeDens.indexOf(den) === -1) return;
       var adv = ADVENTURES[den];
-      var roster = activeScouts().filter(function (s) { return s.den === den; });
+      var roster = byScoutName(activeScouts().filter(function (s) { return s.den === den; }));
       if (!roster.length || !adv) return;
       anyDen = true;
       var denIdx = DENS.indexOf(den);
@@ -6993,7 +7442,7 @@
     return h + parentFooter(pv);
   }
   // The parent's camping page. No sub-tab strip in the parent app, so the trips stack — a pack
-  // has two or three of these, not twenty. Reuses campFacts/campText, which is the point: a
+  // has two or three of these, not twenty. Reuses campFacts/proseText, which is the point: a
   // parent and a leader are reading the identical render of the identical text.
   function renderParentCamping(pv) {
     var trips = Array.isArray(pv.camping) ? pv.camping : [];
@@ -7009,11 +7458,11 @@
           arrive: String(t.arrive || ''), depart: String(t.depart || ''),
           cost: String(t.cost || ''), url: String(t.url || '')
         });
-      if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + campText(t.intro) + '</div>';
+      if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + proseText(t.intro) + '</div>';
       h += '</div>';
       (Array.isArray(t.sections) ? t.sections : []).forEach(function (s) {
         h += '<div class="card"><h2 class="section display">' + esc(String(s.title || 'Details')) + '</h2>' +
-          '<div class="camp-body">' + campText(s.body) + '</div></div>';
+          '<div class="camp-body">' + proseText(s.body) + '</div></div>';
       });
     });
     return h;
@@ -7365,6 +7814,10 @@
         }
       }
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
+      // The agenda sheet is the LEADER-facing surface — it is what gets printed and carried into
+      // the room — so this is where the internal note belongs, and the only rendered place it
+      // appears besides its own editor.
+      if (m.noteInternal) h += line('Leaders only', esc(m.noteInternal));
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(m.id))));
       var attT = attTotals(state.attendance[m.id]);
       if (attT.scouts) h += line('Attendance', attT.scouts + ' checked in');
@@ -7493,7 +7946,11 @@
     var p = ui.calMonth.split('-'), year = +p[0], mon = +p[1] - 1;
     var firstDow = new Date(year, mon, 1).getDay();
     var daysInMonth = new Date(year, mon + 1, 0).getDate();
-    var dows = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    // Two letters, because one gives you 'S M T W T F S' — Tue/Thu identical and Sat/Sun
+    // identical, so the reader counts columns from the left every time. Screen readers are
+    // unaffected either way (each cell carries its own full date in aria-label); this is purely
+    // for sighted scanning.
+    var dows = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
     var h = '';
     // Wave 19(19) — auto-retire the Start-here card permanently once real data exists.
@@ -7699,7 +8156,16 @@
       tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
       '</div>' +
       (m.kind === 'den' ? advTargetPicker(m) : '') +
-      '<input data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') + '" placeholder="Location / notes (optional)" style="width:100%;margin-top:6px">' +
+      // Two notes, and each one says who reads it. The single field this replaces was labelled
+      // "Location / notes (optional)" with nothing to say it went out to every family — so
+      // "ask the Alvarez family to bring the canopy, they still owe for spring" would have been
+      // published verbatim. Naming the audience at the field is the fix.
+      '<p class="eyebrow note-cap">Parents see this</p>' +
+      '<input data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') +
+        '" placeholder="Where it is, and what to bring" aria-label="Details parents will see" style="width:100%">' +
+      '<p class="eyebrow note-cap note-cap-int">Leaders only \u00b7 never published</p>' +
+      '<input data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
+        '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%">' +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
       '</div>' +
@@ -7850,6 +8316,34 @@
     return state.events.filter(function (e) { return e.kind === 'pack' && e.date && e.date >= from; })
       .sort(function (a, b) { return a.date.localeCompare(b.date); })[0] || null;
   }
+  // A tier's own notes. Owner ask, 2026-08-02: a stretch tier that reimburses uniform items
+  // next year against an itemised receipt, with the eligible items listed.
+  //
+  // Deliberately NOT part of `covers`. That list is charges the app can waive, and it can only
+  // name things the budget already knows about — it could never express "bring us the receipt
+  // and we will pay you back for any of these six items". Prose can, and prose is also what a
+  // promise like that has to be, because somebody will be reading it back in eleven months.
+  //
+  // Shown to a leader with no note only while they can edit: an empty labelled box on a
+  // read-only screen is furniture.
+  function tierNoteBlock(t) {
+    var note = String(t.note || '');
+    if (!canEdit()) {
+      if (!note.trim()) return '';
+      return '<p class="eyebrow" style="margin:10px 0 4px">The small print</p>' +
+        '<div class="camp-body">' + proseText(note) + '</div>';
+    }
+    return '<p class="eyebrow" style="margin:10px 0 4px">The small print</p>' +
+      '<textarea class="notes-in" data-ch="tier-note" data-id="' + esc(t.id) + '" rows="3" ' +
+      'placeholder="Anything the covered-charges list above cannot say — conditions, or a list of eligible items. ' +
+      'Blank line for a new paragraph; start a line with - for a bullet." ' +
+      'aria-label="Notes for this tier">' + esc(note) + '</textarea>' +
+      (note.trim()
+        ? '<div class="camp-body" style="margin-top:6px">' + proseText(note) + '</div>'
+        : '<p class="small muted" style="margin:4px 0 0">For a reward the pack honours by hand — a reimbursement ' +
+          'against a receipt, a list of eligible items, a condition the scout has to meet.</p>');
+  }
+
   /* ----- Storefront detail ----- */
   function renderStorefrontDetail() {
     var sf = getStorefront(ui.storefrontId);
@@ -7875,7 +8369,16 @@
     // Wave 2 — RSVP / headcount for this storefront shift
     h += '<div class="card"><p class="eyebrow">RSVP / headcount</p>' + renderRsvpBlock('sf:' + sf.id) + '</div>';
 
-    sf.blocks.forEach(function (b) { h += renderBlock(sf, b); });
+    // In the order the DAY happens, not the order the blocks were added: a third block set to
+    // 08:00 used to render below the 12:00 one. Untimed blocks sink, with a label tiebreak so
+    // they hold a stable order.
+    // ⚠ A COPY, and this must stay a copy. blockShares() hands the rounding remainder to the
+    // LAST element of block.assignments, and storefrontTotals walks sf.blocks — sorting either
+    // stored array in place would move real cents onto a different scout.
+    sf.blocks.slice().sort(function (x, y) {
+      return String(x.start || '99:99').localeCompare(String(y.start || '99:99')) ||
+        String(x.label || '').localeCompare(String(y.label || ''));
+    }).forEach(function (b) { h += renderBlock(sf, b); });
     h += '<button type="button" class="btn" data-act="add-block" data-id="' + sf.id + '">+ Add another block</button>';
     return h;
   }
@@ -7974,8 +8477,8 @@
         '</form></div>';
     }
 
-    var active = activeScouts();
-    var archived = state.scouts.filter(function (s) { return s.archived; });
+    var active = byScoutName(activeScouts());
+    var archived = byScoutName(state.scouts.filter(function (s) { return s.archived; }));
 
     if (!state.scouts.length) {
       h += '<div class="empty">No scouts yet. Add your pack roster above.</div>';
@@ -8037,7 +8540,12 @@
         // Wave 21 — a reward tier the scout earned is already subtracted from what they
         // owe. Say so: without this the roster just shows a smaller number with no reason,
         // and the pack covering someone's dues is the good news worth surfacing.
-        if (coveredCents > 0) pills += ' <span class="pill">pack covers ' + fmt(coveredCents) + '</span>';
+        // .pill.good, not bare .pill. Bare .pill is amber and already means "needs attention"
+        // everywhere else — including "Renewal due" two lines up in THIS SAME ROW. One row could
+        // carry both, so the same amber said "chase this family for paperwork" and "good news, the
+        // pack is paying for them". .pill.good already means a good outcome on this tab
+        // (awarded / recorded) and carries its own dark-theme ink flip.
+        if (coveredCents > 0) pills += ' <span class="pill good">pack covers ' + fmt(coveredCents) + '</span>';
         if (owe > 0) pills += ' <span class="pill bad">owes ' + fmt(owe) + '</span>';
         else if (coveredCents > 0) pills += ' <span class="pill navy">paid up</span>';
         return pills;
@@ -8100,7 +8608,7 @@
       // still gets their own place, their own dues and their own parent's place at everything
       // priced per head.
       (function () {
-        var others = activeScouts().filter(function (o) { return o.id !== s.id; });
+        var others = byScoutName(activeScouts().filter(function (o) { return o.id !== s.id; }));
         var mine = familyMembers(s).filter(function (o) { return o.id !== s.id; });
         var h2 = '<div class="row" style="margin-bottom:10px;align-items:flex-end">' +
           '<label class="fld">Same family as' +
@@ -8155,7 +8663,11 @@
           // Imported rows are replaced wholesale on the next Trail's End import — deleting one here won't stick.
           (e.source === 'te-import' ? ' <span class="pill navy" title="Imported from Trail’s End — the next import replaces these rows">TE</span>' : '') + '</td>' +
           '<td class="num">' + fmt(e.salesCents) + '</td><td class="num">' + fmt(e.donationsCents) + '</td>' +
-          '<td>' + dangerBtn('del-entry:' + e.id, 'Delete') + '</td></tr>';
+          // ✕ rather than a red word: this is one row of a receipt, and a column of red
+          // "Delete"s was the loudest thing in a table where nothing is wrong. Same arm() key, so
+          // the handler is untouched — and .btiny is a 36px target where .btn.small is 32px, so
+          // the tap area goes UP. The label moves into aria-label/title.
+          '<td>' + tinyDangerBtn('del-entry:' + e.id, 'Delete this entry') + '</td></tr>';
       });
       h += '</tbody></table></div>';
     }
@@ -8530,7 +9042,10 @@
   // The SCOUT share of one line across everyone it applies to — what the pack would pick up
   // if every scout earned it. A tier never covers a head a family brought, so the adult and
   // sibling rates are not here.
-  function tierScoutShareForLine(r) { return lineFamilyPlanned(r.line); }
+  // The SCOUT share alone — NOT lineFamilyPlanned, which now also carries the planned parent.
+  // Delegating to that was a real bug for a few minutes: a tier covering only the scout share was
+  // credited the parent's fee as well, so B fell by twice what the tier had promised.
+  function tierScoutShareForLine(r) { return linePlannedShare(r.line, 'scout'); }
   // What a set of collect keys costs the pack across the roster, itemised.
   // What a set of cover keys costs the pack across the roster, itemised — and split by where
   // that money already sits:
@@ -8542,7 +9057,14 @@
   //          "pack covers scouts and leaders" ruling), so the pack buying adult shirts is new
   //          spending: it ADDS to A. Anything else would leave the cost nowhere at all.
   function coverCostForKeys(keys) {
-    var picked = 0, fees = 0, extra = 0, lines = [];
+    // `extra` is everything that ADDS to A, and it has two quite different causes that the
+    // worksheet used to print under one label reading "…for adults or siblings":
+    //   extraHeads      an adult or sibling share on a line the pack collects — never in any
+    //                   line's planned cost, so covering it is new spending
+    //   extraReimburse  ANY share of a paid-direct line, the scout's included — the pack never
+    //                   collected that money, so paying it back is spending, not forgone income
+    // Kept apart so each can be named for what it is. extra stays their sum.
+    var picked = 0, fees = 0, extra = 0, extraHeads = 0, extraReimburse = 0, lines = [];
     coverableLines().forEach(function (r) {
       var reimb = lineIsFamilyDirect(r.line);
       COVER_WHO.forEach(function (who) {
@@ -8556,10 +9078,23 @@
         picked += cents;
         // A reimbursement is money leaving the pack for something it never collected, so it can
         // never be "fees the plan stops expecting" — it is spending, like an adult share.
-        if (who === 'scout' && !reimb) fees += cents; else extra += cents;
+        // THE RULE, once and for all: a covered share leaves B if the plan was already counting
+        // on income for it, and adds to A if it was not.
+        //   scout share, pack collects        planned income  → leaves B
+        //   adult share, includeAdults on     planned income  → leaves B  (2026-08-02)
+        //   adult or sibling share otherwise  not planned     → adds to A
+        //   any share of a paid-direct line   never collected → adds to A as a reimbursement
+        // The middle case is new and matters: with "one parent per scout" ticked, that parent's
+        // fee IS in the plan, so covering it must reduce expected income rather than invent a
+        // second cost on top of the one already sitting in A.
+        var planned = who === 'scout' || (who === 'adult' && r.line.includeAdults && !linePerFamily(r.line));
+        if (reimb) { extra += cents; extraReimburse += cents; }
+        else if (!planned) { extra += cents; extraHeads += cents; }
+        else fees += cents;
       });
     });
-    return { picked: picked, fees: fees, extra: extra, lines: lines };
+    return { picked: picked, fees: fees, extra: extra,
+      extraHeads: extraHeads, extraReimburse: extraReimburse, lines: lines };
   }
   // What the PLAN has to spend because of a non-scout share it covers. Reported and added to A
   // in one place, so the Budget card and the worksheet cannot disagree about it.
@@ -8581,7 +9116,8 @@
       planned: pt, roster: roster, sales: sales, commission: commission, pct: pct,
       // picked = the lot. fees = the part that was family income; extra = the part the pack buys
       // outright (an adult or sibling share), which is new spending in A rather than lost income.
-      picked: cost.picked, fees: cost.fees, extra: cost.extra, lines: cost.lines,
+      picked: cost.picked, fees: cost.fees, extra: cost.extra,
+      extraHeads: cost.extraHeads, extraReimburse: cost.extraReimburse, lines: cost.lines,
       // Positive = what the pack earns at that level more than pays for the rewards it promises.
       // Both sides are commission, so this needs no rate and holds even before one is set.
       net: commission - cost.picked,
@@ -8736,6 +9272,79 @@
     }
     return h;
   }
+  // "What a year costs a family" — the joining-meeting question, and the one a committee needs
+  // before it sets a tier threshold. Every other family figure in this app is netted down by
+  // something; this one is deliberately gross, for a family whose scout sells nothing.
+  //
+  // Per den, because den-limited events are most of what makes two families' years differ, and
+  // with the scout / adult / sibling shares kept apart: a scout's share is owed, an adult's is a
+  // choice the family makes per event. Expandable per den so the card is a figure at a glance and
+  // a line-by-line answer when somebody asks "what is that made of?".
+  function renderFamilyYearCost() {
+    var rows = familyYearCost();
+    if (!rows.length) return '';
+    var tiers = sortedTiers().length;
+    var planned = plannedTier();
+    var h = '<div class="card"><h2 class="section display">What a year costs a family</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">Out of pocket for <strong>one scout and the adult who ' +
+      'brings them</strong>, earning <strong>no reward tier at all</strong> — the most a family can be asked ' +
+      'for, which is the figure to quote to somebody deciding whether they can afford to join. It counts every ' +
+      '<strong>families pay</strong> line, whether the pack collects it or a council does, and nothing the pack ' +
+      'pays for out of its own funds.' +
+      (tiers ? ' Anything a scout earns comes straight off it.' : '') + '</p>' +
+      '<p class="small muted" style="margin:0 0 10px">A Cub Scout does not come on their own, so one adult is ' +
+      'counted <strong>per scout</strong> wherever an event prices one. A family with two scouts only has to ' +
+      'send one parent — budgeting an adult each is the safe way round for a quote, and it is how the pack ' +
+      'plans the heads. Siblings are extra and listed separately, because nothing requires one to come.</p>';
+    rows.forEach(function (r) {
+      var open = !!ui.yearCostOpen[r.den];
+      var label = r.den || 'No den set';
+      // The whole row is the control, the way the month-agenda rows already are. An .exp-toggle
+      // here rendered as a chunky chip with the money orphaned on the line beneath it.
+      h += '<div class="list-row' + (open ? ' open' : '') + '" data-act="year-cost-toggle" data-name="' +
+        esc(r.den) + '" role="button" tabindex="0" aria-expanded="' + open + '"' +
+        ' aria-label="' + esc(label + ', ' + fmt(r.expected) + ' for a scout and one adult') + '">' +
+        '<div style="min-width:0"><div class="lr-name">' + esc(label) + ' <strong class="money">' +
+        fmt(r.expected) + '</strong></div>' +
+        '<div class="small muted">scout ' + fmt(r.scout) +
+        (r.adult ? ' + one adult ' + fmt(r.adult) : ' <span class="muted">(no event prices an adult)</span>') +
+        (r.sibling ? ' · a sibling adds ' + fmt(r.sibling) : '') +
+        '</div></div>' +
+        '<span class="mo-chev" aria-hidden="true">' + (open ? '▾' : '›') + '</span></div>';
+      if (!open) return;
+      h += '<ul class="small" style="margin:2px 0 8px;padding-left:18px;line-height:1.7">' +
+        r.lines.map(function (x) {
+          // The line's own expected figure — scout plus the one adult — then the split, so the
+          // column adds up to the headline instead of to a scout-only subtotal.
+          return '<li>' + esc(x.name) + ' — <span class="money">' + fmt(x.scout + x.adult) + '</span>' +
+            (x.adult ? ' <span class="muted">(scout ' + fmt(x.scout) + ' + adult ' + fmt(x.adult) + ')</span>' : '') +
+            (x.perFamily ? ' <span class="muted">one fee per family</span>' : '') +
+            (x.sibling ? ' <span class="muted">· sibling ' + fmt(x.sibling) + '</span>' : '') +
+            (x.direct ? ' <span class="pill navy">' + esc(x.payee || 'paid direct') + '</span>' : '') +
+            '</li>';
+        }).join('') +
+        '<li class="muted">Through the pack <span class="money">' + fmt(r.throughPack) +
+        '</span> · paid direct <span class="money">' + fmt(r.direct) + '</span></li>' +
+        '</ul>';
+    });
+    // The tier connection, said plainly — this figure is exactly what a tier is competing with.
+    if (!tiers) {
+      h += '<p class="small muted" style="margin:8px 0 0">No reward tiers set yet. Every penny above is ' +
+        'currently a family’s to find — <button type="button" class="btn small ghost" data-act="goto" ' +
+        'data-tab="popcorn" data-section="rewards">Popcorn · Rewards</button></p>';
+    } else if (!planned) {
+      h += '<p class="small muted" style="margin:8px 0 0">You have ' + tiers +
+        ' reward tier' + (tiers === 1 ? '' : 's') + ' but none is named as the one the plan counts on, so the ' +
+        'funding worksheet above still expects families to pay all of this. Naming one moves what it covers ' +
+        'off the families and onto popcorn — <button type="button" class="btn small ghost" data-act="goto" ' +
+        'data-tab="popcorn" data-section="rewards">Popcorn · Rewards</button></p>';
+    } else {
+      h += '<p class="small muted" style="margin:8px 0 0">The plan counts on <strong>' + esc(planned.name || 'a tier') +
+        '</strong>, so a scout who reaches it pays less than this — what it covers is on ' +
+        '<button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="rewards">Popcorn · Rewards</button></p>';
+    }
+    return h + '</div>';
+  }
   // Phase 1 — the "Actual" box on a budget row is gone. Actual is no longer something you
   // type next to the plan; it is what the ledger says was paid. This button reports that
   // figure and opens Money · Ledger with a transaction started against this line.
@@ -8760,12 +9369,20 @@
   // "Flat cost / Other / Pack pays" as controls of the same visual weight as the name and
   // the money, so a month of activities read as a wall of repeated defaults. The controls
   // are still one tap away; they are just not the loudest thing on the row any more.
-  function lineSummaryText(l) {
+  function lineSummarySegments(l) {
     // "+ leaders" earns its place in the collapsed sentence: it is the difference between
     // ten heads and fourteen, and it is the only thing on a per-head line that changes the
     // planned figure without changing a rate.
     var bits = [linePerFamily(l) ? 'Per family'
-      : (linePerHead(l) ? (l.includeLeaders ? 'Per head + leaders' : 'Per head') : 'Flat')];
+      : (linePerHead(l)
+        ? (function () {
+          // Name every head the plan counts, since that is what the figure to the right is.
+          var who = [];
+          if (l.includeAdults) who.push('parents');
+          if (l.includeLeaders) who.push('leaders');
+          return who.length ? 'Per head + ' + who.join(' + ') : 'Per head';
+        })()
+        : 'Flat')];
     bits.push(lineFamilyFunded(l)
       ? (l.paidDirectTo ? 'families pay ' + l.paidDirectTo : 'families pay the pack')
       : 'pack pays');
@@ -8775,7 +9392,18 @@
     // treasurer scanning the month must be able to see it without opening every row.
     var dens = lineDens(l);
     if (dens.length) bits.push(denListLabel(dens) + ' only');
-    return bits.join(' · ');
+    return bits;
+  }
+  // The same sentence, but with each fact in a box that refuses to break inside itself. A
+  // segment is one indivisible thing — "Activities & outings" is a category name, not four
+  // words — and letting the line wrap mid-phrase left a word stranded on its own row under the
+  // date. Wrapping is still allowed, just only ever at a dot.
+  function lineSummaryHtml(l) {
+    // Joined with a plain space; the interpuncts are drawn by CSS INSIDE each segment, so a dot
+    // can never be left dangling at the end of a wrapped line. See .bseg + .bseg::before.
+    return lineSummarySegments(l).map(function (s) {
+      return '<span class="bseg">' + esc(s) + '</span>';
+    }).join(' ');
   }
   // The three real arrangements (DESIGN-money.md §3.2), as one question instead of two.
   // `fundedBy` + `paidDirectTo` stay two independent fields in the data — that separation is
@@ -8885,14 +9513,33 @@
         (l.includeLeaders
           ? '<label class="att-mini">per leader<input class="money-in" inputmode="decimal" data-ch="line-leader-rate" data-id="' + l.id + '" value="' + dollars(l.leaderRateCents) + '" placeholder="0.00"></label>'
           : '') +
+        // Per PERSON, for an event charged at the door per head: scout + one parent + leaders.
+        // A checkbox on this line, never an assumption across all of them \u2014 see freshLine.
+        '<label class="chk-mini"><input type="checkbox" data-ch="line-include-adults" data-id="' + l.id + '"' +
+          (l.includeAdults ? ' checked' : '') + '>One parent per scout</label>' +
+        (l.includeAdults
+          ? '<label class="att-mini">per parent<input class="money-in" inputmode="decimal" data-ch="line-adult-rate" data-id="' + l.id + '" value="' + dollars(l.adultRateCents) + '" placeholder="0.00"></label>'
+          : '') +
         '<span class="small muted brow-note">' +
-          (l.includeLeaders
-            ? scoutN + denWord + ' scout' + (scoutN === 1 ? '' : 's') + ' and ' +
-              leaderN + ' registered leader' + (leaderN === 1 ? '' : 's') +
-              ' \u2014 both counted from the roster, so this moves as people join and leave'
-            : scoutN + denWord + ' scout' + (scoutN === 1 ? '' : 's') +
-              ' \u2014 this follows the roster. Tick the box if the pack pays for leaders on this one too, ' +
-              'the way registration and a campsite fee do.') +
+          (function () {
+            var counted = [scoutN + denWord + ' scout' + (scoutN === 1 ? '' : 's')];
+            if (l.includeAdults) counted.push('one parent each');
+            if (l.includeLeaders) counted.push(leaderN + ' registered leader' + (leaderN === 1 ? '' : 's'));
+            var head = counted.length > 1
+              ? counted.slice(0, -1).join(', ') + ' and ' + counted[counted.length - 1] +
+                ' \u2014 all counted from the roster, so this moves as people join and leave'
+              : counted[0] + ' \u2014 this follows the roster';
+            if (!l.includeLeaders && !l.includeAdults) {
+              head += '. Tick a box if the pack pays for leaders on this one too, the way registration and a ' +
+                'campsite fee do, or if it is priced per PERSON at the door \u2014 a party or a banquet, ' +
+                'where a parent comes with every scout.';
+            } else if (l.includeAdults && lineFamilyFunded(l)) {
+              head += '. Families pay, so the parent\u2019s place is expected INCOME, not pack spending.';
+            } else if (l.includeAdults) {
+              head += '. The pack is paying for those parents, so it is in the fundraising goal.';
+            }
+            return head;
+          })() +
         '</span>';
     }
     // What a FAMILY pays for the heads it brings — asked on EVERY line families are billed for,
@@ -8965,17 +9612,24 @@
       ? '<span class="bmoney money" title="Planned — set the rates in Options">' + fmt(linePlanned(l)) + '</span>'
       : '<input class="money-in bmoney" inputmode="decimal" data-ch="line-flat" data-id="' + l.id + '" value="' +
         dollars(l.flatCents) + '" placeholder="Cost" aria-label="Cost">';
-    return '<div class="brow' + (open ? ' open' : '') + '">' +
+    // Whose money it is, as a class the rail hangs off. Pack-pays deliberately gets nothing —
+    // it is the default and the majority, and marking every row marks none of them.
+    var rail = lineFamilyFunded(l) ? (l.paidDirectTo ? ' pays-direct' : ' pays-families') : '';
+    return '<div class="brow' + rail + (open ? ' open' : '') + '">' +
       '<div class="brow-main">' +
         '<input class="bname" data-ch="line-name" data-id="' + l.id + '" value="' + esc(l.name) + '" placeholder="' + esc(opts.placeholder) + '">' +
         money +
       '</div>' +
       '<div class="brow-meta">' +
-        '<span class="bsum">' + (opts.when ? opts.when + ' <span class="bdot">·</span> ' : '') + esc(lineSummaryText(l)) + '</span>' +
-        actualBtn(l.id) +
-        '<button type="button" class="exp-toggle bopts" data-act="line-options" data-id="' + l.id + '" aria-expanded="' + open + '">' +
-          '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>Options</button>' +
-        tinyDangerBtn(opts.delAct, opts.delLabel) +
+        '<span class="bsum">' + (opts.when ? opts.when + '<span class="bdot">·</span> ' : '') + lineSummaryHtml(l) + '</span>' +
+        // One cluster, so the three actions hold a column across every row instead of each one
+        // starting wherever its own sentence happened to run out.
+        '<span class="bacts">' +
+          actualBtn(l.id) +
+          '<button type="button" class="exp-toggle bopts" data-act="line-options" data-id="' + l.id + '" aria-expanded="' + open + '">' +
+            '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>Options</button>' +
+          tinyDangerBtn(opts.delAct, opts.delLabel) +
+        '</span>' +
       '</div>' +
       (open ? lineOptionControls(l, scoutN, opts.collectKey) : '') +
       '</div>';
@@ -9140,9 +9794,16 @@
       // An adult or sibling share a tier covers is money the pack has taken on that is in no
       // line's planned cost — those rates bill a family, they are never budgeted. It is inside
       // A, so A has to say so rather than growing for no visible reason.
-      (fs2.tierExtra
+      (fs2.tierExtraHeads
         ? '<tr><td class="fund-sub">…of which reward tiers buy for adults or siblings</td>' +
-          '<td class="num money">' + fmt(fs2.tierExtra) + '</td></tr>'
+          '<td class="num money">' + fmt(fs2.tierExtraHeads) + '</td></tr>'
+        : '') +
+      // A tier covering a line families pay a council for directly is a REIMBURSEMENT: the pack
+      // never collected it, so paying it back is spending. It used to be printed under the line
+      // above, which described it as buying something for an adult.
+      (fs2.tierExtraReimburse
+        ? '<tr><td class="fund-sub">…of which reward tiers pay a council fee back to families</td>' +
+          '<td class="num money">' + fmt(fs2.tierExtraReimburse) + '</td></tr>'
         : '') +
       // Covering the leaders is a deliberate, visible cost. It is inside A, never in B — no family
       // is billed for a leader's place — so popcorn carries it, which is exactly "split it amongst
@@ -9198,6 +9859,8 @@
       h += '<p class="small muted" style="margin:8px 0 0">Set a commission rate in Season setup above and this becomes a Trail’s End sales goal.</p>';
     }
     h += '</div>';
+
+    h += renderFamilyYearCost();
 
     // Phase 3a — the paid-direct question, asked once. Migration never guesses it: whether
     // families pay the pack or pay the council is a judgement call per line, and getting it
@@ -9310,8 +9973,8 @@
         mp += lineThroughPack(a) ? linePlanned(a) : 0;   // paid-direct money is never ours
         ma += lineActual(a.id);   // Phase 1 — a total from the ledger, never a rate × roster
       });
-      h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
-        '<strong>' + esc(slotLabel(slot)) + '</strong>' +
+      h += '<div class="bmonth"><div class="spread bmonth-head">' +
+        '<span class="bmonth-name">' + esc(slotLabel(slot)) + '</span>' +
         '<span class="small muted money">' + (acts.length ? 'planned ' + fmt(mp) + ' · actual ' + fmt(ma) : '') + '</span></div>';
       acts.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
       h += '<button type="button" class="btn small ghost" data-act="add-activity" data-slot="' + slot + '">+ Add activity</button></div>';
@@ -9342,8 +10005,8 @@
       Object.keys(byMonth).sort().forEach(function (mk) {
         var rows = byMonth[mk];
         var sub = rows.reduce(function (n, a) { return n + (lineThroughPack(a) ? linePlanned(a) : 0); }, 0);
-        h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
-          '<strong>' + esc(monthLabel(mk)) + '</strong>' +
+        h += '<div class="bmonth"><div class="spread bmonth-head">' +
+          '<span class="bmonth-name">' + esc(monthLabel(mk)) + '</span>' +
           '<span class="small muted money">planned ' + fmt(sub) + '</span></div>' +
           '<p class="small muted" style="margin:0 0 6px">Outside the ' + esc(slotLabel(0)) + ' – ' +
           esc(slotLabel(11)) + ' program year. Check the date, or close out the year to move the plan on.</p>';
@@ -9357,8 +10020,8 @@
     // lost the other. Now the money stands on its own and says so.
     var loose = unscheduledActivities();
     if (loose.length) {
-      h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
-        '<strong>Not on the calendar</strong>' +
+      h += '<div class="bmonth"><div class="spread bmonth-head">' +
+        '<span class="bmonth-name">Not on the calendar</span>' +
         '<span class="small muted">no event linked</span></div>' +
         '<p class="small muted" style="margin:0 0 6px">These still count in the plan. Add them to a day on Program · Calendar to give them a date.</p>';
       loose.forEach(function (a) { h += activityLineRow(a, bud.scouts); });
@@ -9378,8 +10041,8 @@
         var rows = b.expenses.filter(function (e) { return e.category === cat[0]; });
         if (!rows.length) return;
         var sub = rows.reduce(function (n, e) { return n + (lineThroughPack(e) ? linePlanned(e) : 0); }, 0);
-        h += '<div class="bmonth"><div class="spread" style="margin-bottom:4px">' +
-          '<strong>' + esc(cat[1]) + '</strong>' +
+        h += '<div class="bmonth"><div class="spread bmonth-head">' +
+          '<span class="bmonth-name">' + esc(cat[1]) + '</span>' +
           '<span class="small muted money">' + fmt(sub) + '</span></div>';
         rows.forEach(function (e) {
           h += budgetLineRow(e, bud.scouts, {
@@ -9673,14 +10336,34 @@
       '<span class="small muted" style="align-self:center">' + rec.ticked + ' ticked · ' + rec.open + ' outstanding</span>' +
       '</div>';
     pending.reverse().forEach(function (e) {
-      h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
-        '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> </label>' +
-        '<span class="small muted">' + esc(fmtDate(e.date)) + '</span>' +
-        '<span class="lname small">' + esc(e.description || '(no description)') + '</span>' +
-        (e.ref ? '<span class="small muted">#' + esc(e.ref) + '</span>' : '') +
-        '<span class="money small' + (e.direction === 'in' ? '' : ' muted') + '">' +
+      // THE WHOLE ROW IS THE TICK, the way an attendance row already is. This was a bare
+      // checkbox: `.perscout input[type="checkbox"]` strips the global field sizing, so the one
+      // action this screen exists for — tick every line against the statement — was a 13×13px
+      // target inside a 75px row. And its <label> contained a single SPACE, so it had no
+      // accessible name at all: a screen reader announced "checkbox, unchecked" with no idea
+      // which entry. (The Entries list's copy of this control says "reconciled" and was fine.)
+      // Safe to make the row a <label>: it holds no other control, and the click handler only
+      // intercepts [data-act], which this row has none of.
+      var recWho = e.description || '(no description)';
+      h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '">' +
+        '<input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') +
+          ' aria-label="Ticked against the statement: ' + esc(recWho) + ', ' +
+          (e.direction === 'in' ? 'money in ' : 'money out ') + fmt(e.amountCents) + '">' +
+        // fmtDateShort, in a fixed well: the weekday tripled the date's width for nothing, and a
+        // fixed well means every description starts on one axis too.
+        '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
+        '<span class="lname small">' + esc(recWho) + '</span>' +
+        (e.ref ? '<span class="small muted rec-ref">#' + esc(e.ref) + '</span>' : '') +
+        // ONE money axis. This used to be the last inline item, so on a row WITHOUT a check
+        // number it sat at the right edge and on a row WITH one it sat further left — down eight
+        // entries the figures landed right, right, right, left, left, left. On the one screen
+        // whose whole job is reading a column of figures against a bank statement.
+        // The .muted on money-out is gone too: money out is the majority of any pack ledger, so
+        // it made most of the amounts the faintest text on the card. The +/− and the rail carry
+        // direction without dimming the number.
+        '<span class="money small rec-amt">' +
           (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
-        '</div>';
+        '</label>';
     });
     return h + '</div>';
   }
@@ -10167,7 +10850,9 @@
     var upcomingMeetings = state.events.filter(function (m) { return eventIsMeeting(m) && m.date && m.date >= today; })
       .sort(function (a, b) { return a.date.localeCompare(b.date); });
     var nextPack = upcomingMeetings.find(function (m) { return m.kind === 'pack'; });
-    if (nextPack && !nextPack.note) {
+    // Either note counts: a Cubmaster who wrote the run-of-show in the leaders-only field has
+    // planned the meeting, and being told they haven't would be wrong.
+    if (nextPack && !nextPack.note && !nextPack.noteInternal) {
       add('cubmaster', 'week', 'The next pack meeting has no plan yet',
         fmtDate(nextPack.date) + (fmtClock(nextPack.time) ? ' · ' + fmtClock(nextPack.time) : ''), 'program', 'calendar');
     }
@@ -10335,7 +11020,16 @@
       var soldPct = packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) : null;
       h += '<div class="empty" style="margin:0 0 10px">Nothing needs you right now.</div>' +
         '<div class="row">' +
-        '<div class="stat"><span class="v money">' + fmt(packT.teEligible) + '</span><span class="l">Sold</span></div>' +
+        // "Toward goal", NOT "Sold". teEligible is sales PLUS online donations — plus cash
+        // donations too, when cash runs through Heroes & Helpers — so a pack that has sold no
+        // popcorn at all could read "$1,200.00 Sold". Same label/value mismatch as the carryover
+        // tile this card already carries a comment about fixing once, and the owner caught that one.
+        // The rest of the app calls this field "Trail's End" (Popcorn · Standings, the season
+        // sheet) and that would be accurate — but it does not tell a reader on the DASHBOARD what
+        // the number means. This figure is precisely the numerator of the "Of goal" percentage
+        // beside it, so naming it "Toward goal" makes the pair read as one measurement and cannot
+        // be mistaken for sales.
+        '<div class="stat"><span class="v money">' + fmt(packT.teEligible) + '</span><span class="l">Toward goal</span></div>' +
         '<div class="stat"><span class="v">' + (soldPct == null ? '—' : soldPct + '%') + '</span><span class="l">Of goal</span></div>' +
         '</div>' +
         (soldPct == null
@@ -11342,6 +12036,11 @@
             h += '<p class="small muted" style="margin:6px 0 0">Covers no charges — a reward in its own right.</p>';
           }
         }
+        // The half the covers list cannot hold. A great many real rewards are not a charge the
+        // app can waive: "we reimburse these uniform items next year against an itemised
+        // receipt", followed by the eligible items. Written here, so the promise lives with the
+        // tier that made it rather than in somebody's inbox.
+        h += tierNoteBlock(t);
         // Who missed it, and the two ways out. Shown once the deadline has passed and only
         // where the tier actually picks something up — a prize tier has no shortfall to pay.
         if (tierIsClosed(t) && tierCoverCentsPerScout(t) > 0) {
@@ -11434,9 +12133,17 @@
         h += '<p class="small" style="margin:0">Planning on <strong>' + esc(ta.planned.name || 'a tier') + '</strong> (' +
           fmt(ta.planned.thresholdCents) + ' earned a scout): the plan takes on <strong class="money">' + fmt(ta.picked) +
           '</strong>' +
+          // Three kinds, named separately. Lumping the last two as "adult or sibling shares"
+          // described a council-fee refund as buying a parent something \u2014 the same mislabel the
+          // worksheet had, in a second place, which is what happens when a figure is summed
+          // before anybody has to say out loud what it is.
           (ta.extra
-            ? ' \u2014 <strong class="money">' + fmt(ta.fees) + '</strong> of family fees it stops expecting, plus <strong class="money">' +
-              fmt(ta.extra) + '</strong> of adult or sibling shares it buys outright (which is why A went up)'
+            ? ' \u2014 <strong class="money">' + fmt(ta.fees) + '</strong> of family fees it stops expecting' +
+              (ta.extraHeads ? ', plus <strong class="money">' + fmt(ta.extraHeads) +
+                '</strong> of adult or sibling shares it buys outright' : '') +
+              (ta.extraReimburse ? ', plus <strong class="money">' + fmt(ta.extraReimburse) +
+                '</strong> paid back to families for council fees' : '') +
+              ' (which is why A went up)'
             : ' of family fees it stops expecting') +
           ', so the Trail\u2019s End goal covers what you are promising at that level.</p>';
         if (ta.picked > 0) {
@@ -11671,9 +12378,12 @@
           '<label class="inv-mini">Cases<input class="weight-in" type="number" min="0" step="1" inputmode="numeric" data-ch="inv-cases" data-id="' + p.id + '" value="' + (p.cases || 0) + '" aria-label="Cases ordered"></label>' +
           '<label class="inv-mini">Loose<input class="weight-in" type="number" min="0" step="1" inputmode="numeric" data-ch="inv-loose" data-id="' + p.id + '" value="' + (p.loose || 0) + '" aria-label="Loose containers (part case)"></label>' +
           '<label class="inv-mini">Unit $<input class="money-in" inputmode="decimal" data-ch="inv-price" data-id="' + p.id + '" value="' + dollars(p.unitPriceCents) + '" placeholder="—" aria-label="Unit price"></label>' +
+          // The ✕ goes BEFORE the derived line, which is `flex: 1 1 100%`. After it, the ✕ could
+          // never fit on that line and wrapped to a THIRD line, alone, at the left margin — under
+          // text it does not belong to, at every width, not just on a phone.
+          tinyDangerBtn('del-inv-product:' + p.id, 'Remove ' + (p.name || 'product')) +
           '<span class="inv-derived">' + ordered + ' ordered · <strong' + handCls + '>' + hand + ' on hand</strong>' +
           (p.unitPriceCents > 0 ? ' · ' + fmt(productValueCents(p)) : '') + '</span>' +
-          tinyDangerBtn('del-inv-product:' + p.id, 'Remove ' + (p.name || 'product')) +
           '</div>';
       });
     }
@@ -11869,7 +12579,7 @@
         'placeholder="One or two lines at the top of the page">' + esc(t.intro) + '</textarea></label>';
     } else {
       h += campFacts(t);
-      if (t.intro) h += '<div class="camp-body">' + campText(t.intro) + '</div>';
+      if (t.intro) h += '<div class="camp-body">' + proseText(t.intro) + '</div>';
     }
     if (edit && (t.where || t.address || t.when || t.cost)) h += '<hr class="divider">' + campFacts(t);
     h += '</div>';
@@ -11898,7 +12608,7 @@
           'aria-label="Section text">' + esc(s.body) + '</textarea>';
       } else {
         h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +
-          '<div class="camp-body">' + campText(s.body) + '</div>';
+          '<div class="camp-body">' + proseText(s.body) + '</div>';
       }
       h += '</div>';
     });
@@ -13904,7 +14614,7 @@
     var fees = feesTotals();
     var perDen = [];
     DENS.forEach(function (den) {
-      var roster = activeScouts().filter(function (s) { return s.den === den; });
+      var roster = byScoutName(activeScouts().filter(function (s) { return s.den === den; }));
       if (!roster.length) return;
       var complete = roster.filter(scoutAdvComplete).length;
       var awarded = 0;
@@ -14040,6 +14750,9 @@
         scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
         siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
         includeLeaders: x.includeLeaders, leaderRateCents: x.leaderRateCents,
+        // Carry the per-person flag too, or a rolled-over Christmas party silently drops the
+        // parents it was budgeted for and next year's plan comes out short by half the heads.
+        includeAdults: x.includeAdults, adultRateCents: x.adultRateCents,
         fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
         // AUDIT FIX — carry the category. freshLine defaults to 'other', so without this the
         // whole 510-278 grouping was silently reset every year — and an 'income' line came
@@ -14053,6 +14766,9 @@
         scoutRateCents: x.scoutRateCents, adultRateCents: x.adultRateCents,
         siblingRateCents: x.siblingRateCents, flatCents: seedFlat[x.id] || 0,
         includeLeaders: x.includeLeaders, leaderRateCents: x.leaderRateCents,
+        // Carry the per-person flag too, or a rolled-over Christmas party silently drops the
+        // parents it was budgeted for and next year's plan comes out short by half the heads.
+        includeAdults: x.includeAdults, adultRateCents: x.adultRateCents,
         fundedBy: x.fundedBy, paidDirectTo: x.paidDirectTo,
         // AUDIT FIX — carry the category. freshLine defaults to 'other', so without this the
         // whole 510-278 grouping was silently reset every year — and an 'income' line came
@@ -14788,6 +15504,12 @@
     if (act === 'toggle-rsvp') { ui.rsvpOpen[el.dataset.key] = !ui.rsvpOpen[el.dataset.key]; render(); return; }
     if (act === 'toggle-att') { ui.attOpen[el.dataset.id] = !ui.attOpen[el.dataset.id]; render(); return; }
     if (act === 'toggle-collect') { ui.collectOpen[el.dataset.id] = !ui.collectOpen[el.dataset.id]; render(); return; }
+    // data-name, not data-id: the key is a DEN, and '' is a real key (scouts with no den set).
+    if (act === 'year-cost-toggle') {
+      var ycKey = el.dataset.name || '';
+      ui.yearCostOpen[ycKey] = !ui.yearCostOpen[ycKey];
+      render(); return;
+    }
     /* ----- Phase 3b — settling a charge ----- */
     if (act === 'charge-forgive') { ui.forgiveFor = el.dataset.id; render(); return; }
     if (act === 'charge-forgive-cancel') { ui.forgiveFor = null; render(); return; }
@@ -15563,11 +16285,15 @@
       state.rewardTiers.planOnTierId = el.checked ? (el.dataset.id || '') : '';
       commit(); return;
     }
-    if (ch === 'tier-name' || ch === 'tier-threshold' || ch === 'tier-reward' || ch === 'tier-due') {
+    if (ch === 'tier-name' || ch === 'tier-threshold' || ch === 'tier-reward' || ch === 'tier-due'
+      || ch === 'tier-note') {
       var tier = state.rewardTiers.tiers.find(function (t) { return t.id === el.dataset.id; });
       if (!tier) return;
       if (ch === 'tier-name') tier.name = el.value;
       else if (ch === 'tier-reward') tier.reward = el.value;
+      // Stored verbatim — it is prose, and trimming would eat the trailing newline somebody
+      // left on purpose before starting the next bullet.
+      else if (ch === 'tier-note') tier.note = el.value;
       // The deadline changes who has earned the tier, so coverage and waivers re-derive on the
       // next commit — which is this one. Nothing else has to be told.
       else if (ch === 'tier-due') tier.dueBy = el.value;
@@ -15750,6 +16476,7 @@
         if (bl.basis === 'per-family') {
           bl.adultRateCents = 0; bl.siblingRateCents = 0;
           bl.includeLeaders = false; bl.leaderRateCents = 0;
+          bl.includeAdults = false;   // one fee covers whoever they bring; no parent head to add
         }
         // Carry the money across rather than silently zeroing it: switching a $100 flat
         // charter fee to per-head should not quietly wipe the $100 somebody typed.
@@ -15766,6 +16493,12 @@
         // at the scout rate — one tick and the line is right. Registration is the exception
         // ($85 youth, $65 adult) and the field is right there to correct.
         if (bl.includeLeaders && !bl.leaderRateCents) bl.leaderRateCents = bl.scoutRateCents || 0;
+      } else if (bk === 'include-adults') {
+        bl.includeAdults = el.checked;
+        // A party charged per head at the door costs the same for a parent as for a scout, so the
+        // parent rate starts at the scout rate — one tick and the Christmas party is right. It
+        // stays editable for the events where an adult ticket costs more.
+        if (bl.includeAdults && !bl.adultRateCents) bl.adultRateCents = bl.scoutRateCents || 0;
       } else if (bk === 'category') {
         if (LINE_CATEGORY_KEYS.indexOf(el.value) !== -1) bl.category = el.value;
       } else if (bk === 'funded') {
@@ -15816,14 +16549,21 @@
       else return;
       commit(); return;
     }
-    if (ch === 'mtg-kind' || ch === 'mtg-den' || ch === 'mtg-time' || ch === 'mtg-note' || ch === 'mtg-adv') {
+    // ⚠ THIS GATE IS ITSELF AN ALLOWLIST. A new mtg-* field needs adding in BOTH places — here
+    // and in the branch chain below — or its handler is dead code that looks alive.
+    if (ch === 'mtg-kind' || ch === 'mtg-den' || ch === 'mtg-time' || ch === 'mtg-note' ||
+        ch === 'mtg-note-internal' || ch === 'mtg-adv') {
       var mtg = getEvent(el.dataset.id);   // Phase 2 — a meeting is an Event
       if (!mtg) return;
       if (ch === 'mtg-kind') { mtg.kind = el.value; if (mtg.kind === 'pack') { mtg.den = ''; mtg.adventure = ''; } }
       else if (ch === 'mtg-den') mtg.den = el.value;
       else if (ch === 'mtg-time') mtg.time = el.value;
       else if (ch === 'mtg-adv') mtg.adventure = el.value;
-      else mtg.note = el.value;
+      else if (ch === 'mtg-note-internal') mtg.noteInternal = el.value;
+      // Explicit, not a catch-all `else`. This used to end `else mtg.note = el.value`, so ANY new
+      // mtg-* control — including the internal note added above it — would have silently written
+      // into the field that publishes to every family. An unknown key now does nothing.
+      else if (ch === 'mtg-note') mtg.note = el.value;
       commit(); return;
     }
 
