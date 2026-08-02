@@ -247,6 +247,29 @@
   /* Multi-line notes field: full width, comfortable leading, vertical resize only. */
   textarea.notes-in { width: 100%; min-height: 68px; line-height: 1.45; resize: vertical; }
 
+  /* ---------- Camping ----------
+     Long-form prose, which nothing else in this app has. Two things only: a readable measure,
+     and a facts list that stacks on a phone. Existing tokens throughout. */
+  .camp-body { font-size: 0.95rem; line-height: 1.55; max-width: 68ch; }
+  .camp-body p { margin: 0 0 10px; }
+  .camp-body p:last-child, .camp-body ul:last-child { margin-bottom: 0; }
+  .camp-list { margin: 0 0 10px; padding-left: 1.15em; }
+  .camp-list li { margin: 0 0 4px; }
+  .camp-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 0.9rem; }
+  .camp-facts dt { color: var(--ink-soft); font-weight: 650; }
+  .camp-facts dd { margin: 0; }
+  /* The only <a> tags in the app. Left alone they render as browser-default blue on a dark
+     navy card, which is both off-brand and the worst contrast on the page. Scoped rather than
+     a bare `a {}` so this stays a Camping decision until something else needs links. */
+  .camp-facts a, .camp-body a { color: var(--accent); text-underline-offset: 2px; }
+  .camp-facts a:hover, .camp-body a:hover { text-decoration-thickness: 2px; }
+  .camp-facts a:focus-visible, .camp-body a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  @media (max-width: 420px) {
+    .camp-facts { grid-template-columns: 1fr; gap: 0; }
+    .camp-facts dt { margin-top: 8px; }
+    .camp-facts dt:first-of-type { margin-top: 0; }
+  }
+
   /* ---------- Tables ---------- */
   .tbl-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
@@ -1563,7 +1586,11 @@
       date: '', time: '', endTime: '', location: '', note: '',
       slot: 0,            // program month; for a dated event, derived from the date
       sourceUid: '',      // round-trips ICS so a re-import updates rather than duplicates
-      adventure: ''       // kind 'den' only — drives the advancement mark-off
+      // kind 'den' only — the ONE adventure this meeting works toward (owner, 2026-08-02:
+      // never more than one per meeting, but an adventure can take several meetings). Every
+      // meeting naming it is one SESSION of it; see adventureRuns(), which is what turns
+      // attendance into "2 of 3".
+      adventure: ''
     };
     if (patch) Object.keys(patch).forEach(function (k) { e[k] = patch[k]; });
     return e;
@@ -1609,6 +1636,225 @@
       reconciledThrough: ''
     };
   }
+  /* ---------------- Camping: one page per campout, published to parents ----------------
+     Owner ask, 2026-08-02: a Camping tab with a sub-tab per trip (fall at Scoutland, spring at
+     Camp Rainey Mountain), room to add more, editable by leaders and visible to parents.
+
+     The two seeded trips carry real content, researched from the Northeast Georgia Council's
+     own pages and the current Scouting America guidelines, because a page that ships empty
+     gets filled in by nobody. Every word of it is editable — the seed is a starting draft, not
+     a fact the app insists on. Dates and prices in particular go stale every year and are
+     labelled with the year they came from so a leader can see at a glance what needs updating.
+
+     SHAPE. A trip is a small header (name, where, when, cost, links) plus an ORDERED LIST OF
+     SECTIONS, each a title and a body. Free-form sections rather than fixed fields, because
+     what a pack needs to say about a campout is not the same from camp to camp, and a fixed
+     "what to bring" field would be wrong the first time somebody wanted to add "how to get
+     there".
+
+     PUBLISHED. Every trip goes into the parent view verbatim. That is the point of the feature
+     and it is also the risk, so the editor says so on the page rather than in a comment. */
+  function freshCamping() { return { trips: seedCampingTrips() }; }
+  function freshTripSection(title, body) {
+    return { id: uid(), title: String(title || ''), body: String(body || '') };
+  }
+  // A new trip starts with NO name, deliberately. A placeholder like "New campout" would be
+  // truthy, and the parent view publishes any trip with a name — so the moment a leader added
+  // a tab, every parent in the pack would get an empty page called "New campout". Blank means
+  // the publish filter skips it until somebody actually writes something.
+  function freshTrip(name) {
+    return {
+      id: uid(), name: String(name || ''),
+      where: '', address: '', when: '', arrive: '', depart: '', cost: '', url: '',
+      intro: '', sections: []
+    };
+  }
+  // Shared text used by both seeded trips. Camping rules do not change between camps, and a
+  // parent reading the spring page should not have to remember what the fall page said.
+  var CAMP_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
+    '- Every youth is the responsibility of one named adult for the whole weekend. Lions and Tigers must have their own adult partner there.\n' +
+    '- Parents, guardians and siblings share a tent as a family. That is the normal arrangement at family camp.\n' +
+    '- Otherwise a Scout tents with another youth within two years of their age and of the same gender. No adult shares a tent with a youth who is not their own child.\n' +
+    '- Two registered adults with current Safeguarding Youth training are present at all times.\n' +
+    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
+  var CAMP_AGES = 'Age matters here, and the guidelines are specific rather than a matter of judgement.\n' +
+    '- Fire building is Webelos and up. Tigers, Wolves and Bears watch. An adult lights and tends the fire.\n' +
+    '- Pocketknives: a Cub Scout must earn the knife safety Adventure for their rank before carrying one, and recertify each year. No sheath knives, ever.\n' +
+    '- BB guns: Tigers, Wolves, Bears and up, on the camp range only, with the range master. Lions do not shoot BB guns — Lions do archery and size-appropriate slingshots.\n' +
+    '- Boats: Lions and Tigers ride as passengers only; Wolves, Bears and up may paddle. Life jackets on everybody, every time.\n' +
+    '- Day hikes, fishing and swimming are fine for every rank.';
+  var CAMP_WHY_COUNCIL = 'Worth knowing, because it explains why we drive to a council camp instead of finding a campground.\n' +
+    '\n' +
+    'BB guns, archery and slingshots are not approved unit activities. A pack may not run a range, at any age, anywhere. They are permitted only at council-run events, day camps and short-term camps, with a certified range master and the council range setup. That is what these family weekends exist for: the council brings the ranges, the instructors and the approved site, and your Scout gets to shoot.\n' +
+    '\n' +
+    'The same goes for the site itself — a pack overnighter has to be at a council-designated location or pass a site appraisal first. These two camps are already approved, which is half the paperwork gone.';
+  var CAMP_FIRST_TIME = 'It will feel like too much gear and not enough sleep. It is. Two things make it fine: arrive in daylight, and lower the bar.\n' +
+    '\n' +
+    'You do not need a good camp kitchen, matching gear, or any idea what you are doing. You need a dry tent, a bed off the ground, dry spare clothes, and food your kid will actually eat. Everything past that is decoration.\n' +
+    '\n' +
+    'And ask. Somebody in this pack has a spare tent, a second lantern and a free hand, and would rather lend it than watch you buy one. Say so before the trip rather than at the site — borrowing is completely normal here and nobody thinks less of it.';
+  function seedCampingTrips() {
+    var fall = freshTrip('Fall Family Camping');
+    fall.where = 'Scoutland, on Lake Lanier';
+    fall.address = '3685 Looper Lake Road, Gainesville, GA 30506';
+    fall.when = 'A weekend in mid-October (2025: Fri 17 Oct – Sun 19 Oct)';
+    fall.arrive = 'Friday, check-in from 6:00 pm';
+    fall.depart = 'Sunday, out by 11:00 am';
+    fall.cost = '$35 per family (2025 regular rate) · $45 walk-up on site · +3.5% online card fee';
+    fall.url = 'https://www.nega-bsa.org/family-camp';
+    fall.intro = 'The council-run fall family weekend, and the easy one to start with — an hour away, gentle ground, and a camp built for Cub Scouts. Check the dates and price against the council page each year; the ones above are last published.';
+    fall.sections = [
+      freshTripSection('What to expect',
+        'Scoutland is the council’s 140-acre camp on Lake Lanier and it is laid out for this age: twelve campsites with tent platforms, a shower house with real bathrooms, Fort Adventure (the Cub Scout playground), a BB range, three program shelters, and Council Rock for the Saturday campfire. Cleveland Hall, the air-conditioned dining building, is there for council events.\n' +
+        '\n' +
+        'This is family camp, not drop-off. You camp with your Scout, you cook with your Scout, and you walk them from station to station.\n' +
+        '\n' +
+        'Friday is arrive, set up, and a short opening. Saturday is the program — archery, BB guns, crafts, fishing, hiking, nature, Scout skills, camp games and sports — run as stations you rotate through at your own pace, finishing with a campfire program. The fall weekend usually adds trick-or-treating around the campsites, so bring a costume. Sunday is pack up, police the site and go.\n' +
+        '\n' +
+        'It runs rain or shine.'),
+      freshTripSection('Why a council camp and not the woods', CAMP_WHY_COUNCIL),
+      freshTripSection('Before you go',
+        '- Register through the council. The price steps up as the date gets closer and walk-up on site is the most expensive way to do it. Fees are non-refundable, but can be credited to another council event in the same calendar year.\n' +
+        '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Under 72 hours it is parts A and B only, no doctor’s signature. Bring the paper and your insurance card.\n' +
+        '- Put the tent up in the yard first. Every family that skips this does it for the first time in the dark, on a gravel pad, with a tired six-year-old.\n' +
+        '- Charge a headlamp for every person, children included. A child with their own light is a child who is not frightened.\n' +
+        '- Talk about the buddy system in the car. Nobody walks anywhere alone, including to the toilets at night.'),
+      freshTripSection('What to bring',
+        'The Cub Scout Six Essentials live in your Scout’s own daypack and stay with them all weekend: first-aid kit, water bottle, flashlight, trail food, sun protection, whistle.\n' +
+        '\n' +
+        'Sleeping\n' +
+        '- Tent, and a ground tarp cut smaller than the tent floor — a tarp poking out catches rain and runs it underneath you.\n' +
+        '- A sleeping pad or cot for everyone. The ground pulls heat out of you all night and a sleeping bag alone does not stop it. This matters more than what the bag is rated for.\n' +
+        '- Sleeping bag rated colder than you expect. Mid-October near Gainesville averages a low around 53F, and a clear night in the north Georgia foothills goes well under that.\n' +
+        '- Pillow, and one spare blanket per child.\n' +
+        '\n' +
+        'Wearing\n' +
+        '- Field uniform (the tan shirt) for travel, opening and the campfire — the council asks for it.\n' +
+        '- Layers rather than one thick coat: long sleeves, fleece, hat and gloves for the evening.\n' +
+        '- A complete second set of clothes and a second pair of shoes. A child soaked to the knees on Saturday morning with nothing dry is the quickest way to end a weekend early.\n' +
+        '- Rain jacket or poncho for everyone. Rain or shine means rain or shine.\n' +
+        '- Closed-toe shoes. Ranges and camp stoves; no sandals.\n' +
+        '\n' +
+        'Camp\n' +
+        '- Camp chairs, and a lantern for the site\n' +
+        '- Two lights per person plus spare batteries\n' +
+        '- Cooler with ice, and a separate jug of drinking water\n' +
+        '- Your own cooking kit: stove or charcoal, fuel, matches, pot, pan, plates, cups, utensils\n' +
+        '- Wash tub, biodegradable soap, dish towel, bin bags\n' +
+        '- Sunscreen, insect repellent, hand sanitiser, loo roll\n' +
+        '- Family first-aid kit and any medication, in its original labelled container\n' +
+        '- Costume for trick-or-treating, and a bag of sweets to hand out if our den takes a site\n' +
+        '\n' +
+        'Leave at home: pets (service dogs excepted, with documentation), alcohol, fireworks, sheath knives, and anything electronic your Scout would be upset to lose.'),
+      freshTripSection('Food',
+        'Every family cooks its own meals. Plan Friday dinner, Saturday breakfast, lunch and dinner, and Sunday breakfast.\n' +
+        '\n' +
+        'Honestly, eat before you arrive on Friday. Setting up in daylight is worth more than a hot Friday meal, and you will not regret it at 9pm.\n' +
+        '\n' +
+        'Do the shopping and the chopping at home. The camp menus that work are the ones where the cooking is really assembly: foil packets, taco meat browned in your own kitchen, pancake mix already in a bottle that only needs water, hot dogs. Keep raw meat below ready-to-eat food in the cooler, and bring a thermometer if you are cooking chicken.'),
+      freshTripSection('Fire, knives and who does what', CAMP_AGES),
+      freshTripSection('Sleeping arrangements and supervision', CAMP_SAFETY),
+      freshTripSection('If it is your first campout', CAMP_FIRST_TIME)
+    ];
+
+    var spring = freshTrip('Spring Family Camping');
+    spring.where = 'Camp Rainey Mountain, Clayton';
+    spring.address = '1494 Rainey Mountain Road, Clayton, GA 30525';
+    spring.when = 'A weekend in late April (2026: Fri 24 Apr – Sun 26 Apr)';
+    spring.arrive = 'Friday from 5:30 pm, check-in 6:00 pm';
+    spring.depart = 'Sunday, out by 10:00 am';
+    spring.cost = '2026: $36 per family before 26 Mar · $40 by 16 Apr · $50 from 17 Apr';
+    spring.url = 'https://www.nega-bsa.org/spring-camping';
+    spring.intro = 'The bigger, wilder one — a Scouts BSA summer-camp property up in the mountains. Spelled Rainey, not Rainy, which matters when you are searching for it. Check the dates and price against the council page each year.';
+    spring.sections = [
+      freshTripSection('What to expect',
+        'Camp Rainey Mountain is close to 500 acres, four miles south-east of Clayton in the north Georgia mountains. It is the council’s Scouts BSA summer camp, so it is larger and more rugged than Scoutland — there are real hills between the campsites and the programme areas, and you will walk them several times a day.\n' +
+        '\n' +
+        'Friday is arrive and set up. Saturday is the programme: arts and crafts, BB guns and archery, fishing, outdoor games, STEM activities and a campfire. The council builds partial rank Adventures into the weekend, so bring your Scout’s handbook and get what they earn signed off before you leave.\n' +
+        '\n' +
+        'It runs rain or shine.'),
+      freshTripSection('The one thing families get wrong',
+        'They pack for Georgia in April and then sleep in the mountains in April.\n' +
+        '\n' +
+        'Clayton averages an April low around 44F and the camp sits above the town, so plan for the 30s and be pleased if you are wrong. Bring the winter bag, not the summer one. Bring a hat to sleep in — most of what people lose overnight goes out through their head — and a spare blanket per child.\n' +
+        '\n' +
+        'Spring in the mountains also means rain and mud. Rain gear you would genuinely wear, a spare pair of shoes each, and an extra tarp.'),
+      freshTripSection('Why a council camp and not the woods', CAMP_WHY_COUNCIL),
+      freshTripSection('Before you go',
+        '- Register through the council, and early: this one has three price steps and the last is nearly half again as much as the first. Fees are transferable but not refundable.\n' +
+        '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Bring the paper and your insurance card.\n' +
+        '- Unload on Friday. Vehicles go to the designated parking area and stay there on Saturday, so whatever you did not carry to the site on Friday night you will be carrying up a hill.\n' +
+        '- Pack the field uniform where you can reach it. The council asks for it for travel and for certain events.\n' +
+        '- Put the tent up in the yard first, especially if it is new.'),
+      freshTripSection('What to bring',
+        'The Cub Scout Six Essentials live in your Scout’s own daypack and stay with them all weekend: first-aid kit, water bottle, flashlight, trail food, sun protection, whistle.\n' +
+        '\n' +
+        'Sleeping — read the note above first\n' +
+        '- Tent, and a ground tarp cut smaller than the tent floor.\n' +
+        '- A sleeping pad or cot for everyone. On a cold mountain night this is the difference between sleeping and not.\n' +
+        '- A cold-rated sleeping bag, a hat to sleep in, and a spare blanket per child.\n' +
+        '- Pillow.\n' +
+        '\n' +
+        'Wearing\n' +
+        '- Field uniform for travel and for events that ask for it.\n' +
+        '- Layers: long sleeves, fleece, warm hat and gloves. Mornings are cold and the afternoon can be shirtsleeves.\n' +
+        '- A complete second set of clothes and a second pair of shoes. In April this is not optional.\n' +
+        '- Proper rain gear for everyone, and closed-toe shoes with grip. There are hills and they will be wet.\n' +
+        '\n' +
+        'Camp\n' +
+        '- Camp chairs, lantern, two lights per person plus spare batteries\n' +
+        '- A wagon or a decent pack — you carry from the car park to the site\n' +
+        '- Cooler with ice, and a separate jug of drinking water\n' +
+        '- Your own cooking kit: stove or charcoal, fuel, matches, pot, pan, plates, cups, utensils\n' +
+        '- Wash tub, biodegradable soap, dish towel, bin bags\n' +
+        '- Sunscreen, insect repellent, hand sanitiser, loo roll\n' +
+        '- Family first-aid kit and any medication, in its original labelled container\n' +
+        '- Your Scout’s handbook, for the Adventure sign-offs\n' +
+        '\n' +
+        'Leave at home: pets (service dogs excepted, with documentation), alcohol, fireworks and sheath knives.'),
+      freshTripSection('Food',
+        'Every family cooks its own meals, over a campfire or your own stove. Plan Friday dinner, Saturday breakfast, lunch and dinner, and Sunday breakfast — you are out by 10 on Sunday, so keep that one to something you can eat cold if the morning runs away from you.\n' +
+        '\n' +
+        'Shop and chop at home. Keep raw meat below ready-to-eat food in the cooler. A hot drink after dark is worth the trouble of carrying the kettle.'),
+      freshTripSection('Fire, knives and who does what', CAMP_AGES),
+      freshTripSection('Sleeping arrangements and supervision', CAMP_SAFETY),
+      freshTripSection('If it is your first campout', CAMP_FIRST_TIME)
+    ];
+    return [fall, spring];
+  }
+  function campingTrips() {
+    var c = state.camping;
+    return (c && Array.isArray(c.trips)) ? c.trips : [];
+  }
+  function getTrip(id) {
+    return campingTrips().find(function (t) { return t.id === id; }) || null;
+  }
+  // The sub-tab label. A trip name can be anything, and the strip is the one place it has to
+  // stay short, so the leading season word carries it when there is one.
+  function tripTabLabel(t) {
+    var n = String((t && t.name) || '').trim();
+    if (!n) return 'Untitled trip';
+    return n.length > 22 ? n.slice(0, 21).trim() + '…' : n;
+  }
+  // A section body is plain text a leader typed, so it is escaped first and then given the
+  // small amount of structure people actually use: blank lines separate paragraphs, and a run
+  // of lines starting "- " becomes a list. Nothing else — this is not a markdown renderer, and
+  // it must never be able to emit a tag that was not built here.
+  function campText(s) {
+    var src = String(s == null ? '' : s).replace(/\r\n?/g, '\n');
+    if (!src.trim()) return '';
+    return src.split(/\n{2,}/).map(function (para) {
+      var lines = para.split('\n').filter(function (l) { return l.trim() !== ''; });
+      if (!lines.length) return '';
+      var bullets = lines.filter(function (l) { return /^\s*[-•]\s+/.test(l); });
+      if (bullets.length === lines.length) {
+        return '<ul class="camp-list">' + lines.map(function (l) {
+          return '<li>' + esc(l.replace(/^\s*[-•]\s+/, '')) + '</li>';
+        }).join('') + '</ul>';
+      }
+      return '<p>' + lines.map(function (l) { return esc(l); }).join('<br>') + '</p>';
+    }).join('');
+  }
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
   // Trail's End lineup (names + containers/case only) is offered as an opt-in template
   // via the Inventory tab's empty state (TE_LINEUP below). Pack records that already carry an
@@ -1643,6 +1889,7 @@
       derby: { name: '', date: '', lanes: 4, cars: [], awards: [] },
       rewardTiers: { duesCents: 0, tiers: [], planOnTierId: '' },
       inventory: freshInventory(),
+      camping: freshCamping(),   // one page per pack campout, published to parents
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
       startHereDismissed: false, // Wave 19(19) — first-run "Start here" card dismissed
@@ -1796,6 +2043,25 @@
     // The scout's credit on cash the pack keeps. Absent → '' , which means "none" — so an
     // existing pack record's tier standings do not move until somebody sets a rate.
     d.cashScoutPct = typeof d.cashScoutPct === 'string' ? d.cashScoutPct : '';
+    // Camping. Seeded with the two council family weekends ONLY when the key is absent
+    // entirely — a pack that has deleted a trip, or both, has `camping` present with a shorter
+    // trips array, and must never have the seed pushed back at it on the next reload.
+    if (!d.camping || typeof d.camping !== 'object' || Array.isArray(d.camping)) d.camping = freshCamping();
+    if (!Array.isArray(d.camping.trips)) d.camping.trips = [];
+    d.camping.trips = d.camping.trips.filter(function (t) { return t && typeof t === 'object' && !Array.isArray(t); });
+    d.camping.trips.forEach(function (t) {
+      if (typeof t.id !== 'string' || !t.id) t.id = uid();
+      ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach(function (k) {
+        if (typeof t[k] !== 'string') t[k] = '';
+      });
+      if (!Array.isArray(t.sections)) t.sections = [];
+      t.sections = t.sections.filter(function (s) { return s && typeof s === 'object' && !Array.isArray(s); });
+      t.sections.forEach(function (s) {
+        if (typeof s.id !== 'string' || !s.id) s.id = uid();
+        if (typeof s.title !== 'string') s.title = '';
+        if (typeof s.body !== 'string') s.body = '';
+      });
+    });
     if (!d.packName) d.packName = 'Pack 569';
     if (!d.budget || typeof d.budget !== 'object') d.budget = freshBudget();
     if (typeof d.budget.programYear !== 'number') d.budget.programYear = defaultProgramYear();
@@ -2056,7 +2322,7 @@
       e.slot = (typeof e.slot === 'number' && isFinite(e.slot)) ? Math.min(11, Math.max(0, Math.floor(e.slot))) : 0;
       if (e.date) e.slot = dateToSlot(e.date);   // a date always wins over a stored slot
       e.sourceUid = typeof e.sourceUid === 'string' ? e.sourceUid : '';
-      e.adventure = typeof e.adventure === 'string' ? e.adventure : '';
+      e.adventure = typeof e.adventure === 'string' ? e.adventure.trim() : '';
       if (e.kind !== 'den') { e.den = ''; e.adventure = ''; }
       // Which dens an ACTIVITY is for. Absent on every older record → [] , which means the
       // whole pack and is what every existing event already effectively said. Rebuilt in
@@ -2473,6 +2739,11 @@
     calSelectedDate: null,  // 'YYYY-MM-DD' tapped on the calendar, or null
     showCompleted: false,
     resetScroll: false,
+    // Scroll THIS element into view after the next render, then forget it. For a button whose
+    // whole effect lands somewhere else on the same long page — "Edit this meeting" reveals a
+    // card a screen and a half further down, and preserving scroll made it look like a dead
+    // button for as long as it has existed.
+    scrollToId: null,
     rsvpOpen: {},        // Wave 2 — { eventKey: true } expanded RSVP blocks (not persisted)
     attOpen: {},         // Wave 2 — { meetingId: true } expanded attendance blocks
     collectOpen: {},     // Wave 3 — { expenseId: true } expanded fee-collection grids
@@ -2586,6 +2857,14 @@
     if (p.length !== 3) return iso;
     var d = new Date(+p[0], +p[1] - 1, +p[2]);
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+  // No weekday. For a list of several dates in one line ("Aug 5 · Aug 12 · Aug 19") the
+  // weekday triples the length and carries nothing — fmtDate is still the default elsewhere.
+  function fmtDateShort(iso) {
+    if (!iso) return '';
+    var p = String(iso).split('-');
+    if (p.length !== 3) return iso;
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   // Wave 20 — first line only. Imported locations arrive as "Venue\n123 Main St, City…",
@@ -4109,6 +4388,120 @@
     'Stronger, Faster, Higher': 'Stronger', 'My Safety': 'Safety', 'Citizenship': 'Citizen.', 'Duty to God': 'Duty',
     'Outdoor Adventurer': 'Outdoor', 'Personal Fitness': 'Fitness', 'First Aid': 'First Aid'
   };
+  /* ----- Adventures as a RUN OF MEETINGS, 2026-08-02 -----------------------------------
+     Owner ask: "when I create den meetings I want to assign achievement targets, so show
+     based on attendance that they earned their belt loop, or they are 2/3 there and missing
+     this meeting."
+
+     The model already had one adventure per den meeting and a one-tap "mark it done for
+     everyone checked in". That is right for an adventure a den finishes in an evening and
+     wrong for every other one — most take two or three meetings, and marking it at the first
+     credits a scout who then misses the other two.
+
+     So: every den meeting naming an adventure is one SESSION of it. The sessions with the
+     same (den, adventure) inside one program year are a RUN. A scout's progress is the
+     sessions of that run they were checked in at. Nothing new is stored — the run is derived
+     from the meetings and the attendance that were already there, which means it stays right
+     when a meeting is added, moved, retagged or deleted.
+
+     Deliberately NOT automatic. Attendance is evidence, not a signoff: a den leader still
+     decides, and the app's job is to say who has the attendance to back it up. `advMarkDone`
+     is still the only thing that writes advancement. */
+  // OWNER RULING, 2026-08-02: never more than one adventure per meeting, but an adventure can
+  // take several meetings to complete. So the field stays a single string and the multiplicity
+  // is on the other side — many meetings, one adventure.
+  function evAdventure(ev) {
+    return (ev && ev.kind === 'den') ? String(ev.adventure || '').trim() : '';
+  }
+  // Who a den meeting is for. A den meeting with no den set means all dens — the same
+  // reading the meeting row shows ("All dens"), so the run's roster has to agree with it.
+  function meetingRoster(m) {
+    var den = String((m && m.den) || '');
+    return activeScouts().filter(function (s) { return !den || s.den === den; });
+  }
+  function wasCheckedIn(eventId, scoutId) {
+    var a = state.attendance[eventId];
+    return !!(a && a[scoutId] && a[scoutId].scout);
+  }
+  // Every (den, adventure) run in the CURRENT program year, sessions in date order.
+  // Scoped to the program year because a den works the same adventure again next year with a
+  // new set of scouts, and counting last year's meetings toward this year's run would report
+  // a scout as finished who has not been to a single one.
+  function adventureRuns() {
+    var py = state.budget.programYear;
+    var from = programYearStartISO(py), to = programYearEndISO(py);
+    var byKey = {}, order = [];
+    state.events.forEach(function (ev) {
+      if (!ev.date || ev.date < from || ev.date > to) return;
+      var nm = evAdventure(ev);
+      if (!nm) return;
+      // Den + adventure. A den name comes from the fixed DENS list, so ' :: ' cannot occur in
+      // it and the key cannot collide. (It was briefly a NUL byte here, which worked and made
+      // `grep` silently return nothing for this entire file. Never again.)
+      var key = (ev.den || '*') + ' :: ' + nm;
+      if (!byKey[key]) {
+        byKey[key] = { key: key, den: ev.den || '', adventure: nm, sessions: [] };
+        order.push(key);
+      }
+      byKey[key].sessions.push(ev);
+    });
+    return order.map(function (k) { return byKey[k]; }).map(function (run) {
+      run.sessions.sort(function (a, b) {
+        return String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time));
+      });
+      return run;
+    }).sort(function (a, b) {
+      var ad = a.sessions[0].date, bd = b.sessions[0].date;
+      return ad.localeCompare(bd) || a.adventure.localeCompare(b.adventure);
+    });
+  }
+  // One run, resolved against the roster and the attendance book.
+  //   attended  sessions this scout was checked in at
+  //   missed    sessions already PAST that they were not checked in at
+  //   pending   sessions still to come — the ones "missing this meeting" is about
+  //   full      attended every session in the run, past and planned
+  //   status    already recorded on the Advancement tab ('', 'done', 'awarded')
+  function runProgress(run, asOf) {
+    var today = asOf || todayISO();
+    var total = run.sessions.length;
+    var scouts = meetingRoster({ den: run.den }).map(function (s) {
+      var attended = [], missed = [], pending = [];
+      run.sessions.forEach(function (ev) {
+        if (wasCheckedIn(ev.id, s.id)) attended.push(ev);
+        else if (ev.date < today) missed.push(ev);
+        else pending.push(ev);
+      });
+      return {
+        scout: s, attended: attended, missed: missed, pending: pending,
+        count: attended.length, total: total, full: attended.length === total,
+        status: advStatus(s.id, advKindFor(s, run.adventure), run.adventure)
+      };
+    });
+    return {
+      run: run, total: total, scouts: scouts,
+      // Everyone who has been to every session that has HAPPENED. These are the scouts a
+      // leader is deciding about tonight; `full` is the stricter "and every planned one too".
+      onTrack: scouts.filter(function (r) { return !r.missed.length; }),
+      complete: scouts.filter(function (r) { return r.full; }),
+      short: scouts.filter(function (r) { return r.missed.length; })
+    };
+  }
+  // The run this meeting belongs to, and its place in it. Null when the meeting names no
+  // adventure, or has no date (an undated meeting is not a session of anything yet).
+  function runForMeeting(m) {
+    var nm = evAdventure(m);
+    if (!nm || !m.date) return null;
+    var run = adventureRuns().find(function (r) {
+      return r.adventure === nm && (r.den || '') === (m.den || '');
+    });
+    if (!run) return null;
+    var idx = run.sessions.findIndex(function (ev) { return ev.id === m.id; });
+    return { run: run, index: idx, position: idx + 1, of: run.sessions.length, prog: runProgress(run) };
+  }
+  // "2 of 3" / "the only session". Said the same way everywhere it appears.
+  function sessionLabel(pos, of) {
+    return of <= 1 ? 'one session' : ('session ' + pos + ' of ' + of);
+  }
   function advRec(scoutId) { return state.advancement[scoutId] || null; }
   function advStatus(scoutId, kind, name) {
     var a = advRec(scoutId);
@@ -5588,12 +5981,31 @@
         return String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title));
       });
 
+      // Camping. The ONE part of the published view that is verbatim authored text rather
+      // than a projection of pack data — a leader wrote it for parents to read, so it goes
+      // across as typed. Rebuilt field by field (never spread) like everything else here, so a
+      // key added to a trip in some later wave cannot ride along unnoticed. A trip with no
+      // name and nothing written on it is skipped: a half-made tab is not news for a parent.
+      var camping = campingTrips().map(function (t) {
+        return {
+          name: String(t.name || ''), where: String(t.where || ''), address: String(t.address || ''),
+          when: String(t.when || ''), arrive: String(t.arrive || ''), depart: String(t.depart || ''),
+          cost: String(t.cost || ''), url: String(t.url || ''), intro: String(t.intro || ''),
+          sections: (t.sections || []).map(function (s) {
+            return { title: String(s.title || ''), body: String(s.body || '') };
+          }).filter(function (s) { return s.title || s.body; })
+        };
+      }).filter(function (t) {
+        return t.name || t.where || t.when || t.intro || t.sections.length;
+      });
+
       var out = {
         rev: typeof state.rev === 'number' ? state.rev : 0,
         packName: String(state.packName || ''),
         programYear: py,
         events: events
       };
+      if (camping.length) out.camping = camping;
       // Calendar-only mode: nothing below is computed, let alone published.
       if (!withStandings) return out;
 
@@ -5977,6 +6389,11 @@
       { id: 'calendar', label: 'Calendar' },
       { id: 'derby', label: 'Derby' }
     ] },
+    // The only workspace whose sections are DATA rather than a literal: one sub-tab per
+    // campout, so adding a trip adds a tab. `sections: []` keeps it out of SECTION_HOME (a
+    // trip id is not a stable route and must never become one) — sectionsOf() supplies the
+    // real list, and every reader below goes through that rather than touching .sections.
+    { id: 'camping', label: 'Camping', dynamic: 'camping', sections: [] },
     { id: 'scouts', label: 'Scouts', sections: [
       { id: 'roster', label: 'Roster' },
       { id: 'advancement', label: 'Advancement' }
@@ -6026,13 +6443,24 @@
     w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; });
   });
   function curWorkspace() { return WS_BY_ID[ui.tab] || WS_BY_ID.home; }
+  // The sections a workspace is offering RIGHT NOW. Static for five of the six; for Camping it
+  // is one per trip. The empty case still returns a section, because curSection() and the
+  // dispatch both assume there is one, and a workspace that renders nothing at all reads as a
+  // bug rather than as "you have no trips yet".
+  function sectionsOf(w) {
+    if (!w) return [];
+    if (w.dynamic !== 'camping') return w.sections;
+    var trips = campingTrips();
+    if (!trips.length) return [{ id: 'camp-none', label: 'Camping' }];
+    return trips.map(function (t) { return { id: t.id, label: tripTabLabel(t) }; });
+  }
   // The remembered section for this workspace, validated — a stale id (from an alias jump,
   // or a section renamed in a later phase) falls back to the first section rather than
   // rendering a blank view.
   function curSection() {
-    var w = curWorkspace(), want = ui.sections[w.id];
-    for (var i = 0; i < w.sections.length; i++) if (w.sections[i].id === want) return want;
-    return w.sections[0].id;
+    var w = curWorkspace(), want = ui.sections[w.id], secs = sectionsOf(w);
+    for (var i = 0; i < secs.length; i++) if (secs[i].id === want) return want;
+    return secs.length ? secs[0].id : '';
   }
   // The one navigation entry point. preferRemembered = the workspace strip, where going back
   // to a workspace should return you to where you were inside it; everything else is an
@@ -6042,7 +6470,11 @@
     if (sectionId && SECTION_HOME[sectionId]) { w = SECTION_HOME[sectionId]; s = sectionId; }
     else if (preferRemembered && WS_BY_ID[tabId]) { w = tabId; }
     else if (TAB_ALIAS[tabId]) { w = TAB_ALIAS[tabId].tab; s = TAB_ALIAS[tabId].section; }
-    else if (WS_BY_ID[tabId]) { w = tabId; }
+    // A section id that is not a route — a Camping trip id. Only reachable when the caller
+    // named a real workspace AND a section SECTION_HOME has never heard of, which is exactly
+    // the dynamic case; curSection() validates it against sectionsOf() either way, so a stale
+    // or bogus id falls back to the first section instead of rendering nothing.
+    else if (WS_BY_ID[tabId]) { w = tabId; if (sectionId) s = sectionId; }
     else { w = 'home'; s = 'home'; }
     ui.tab = w;
     if (s) ui.sections[w] = s;
@@ -6061,6 +6493,7 @@
   // in that mode, so there is nothing to hide.
   var PARENT_TABS = [
     { id: 'schedule', label: 'Schedule' },
+    { id: 'camping', label: 'Camping' },
     { id: 'standings', label: 'Standings' }
   ];
   // Join link phase — the pack can publish a calendar-only view (join config
@@ -6070,8 +6503,25 @@
     var pv = sync.parentView;
     return !!(pv && Array.isArray(pv.standings));
   }
-  function parentTabDefs() { return parentHasStandings() ? PARENT_TABS : PARENT_TABS.slice(0, 1); }
-  function parentTab() { return (ui.parentTab === 'standings' && parentHasStandings()) ? 'standings' : 'schedule'; }
+  // Camping earns its tab only when the pack has actually written something. A pack that never
+  // opens the Camping tab publishes no `camping` key, and a parent is not shown an empty page
+  // with nothing in it — the same rule the Standings tab has always followed.
+  function parentHasCamping() {
+    var pv = sync.parentView;
+    return !!(pv && Array.isArray(pv.camping) && pv.camping.length);
+  }
+  function parentTabDefs() {
+    return PARENT_TABS.filter(function (t) {
+      if (t.id === 'standings') return parentHasStandings();
+      if (t.id === 'camping') return parentHasCamping();
+      return true;
+    });
+  }
+  function parentTab() {
+    if (ui.parentTab === 'standings' && parentHasStandings()) return 'standings';
+    if (ui.parentTab === 'camping' && parentHasCamping()) return 'camping';
+    return 'schedule';
+  }
 
   // Identify the focused control so focus survives a full re-render. Two kinds
   // (Wave 18(6) extended this beyond inputs): data-ch inputs (value + caret also
@@ -6175,7 +6625,7 @@
     // choice (so Home, and any future single-section workspace, shows no second row at
     // all). Gates and the parent app never get one: their nav is the strip above.
     var wsNow = (gate || parent) ? null : curWorkspace();
-    var secDefs = wsNow ? wsNow.sections : [];
+    var secDefs = sectionsOf(wsNow);
     var secCur = wsNow ? curSection() : '';
     secEl.innerHTML = secDefs.length < 2 ? '' : secDefs.map(function (s) {
       var on = secCur === s.id;
@@ -6196,6 +6646,9 @@
     var sec = (gate || parent) ? '' : curSection();
     if (gate) v.innerHTML = renderJoinGate(gate);
     else if (parent) v.innerHTML = renderParentApp();
+    // Camping dispatches on the WORKSPACE, not the section: its section ids are trip ids and
+    // will never match a name in the chain below (they would fall through to renderTotals).
+    else if (wsNow && wsNow.dynamic === 'camping') v.innerHTML = renderCamping(sec);
     else if (sec === 'home') v.innerHTML = renderHome();
     else if (sec === 'calendar') v.innerHTML = renderCalendarTab();
     else if (sec === 'storefronts') v.innerHTML = ui.storefrontId ? renderStorefrontDetail() : renderStorefrontList();
@@ -6256,6 +6709,15 @@
     // Preserve scroll on in-place edits; reset only on navigation.
     if (ui.resetScroll) { ui.resetScroll = false; window.scrollTo(0, 0); }
     else window.scrollTo(0, y);
+    // ...and a third case, which beats both: an action whose result is elsewhere on this same
+    // page. Runs LAST so it wins over the restore above, and clears itself so it can never
+    // yank the page on a later render the user did not ask for. A missing target is a no-op —
+    // the id may belong to a card this render did not produce.
+    if (ui.scrollToId) {
+      var jumpTo = document.getElementById(ui.scrollToId);
+      ui.scrollToId = null;
+      if (jumpTo) jumpTo.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
   }
 
   /* ----- Join link phase: the three full-screen gates ----- */
@@ -6366,8 +6828,37 @@
         '</p></div>';
       return h + parentFooter(pv);
     }
-    h += parentTab() === 'standings' ? renderParentStandings(pv) : renderParentSchedule(pv);
+    var pTab = parentTab();
+    h += pTab === 'standings' ? renderParentStandings(pv)
+      : pTab === 'camping' ? renderParentCamping(pv)
+      : renderParentSchedule(pv);
     return h + parentFooter(pv);
+  }
+  // The parent's camping page. No sub-tab strip in the parent app, so the trips stack — a pack
+  // has two or three of these, not twenty. Reuses campFacts/campText, which is the point: a
+  // parent and a leader are reading the identical render of the identical text.
+  function renderParentCamping(pv) {
+    var trips = Array.isArray(pv.camping) ? pv.camping : [];
+    if (!trips.length) {
+      return '<div class="card"><h2 class="section display">Camping</h2>' +
+        '<p class="small muted" style="margin:0">Nothing posted yet.</p></div>';
+    }
+    var h = '';
+    trips.forEach(function (t) {
+      h += '<div class="card"><h2 class="section display">' + esc(String(t.name || 'Campout')) + '</h2>' +
+        campFacts({
+          where: String(t.where || ''), address: String(t.address || ''), when: String(t.when || ''),
+          arrive: String(t.arrive || ''), depart: String(t.depart || ''),
+          cost: String(t.cost || ''), url: String(t.url || '')
+        });
+      if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + campText(t.intro) + '</div>';
+      h += '</div>';
+      (Array.isArray(t.sections) ? t.sections : []).forEach(function (s) {
+        h += '<div class="card"><h2 class="section display">' + esc(String(s.title || 'Details')) + '</h2>' +
+          '<div class="camp-body">' + campText(s.body) + '</div></div>';
+      });
+    });
+    return h;
   }
   function parentEventRow(e) {
     var kind = e && e.kind === 'storefront' ? 'storefront' : (e && e.kind === 'meeting' ? 'meeting' : 'activity');
@@ -6916,7 +7407,8 @@
 
     // Selected-day detail (Wave 20: sits directly under the month list so tapping an
     // agenda row lands the day's editable detail right below it; BAND sync follows).
-    h += '<div class="card">';
+    // id: the scroll target for "Edit this meeting" / a Next-up row / an agenda day tap.
+    h += '<div class="card" id="dayDetail">';
     if (ui.calSelectedDate) {
       var selDay = byDay[+ui.calSelectedDate.split('-')[2]];
       var onThisMonth = monthKey(ui.calSelectedDate) === ui.calMonth;
@@ -7032,10 +7524,7 @@
       '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time">' +
       tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
       '</div>' +
-      (m.kind === 'den'
-        ? '<input data-ch="mtg-adv" data-id="' + m.id + '" list="advOpts-' + m.id + '" value="' + esc(m.adventure || '') + '" placeholder="Adventure planned (optional)" style="width:100%;margin-top:6px">' +
-          '<datalist id="advOpts-' + m.id + '">' + advOptionsForDen(m.den).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>'
-        : '') +
+      (m.kind === 'den' ? advTargetPicker(m) : '') +
       '<input data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') + '" placeholder="Location / notes (optional)" style="width:100%;margin-top:6px">' +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
@@ -10951,6 +11440,123 @@
       return an - bn || carRacer(a).localeCompare(carRacer(b));
     });
   }
+  /* ---------------- Camping tab ---------------- */
+  // One trip per sub-tab. Two modes in one renderer rather than two renderers, because the
+  // read-only view is what a viewer-role leader sees and it has to be the SAME page — a
+  // separate one would drift, and the drift would be invisible to whoever is editing.
+  function renderCamping(sec) {
+    var trips = campingTrips();
+    var edit = canEdit();
+    if (!trips.length) {
+      return '<div class="card"><h2 class="section display">Camping</h2>' +
+        '<p class="small muted" style="margin:0 0 10px">No campouts on file. Each one gets its own tab up there, ' +
+        'with what to expect, how to prepare and what to bring — and parents see all of it.</p>' +
+        (edit ? '<button type="button" class="btn primary" data-act="camp-add-trip">Add a campout</button>'
+              : '<p class="small muted" style="margin:0">A leader will add them here.</p>') +
+        '</div>';
+    }
+    var t = getTrip(sec) || trips[0];
+    var h = '';
+
+    // Header: the logistics a parent checks on the way out of the door.
+    h += '<div class="card"><h2 class="section display">' + esc(t.name || 'Untitled trip') + '</h2>';
+    if (edit) {
+      h += '<div class="row" style="margin-bottom:8px">' +
+        campField(t, 'name', 'Trip name', 'e.g. Fall Family Camping', 'grow') +
+        campField(t, 'where', 'Camp', 'e.g. Scoutland, on Lake Lanier', 'grow') +
+        '</div>' +
+        '<div class="row" style="margin-bottom:8px">' +
+        campField(t, 'when', 'When', 'e.g. a weekend in mid-October', 'grow') +
+        campField(t, 'arrive', 'Arrive', 'e.g. Friday, check-in from 6:00 pm') +
+        campField(t, 'depart', 'Leave by', 'e.g. Sunday, out by 11:00 am') +
+        '</div>' +
+        '<div class="row" style="margin-bottom:8px">' +
+        campField(t, 'address', 'Address', 'street, town, ZIP', 'grow') +
+        campField(t, 'cost', 'Cost', 'e.g. $35 per family', 'grow') +
+        '</div>' +
+        '<div class="row" style="margin-bottom:8px">' +
+        campField(t, 'url', 'Council page', 'https://…', 'grow') +
+        '</div>' +
+        '<label class="fld" style="margin-bottom:4px">Short intro' +
+        '<textarea class="notes-in" data-ch="trip-intro" data-id="' + esc(t.id) + '" rows="2" ' +
+        'placeholder="One or two lines at the top of the page">' + esc(t.intro) + '</textarea></label>';
+    } else {
+      h += campFacts(t);
+      if (t.intro) h += '<div class="camp-body">' + campText(t.intro) + '</div>';
+    }
+    if (edit && (t.where || t.address || t.when || t.cost)) h += '<hr class="divider">' + campFacts(t);
+    h += '</div>';
+
+    // The published-to-parents notice. On the page, not in a comment: the whole point of this
+    // tab is that parents read it, and somebody will otherwise type a phone number into it.
+    if (edit) {
+      h += '<div class="card"><p class="small muted" style="margin:0">' +
+        '<strong>Everything on this page is published to parents</strong> — the trip details and every ' +
+        'section below, exactly as written. Nothing else about the pack goes with it: no budget, no ' +
+        'dues, no roster. Write it for the family reading it in the car park. ' +
+        (t.name ? '' : 'An unnamed campout is not published at all, so give it a name when it is ready.') +
+        '</p></div>';
+    }
+
+    (t.sections || []).forEach(function (s) {
+      h += '<div class="card">';
+      if (edit) {
+        h += '<div class="spread" style="margin-bottom:6px">' +
+          '<input class="ename" data-ch="trip-sec-title" data-id="' + esc(t.id) + '" data-sec="' + esc(s.id) + '" ' +
+          'value="' + esc(s.title) + '" placeholder="Section heading" aria-label="Section heading" style="flex:1 1 200px">' +
+          tinyDangerBtn('camp-del-sec:' + t.id + ':' + s.id, 'Delete this section') +
+          '</div>' +
+          '<textarea class="notes-in" data-ch="trip-sec-body" data-id="' + esc(t.id) + '" data-sec="' + esc(s.id) + '" ' +
+          'rows="8" placeholder="What families need to know. Blank line for a new paragraph; start a line with - for a bullet." ' +
+          'aria-label="Section text">' + esc(s.body) + '</textarea>';
+      } else {
+        h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +
+          '<div class="camp-body">' + campText(s.body) + '</div>';
+      }
+      h += '</div>';
+    });
+
+    if (edit) {
+      h += '<div class="card"><div class="row">' +
+        '<button type="button" class="btn" data-act="camp-add-sec:' + esc(t.id) + '">+ Add a section</button>' +
+        '<button type="button" class="btn" data-act="camp-add-trip">+ Add a campout</button>' +
+        '<span style="flex:1 1 auto"></span>' +
+        dangerBtn('camp-del-trip:' + t.id, 'Delete this campout') +
+        '</div>' +
+        '<p class="small muted" style="margin:8px 0 0">A new campout gets its own tab. Deleting one takes its ' +
+        'tab and everything written on it, and takes it off the parents’ view too.</p></div>';
+    }
+    return h;
+  }
+  // One header input. Separate so the six of them cannot drift apart.
+  function campField(t, key, label, ph, grow) {
+    return '<label class="fld"' + (grow ? ' style="flex:1 1 180px"' : '') + '>' + esc(label) +
+      '<input data-ch="trip-' + key + '" data-id="' + esc(t.id) + '" value="' + esc(t[key] || '') +
+      '" placeholder="' + esc(ph) + '"' + (grow ? ' style="width:100%"' : '') + '></label>';
+  }
+  // The read-only facts block — the same for a leader and a parent, which is why it takes a
+  // plain trip object and touches no state.
+  function campFacts(t) {
+    var rows = [];
+    if (t.where) rows.push(['Where', esc(t.where) + (t.address ? '<br><span class="muted">' + esc(t.address) + '</span>' : '')]);
+    else if (t.address) rows.push(['Where', esc(t.address)]);
+    if (t.when) rows.push(['When', esc(t.when)]);
+    if (t.arrive || t.depart) {
+      rows.push(['Times', [t.arrive, t.depart].filter(Boolean).map(esc).join('<br>')]);
+    }
+    if (t.cost) rows.push(['Cost', esc(t.cost)]);
+    if (t.address) {
+      rows.push(['Map', '<a href="https://maps.google.com/?q=' + encodeURIComponent(t.address) +
+        '" target="_blank" rel="noopener noreferrer">Open in Maps</a>']);
+    }
+    if (/^https?:\/\//i.test(t.url || '')) {
+      rows.push(['Register', '<a href="' + esc(t.url) + '" target="_blank" rel="noopener noreferrer">Council page</a>']);
+    }
+    if (!rows.length) return '';
+    return '<dl class="camp-facts">' + rows.map(function (r) {
+      return '<dt>' + r[0] + '</dt><dd>' + r[1] + '</dd>';
+    }).join('') + '</dl>';
+  }
   function renderDerby() {
     var d = state.derby;
     var roster = activeScouts();
@@ -13561,6 +14167,60 @@
     if (act === 'section' || act === 'goto') { gotoNav(el.dataset.tab, el.dataset.section, false); return; }
     if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
+    // ----- Camping. Every one of these edits the pack record, so they all sit behind
+    // canEdit(): a viewer-role leader never sees the buttons, but the action handler is
+    // reachable from a stale DOM after a role change and must not take their word for it.
+    if (act === 'camp-add-trip') {
+      if (!canEdit()) return;
+      var ntTrip = freshTrip('');
+      state.camping.trips.push(ntTrip);
+      commit();
+      // Land on the tab that was just created — otherwise it appears at the end of the strip
+      // with no sign that anything happened. gotoNav (not a bare ui.tab =) so the section
+      // bookkeeping and the scroll reset both run.
+      gotoNav('camping', ntTrip.id, false);
+      return;
+    }
+    if (act.indexOf('camp-add-sec:') === 0) {
+      if (!canEdit()) return;
+      var asT = getTrip(act.slice('camp-add-sec:'.length));
+      if (!asT) return;
+      asT.sections.push(freshTripSection('', ''));
+      commit();
+      return;
+    }
+    if (act.indexOf('camp-del-sec:') === 0) {
+      if (!canEdit()) return;
+      arm(act, function () {
+        var dsBits = act.split(':');
+        var dsT = getTrip(dsBits[1]);
+        if (!dsT) return;
+        var dsIx = dsT.sections.findIndex(function (s) { return s.id === dsBits[2]; });
+        if (dsIx === -1) return;
+        var dsGone = dsT.sections.splice(dsIx, 1)[0];
+        deleteWithUndo(dsGone.title || 'section', function () {
+          dsT.sections.splice(Math.min(dsIx, dsT.sections.length), 0, dsGone);
+        });
+      });
+      return;
+    }
+    if (act.indexOf('camp-del-trip:') === 0) {
+      if (!canEdit()) return;
+      arm(act, function () {
+        var dtId = act.slice('camp-del-trip:'.length);
+        var dtIx = state.camping.trips.findIndex(function (t) { return t.id === dtId; });
+        if (dtIx === -1) return;
+        var dtGone = state.camping.trips.splice(dtIx, 1)[0];
+        // The deleted trip WAS the current sub-tab, so clear the remembered section or
+        // curSection() falls back on its own and the strip flickers to the wrong tab.
+        if (ui.sections.camping === dtId) ui.sections.camping = '';
+        deleteWithUndo(dtGone.name || 'campout', function () {
+          state.camping.trips.splice(Math.min(dtIx, state.camping.trips.length), 0, dtGone);
+          ui.sections.camping = dtGone.id;
+        });
+      });
+      return;
+    }
     if (act === 'toggle-home-rest') { ui.homeRestOpen = !ui.homeRestOpen; render(); return; }
     if (act === 'den-filter') { ui.denFilter = el.dataset.name || ''; ui.resetScroll = true; render(); return; }
     // Wave 21 — the one-time "where things moved" card. Using a row to navigate counts as
@@ -13574,7 +14234,11 @@
     }
     // ---- Parent phase (the only navigation the parent app has) ----
     if (act === 'parent-tab') {
-      ui.parentTab = el.dataset.tab === 'standings' ? 'standings' : 'schedule';
+      // Accept any tab the parent app is actually offering, rather than naming them here —
+      // the old ternary silently swallowed a third tab and sent every click to Schedule.
+      // parentTab() re-validates on the way out, so a tab that vanishes falls back safely.
+      var ptWant = el.dataset.tab;
+      ui.parentTab = parentTabDefs().some(function (t) { return t.id === ptWant; }) ? ptWant : 'schedule';
       ui.resetScroll = true;
       render(); return;
     }
@@ -13725,6 +14389,10 @@
     if (act === 'nextup-day' || act === 'cal-jump-day') {
       ui.calMonth = monthKey(el.dataset.date);
       ui.calSelectedDate = el.dataset.date;
+      // The day's editable detail is a card near the bottom of a long calendar page. Selecting
+      // the day was always all this did, and with scroll preserved that is indistinguishable
+      // from a button that does nothing — which is exactly how it read.
+      ui.scrollToId = 'dayDetail';
       render(); return;
     }
     // Wave 19(19) — Start-here card.
@@ -14450,6 +15118,28 @@
     // field existed. Kept as typed (like the commission rates) so a half-typed "3" on the way
     // to "30" doesn't get normalized out from under the cursor.
     if (ch === 'cash-scout-pct') { state.cashScoutPct = el.value; commit(); return; }
+    // Camping. One branch for the header fields, one for a section's heading and body. Stored
+    // verbatim — this is prose, and trimming it would eat the trailing newline somebody left
+    // on purpose before typing the next paragraph.
+    if (typeof ch === 'string' && ch.indexOf('trip-sec-') === 0) {
+      var tsT = getTrip(el.dataset.id);
+      var tsS = tsT && (tsT.sections || []).find(function (s) { return s.id === el.dataset.sec; });
+      if (!tsS) return;
+      if (ch === 'trip-sec-title') tsS.title = el.value;
+      else if (ch === 'trip-sec-body') tsS.body = el.value;
+      else return;
+      commit();
+      return;
+    }
+    if (typeof ch === 'string' && ch.indexOf('trip-') === 0) {
+      var tK = ch.slice(5);
+      if (['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].indexOf(tK) < 0) return;
+      var tT = getTrip(el.dataset.id);
+      if (!tT) return;
+      tT[tK] = el.value;
+      commit();
+      return;
+    }
     if (ch === 'pack-name') { state.packName = el.value.trim(); commit(); return; }
     if (ch === 'fr-goal') {
       var frG = getFundraiser(el.dataset.id);

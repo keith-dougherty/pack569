@@ -815,6 +815,9 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'linePerHead', 'linePlannedHeads', 'linePlannedCents',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
+  // Camping — normalizeState seeds the two council trips when the key is absent.
+  'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
+  'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'normalizeState', 'lineActualCents', 'entrySignedCents'];
 
@@ -3400,6 +3403,185 @@ test('a checkbox and its label are styled wherever they are used', () => {
     'a row-scoped copy of the input reset is back — the base rule already does it');
   ok(!/\.(erow|lrow|arow) \.perscout \{ display: inline-flex/.test(SCRIPT_CSS),
     'a row-scoped copy of the whole rule is back');
+});
+
+/* ========================================================================
+   Camping — a page per campout, published to parents. 2026-08-02
+   ===================================================================== */
+
+test('campText escapes first and only ever emits tags it built', () => {
+  // A section body is prose a leader typed into a textarea and it is republished verbatim to
+  // every parent in the pack. If anything here can emit an attacker-chosen tag, the parent
+  // view is the delivery mechanism.
+  const ctx = sandbox(['esc', 'campText']);
+  const run = (s) => ctx.campText(s);
+  ok(!/<script>/.test(run('<script>alert(1)</script>')), 'a script tag survived');
+  ok(run('<b>hi</b>').includes('&lt;b&gt;hi&lt;/b&gt;'), 'markup is not escaped');
+  ok(!/onerror/.test(run('<img src=x onerror=alert(1)>').replace(/&[a-z]+;/g, '')) === false ||
+    run('<img src=x onerror=alert(1)>').indexOf('<img') === -1, 'an img tag was emitted');
+  eq(run(''), '', 'empty in, empty out');
+  eq(run('   \n  '), '', 'whitespace only is empty');
+  eq(run('one'), '<p>one</p>', 'a bare line is a paragraph');
+  eq(run('one\ntwo'), '<p>one<br>two</p>', 'a single newline is a line break, not a paragraph');
+  eq(run('one\n\ntwo'), '<p>one</p><p>two</p>', 'a blank line starts a new paragraph');
+  eq(run('- a\n- b'), '<ul class="camp-list"><li>a</li><li>b</li></ul>', 'a run of dashes is a list');
+  // A mixed block is NOT a list — a heading line followed by bullets must not lose the heading.
+  ok(run('Sleeping\n- pad\n- bag').indexOf('<ul') === -1, 'a mixed block was flattened into a list');
+  ok(run('Sleeping\n- pad').includes('Sleeping<br>- pad'), 'the mixed block lost its bullets');
+  eq(run('a\r\nb'), '<p>a<br>b</p>', 'CRLF from a pasted document is not handled');
+});
+
+test('the seeded trips are real content, and are seeded exactly once', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const trips = ctx.seedCampingTrips();
+  eq(trips.length, 2, 'two council family weekends are seeded');
+  trips.forEach((t) => {
+    ok(t.id && t.name && t.where && t.address, `${t.name}: missing header fields`);
+    ok(t.sections.length >= 6, `${t.name}: only ${t.sections.length} sections`);
+    t.sections.forEach((s) => ok(s.id && s.title && s.body, `${t.name}: an empty section was seeded`));
+    // Every id distinct, or the sub-tab strip and every data-sec lookup collide.
+    const ids = t.sections.map((s) => s.id);
+    eq(new Set(ids).size, ids.length, `${t.name}: duplicate section ids`);
+  });
+  eq(new Set(trips.map((t) => t.id)).size, 2, 'the two trips share an id');
+  // The camp is spelled Rainey. Getting this wrong sends a family to the wrong search result.
+  ok(/Rainey Mountain/.test(JSON.stringify(trips)), 'Camp Rainey Mountain is not named');
+  ok(!/Rainy Mountain/.test(JSON.stringify(trips)), 'the camp is misspelled "Rainy"');
+
+  // A record with no camping key gets the seed...
+  const fresh = ctx.normalizeState(preMigrationState());
+  eq(fresh.camping.trips.length, 2, 'a pre-camping pack record was not seeded');
+  // ...and a pack that has DELETED both trips must never have them pushed back.
+  const emptied = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { trips: [] } }));
+  eq(emptied.camping.trips.length, 0, 'the seed came back after the pack deleted every trip');
+  // Junk is coerced rather than thrown away or trusted.
+  const messy = ctx.normalizeState(Object.assign(preMigrationState(), {
+    camping: { trips: [{ name: 7, sections: [{ title: 'ok' }, null, 'nope'] }, null, 'nope'] }
+  }));
+  eq(messy.camping.trips.length, 1, 'non-object trips were kept');
+  eq(messy.camping.trips[0].name, '', 'a non-string name was kept');
+  eq(messy.camping.trips[0].sections.length, 1, 'non-object sections were kept');
+  eq(messy.camping.trips[0].sections[0].body, '', 'a missing body was not defaulted');
+  ok(messy.camping.trips[0].id && messy.camping.trips[0].sections[0].id, 'ids were not filled in');
+});
+
+test('the seeded content states the rules a pack actually has to follow', () => {
+  // Not a style check — these are the four things a BALOO course exists to make sure somebody
+  // on the trip knows. If a rewrite drops them the page becomes a packing list with a
+  // reassuring tone, which is worse than nothing.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const all = JSON.stringify(ctx.seedCampingTrips());
+  [
+    ['BALOO', 'the BALOO requirement'],
+    ['Hazardous Weather', 'the Hazardous Weather training requirement'],
+    ['parts A and B', 'the medical form requirement'],
+    ['not approved unit activities', 'why shooting sports only happen at a council camp'],
+    ['No adult shares a tent with a youth who is not their own child', 'the tenting rule'],
+    ['Safeguarding Youth', 'the current name for Youth Protection training'],
+    ['Lions do not shoot BB guns', 'the Lion range restriction'],
+    ['Fire building is Webelos and up', 'the fire-building age rule']
+  ].forEach(([needle, what]) => ok(all.includes(needle), `the seed no longer states ${what}`));
+});
+
+test('Camping sections are one per trip, and a trip id is never a route', () => {
+  const ctx = vm.createContext({ state: { camping: { trips: [] } } });
+  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf'), ctx);
+  const secs = (trips) => {
+    ctx.state.camping.trips = trips;
+    return vm.runInContext('sectionsOf({ id: "camping", dynamic: "camping", sections: [] })', ctx);
+  };
+  eq(secs([]).length, 1, 'an empty Camping tab must still offer a section to render');
+  eq(secs([{ id: 'a', name: 'Fall' }, { id: 'b', name: 'Spring' }]).map((s) => s.id), ['a', 'b'],
+    'one section per trip, in order');
+  const long = secs([{ id: 'a', name: 'A very long campout name indeed' }])[0].label;
+  ok(long.length <= 22 && long.endsWith('…'), `a long name is not shortened for the strip: ${long}`);
+  eq(secs([{ id: 'a', name: 'Fall Family Camping' }])[0].label, 'Fall Family Camping',
+    'a name that already fits was truncated');
+  eq(secs([{ id: 'a', name: '' }])[0].label, 'Untitled trip', 'a nameless trip has no label');
+  // A static workspace is untouched by any of this.
+  const stat = vm.runInContext('sectionsOf({ id: "money", sections: [{ id: "budget" }] })', ctx);
+  eq(stat.length, 1, 'a static workspace lost its sections');
+  // Trip ids must NOT be registered as routes: SECTION_HOME is built from the literal
+  // `sections` array, and Camping declares an empty one precisely so nothing lands there.
+  ok(/\{ id: 'camping', label: 'Camping', dynamic: 'camping', sections: \[\] \}/.test(SCRIPT),
+    'the Camping workspace declares static sections, which would put trip ids in SECTION_HOME');
+});
+
+test('camping edits are behind canEdit, and deletes are two-tap with an undo', () => {
+  const actBlock = (a) => {
+    const lit = a.replace(/[-:]/g, '\\$&');
+    const re = a.endsWith(':')
+      ? new RegExp(`act\\.indexOf\\('${lit}'\\) === 0\\)[\\s\\S]{0,900}`)
+      : new RegExp(`act === '${lit}'\\)[\\s\\S]{0,900}`);
+    return re.exec(SCRIPT);
+  };
+  ['camp-add-trip', 'camp-add-sec:', 'camp-del-sec:', 'camp-del-trip:'].forEach((a) => {
+    const m = actBlock(a);
+    ok(m, `the ${a} action is missing`);
+    ok(/if \(!canEdit\(\)\) return;/.test(m[0]), `${a} does not check canEdit()`);
+  });
+  ['camp-del-sec:', 'camp-del-trip:'].forEach((a) => {
+    const m = actBlock(a);
+    ok(/arm\(act, function/.test(m[0]), `${a} deletes on a single tap`);
+    ok(/deleteWithUndo\(/.test(m[0]), `${a} cannot be undone`);
+  });
+  // Deleting the trip you are looking at must clear the remembered sub-tab.
+  ok(/if \(ui\.sections\.camping === dtId\) ui\.sections\.camping = '';/.test(SCRIPT),
+    'deleting the open trip leaves its id remembered as the current section');
+});
+
+test('every trip is published to parents, rebuilt field by field', () => {
+  const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'buildParentView() not found');
+  ok(/var camping = campingTrips\(\)\.map/.test(fn[0]), 'the trips are not published');
+  // Never a spread: a field added to a trip in some later wave must not ride along unseen.
+  ok(!/\.\.\.t\b/.test(fn[0]), 'the published trip spreads the source object');
+  ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach((k) => {
+    ok(new RegExp(`${k}: String\\(t\\.${k} \\|\\| ''\\)`).test(fn[0]), `the published trip drops ${k}`);
+  });
+  ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]),
+    'a section is published with more than its title and body');
+  ok(/if \(camping\.length\) out\.camping = camping;/.test(fn[0]),
+    'an empty camping list still publishes a key, so parents get an empty tab');
+  // A trip a leader has only just created carries nothing worth reading. It must not reach a
+  // parent's phone, and the only thing keeping it off is that freshTrip leaves the name BLANK
+  // — a placeholder name would be truthy and would sail straight through this filter.
+  ok(/return t\.name \|\| t\.where \|\| t\.when \|\| t\.intro \|\| t\.sections\.length;/.test(fn[0]),
+    'an empty trip is published');
+  const ft = /function freshTrip\(name\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(ft && /id: uid\(\), name: String\(name \|\| ''\)/.test(ft[0]),
+    'a new trip is born with a placeholder name, which publishes it empty');
+  // And the old guarantees still hold with camping in the payload.
+  ok(!/ledger/i.test(fn[0]), 'buildParentView references the ledger');
+  ok(!/\bbook\b/.test(fn[0]), 'buildParentView references the book');
+  // The parent tab appears only when there is something on it.
+  ok(/function parentHasCamping\(\)/.test(SCRIPT), 'parentHasCamping() not found');
+  ok(/Array\.isArray\(pv\.camping\) && pv\.camping\.length/.test(SCRIPT),
+    'an empty published list would still show the tab');
+  ok(/renderParentCamping\(pv\)/.test(SCRIPT), 'the parent app never renders the camping page');
+});
+
+test('the editor says the page is published before anyone types into it', () => {
+  // The whole feature is "parents can read this". Somebody will otherwise put a phone number
+  // or a family's situation in a section body, and there is no unpublish.
+  ok(/<strong>Everything on this page is published to parents<\/strong>/.test(SCRIPT),
+    'the editor never warns that the page is public');
+  ok(/no budget, no.*dues, no roster/s.test(SCRIPT),
+    'the notice does not say what is NOT published, which is the other half of the reassurance');
+});
+
+test('the source is text, with no control characters hiding in it', () => {
+  // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
+  // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened
+  // twice in this project now: once in the harness (a `join('\x00')`), once in index.html (a
+  // NUL used as a map-key separator). Both worked perfectly and both blinded every search
+  // over the file they were in. Cheap to assert, expensive to debug.
+  const bad = [];
+  for (let i = 0; i < HTML.length; i++) {
+    const c = HTML.charCodeAt(i);
+    if (c < 9 || (c > 13 && c < 32) || c === 127) bad.push([i, c]);
+  }
+  ok(!bad.length, `${bad.length} control character(s), first at offset ${bad[0] && bad[0][0]} (code ${bad[0] && bad[0][1]})`);
 });
 
 /* ---------------- report ---------------- */
