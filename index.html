@@ -352,7 +352,14 @@
     border-radius: 99px;
     overflow: hidden;
   }
-  .bar-fill { height: 100%; background: var(--accent); border-radius: 99px; }
+  /* --accent-text, not --accent. The track is --surface-2, so in LIGHT mode #C8820A on #EFE6D2
+     measured 2.54:1 — under the 3:1 floor for a non-text indicator, which for a progress bar
+     means you cannot see how full it is. Exactly the trap the calendar's storefront dot had.
+     --accent-text is the SAME VALUE as --accent in dark (byte-identical there) and in the print
+     block (both #8A5A06), so only light-mode screens change; light lifts to 4.77:1. Reaches all
+     eight bars: den advancement, storefront coverage, the three goal bars, the two on the
+     printed season sheet, and the next-reward-tier rows. */
+  .bar-fill { height: 100%; background: var(--accent-text); border-radius: 99px; }
   .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
   .cal-title { font-family: Rockwell, "Roboto Slab", serif; font-size: 1rem; }
   .cal-nav {
@@ -575,13 +582,16 @@
   /* Break BETWEEN the facts, never through one. The summary used to wrap wherever it ran out of
      room, so "Activities & outings" came apart and stranded a word on a line of its own under
      the date, while the buttons centred themselves against the two-line block. */
-  .brow-meta .bsum .bseg { white-space: nowrap; }
+  /* UNSCOPED from .brow-meta .bsum, now that a second surface builds the same sentence (the
+     Next-reward-tier rows). Declaration-identical for the budget row — nothing else in the file
+     styles .bseg, so dropping the specificity from (0,3,0) to (0,1,0) cannot lose to anything. */
+  .bseg { white-space: nowrap; }
   /* And the separator travels with the segment AFTER it, never the one before. Emitted between
      them it could end a line — "…families pay the pack ·" with the wrap after it — which is a
      dangling separator pointing at nothing. As a ::before inside the next segment's own nowrap
      box it can only ever start a continuation line, where a leading dot reads as "still the
      same sentence". */
-  .brow-meta .bsum .bseg + .bseg::before { content: '\00B7\00A0'; opacity: 0.5; }
+  .bseg + .bseg::before { content: '\00B7\00A0'; opacity: 0.5; }
   .brow-meta .bdot { opacity: 0.5; margin: 0 1px; }
   /* Inside a month group the date is the scan anchor — and, now that the rows are in date
      order, a ladder the eye can run down. It was the same soft grey as everything else on the
@@ -657,6 +667,30 @@
        102px well is room the NAME needs more — that is where the truncation lands. */
     .brow .bmoney { width: 88px; }
   }
+
+  /* Next-reward-tier rows. Same shape as .brow: the name and the ONE number on the first line,
+     a quiet ·-separated sentence under it, and a bar so a reader can scan the column as
+     lengths instead of reading twelve percentages. Reuses .bseg for the segments, so the
+     sentence breaks between facts and never leaves a dangling dot. */
+  .tprog { position: relative; padding: 8px 2px; }
+  .tprog + .tprog::before {
+    content: ''; position: absolute; left: 0; right: 0; top: -1px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .tprog-main { display: flex; align-items: baseline; gap: 8px; }
+  .tprog-name { flex: 1 1 auto; min-width: 0; font-size: 0.95rem; font-weight: 650; }
+  /* One axis for the gap, tabular, so the figures stack. The em dash a top-tier scout gets sits
+     on the same axis rather than leaving a hole in the column. */
+  .tprog-fig {
+    flex: 0 0 92px; text-align: right;
+    font-variant-numeric: tabular-nums; font-weight: 650;
+  }
+  .tprog-meta {
+    display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 5px;
+    margin-top: 1px; font-size: 0.78rem; color: var(--ink-soft);
+  }
+  .tprog-pct { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .tprog-bar { margin-top: 5px; height: 6px; }
 
   /* Money · Ledger (Phase 0) — same wrapping-row idiom as .erow, with a left rule that
      tells money in from money out at a glance without relying on colour alone. */
@@ -8965,6 +8999,77 @@
       })
       .sort(function (a, b) { return a.short - b.short || a.scout.name.localeCompare(b.scout.name); });
   }
+  // PROGRESS TOWARD THE NEXT TIER — owner ask, 2026-08-02: "a view somewhere that tracks and
+  // shows each scout's progress towards earning their next rewards tier."
+  //
+  // tierMissedRows() above already answers a RETROSPECTIVE question — who missed a tier that has
+  // closed — and it returns nothing at all for a tier with no dueBy (`if (!t.dueBy) return []`).
+  // This is the prospective one, for every scout, whether or not a deadline exists.
+  //
+  // It reads tierEarnedMap(), which is the point. That map's own comment says it is the ONE map
+  // read by coverage, the waivers, the badges and the deadline report "so those four can never
+  // disagree about who earned what". This is the fifth reader, and it recomputes nothing: a scout
+  // this card calls "earned Silver" is the same scout the budget waives Silver's fees for.
+  //
+  // Three things decide what "next" means, and all three are refusals:
+  //   * a tier at or below the one already earned is behind them, not ahead. This also covers a
+  //     tier credited by a MAKE-UP PAYMENT rather than sold for: earnedTierFor returns the highest
+  //     tier carrying ANY mark, 'madeUp' included, and sortedTiers is ascending — so a settled
+  //     tier is always at or below it and never needs a second check. (There WAS one here. It was
+  //     unreachable for exactly this reason, and a mutation probe proved it: deleting it changed
+  //     no behaviour and failed no test.)
+  //   * a CLOSED tier cannot be progressed toward. Telling a family to chase a deadline that
+  //     passed in November would be a lie, and it is the whole reason tierIsClosed() exists.
+  //
+  // activeScouts(), matching tierEarnedMap — not visibleScoutRows, which deliberately keeps an
+  // archived scout who has sales so their history survives. History is not a future tier.
+  function tierProgressRows() {
+    var tiers = sortedTiers();
+    if (!tiers.length || tierRateMissing()) return [];
+    var map = tierEarnedMap();
+    // Totals are measured on the NEXT tier's own basis date, the way tierEarnedMap measures each
+    // tier on its own — otherwise a tier with a deadline gets compared against a total that
+    // includes sales made after it. Cached by date, because computeScoutTotals walks every
+    // storefront and every entry and there is one row per scout.
+    var byDate = {};
+    function totalsFor(key) {
+      if (!byDate[key]) byDate[key] = computeScoutTotals(key || null);
+      return byDate[key];
+    }
+    return activeScouts().map(function (s) {
+      var earned = earnedTierFor(s.id, tiers, map);
+      var next = null, closedAhead = false;
+      for (var i = 0; i < tiers.length; i++) {
+        var t = tiers[i];
+        if (earned && t.thresholdCents <= earned.thresholdCents) continue;
+        if (tierIsClosed(t)) { closedAhead = true; continue; }
+        next = t; break;
+      }
+      var totals = totalsFor((next && next.dueBy) || '');
+      var got = scoutCommissionOf({ t: totals[s.id] });
+      var base = got == null ? 0 : got;
+      var need = next ? (next.thresholdCents || 0) : 0;
+      var short = next ? Math.max(0, need - base) : 0;
+      return {
+        scout: s, earned: earned, next: next, closedAhead: closedAhead,
+        base: base, need: need, short: short,
+        // The one figure a family can act on. `salesForCommission` is null when the pack has no
+        // goal rate, so this stays null rather than inventing a number — nobody sells commission.
+        shortSales: next ? salesForCommission(short) : null,
+        // Cumulative cover minus what they already have: what REACHING it adds, not what the
+        // whole ladder is worth. tierCumulativeCoverCents already stacks the tiers below.
+        unlocks: next ? Math.max(0, tierCumulativeCoverCents(next) - (earned ? tierCumulativeCoverCents(earned) : 0)) : 0,
+        pct: next ? (need > 0 ? Math.min(100, Math.round(base / need * 100)) : 100) : 100
+      };
+    }).sort(function (a, b) {
+      // Scouts who still have a tier ahead of them first, closest to it first — the smallest
+      // nudge is the best return on a phone call. Then everyone already at the top. Name breaks
+      // ties so no two rows swap places between renders.
+      return (a.next ? 0 : 1) - (b.next ? 0 : 1) ||
+        a.short - b.short ||
+        String(a.scout.name || '').localeCompare(String(b.scout.name || ''));
+    });
+  }
   function packCoverage() {
     var tiers = sortedTiers();
     var out = {};
@@ -11503,6 +11608,80 @@
     return h + '</div>';
   }
 
+  // "Progress towards earning their next rewards tier", as a card on Popcorn · Standings —
+  // above the leaderboards, because who is nearly at a reward is more actionable than who is top.
+  //
+  // Every figure comes from tierProgressRows(), which reads the shared tierEarnedMap; nothing is
+  // recomputed here. The row shape follows the budget rows: name and the one number on the first
+  // line, a quiet ·-separated sentence under it, and a bar so the column can be scanned as
+  // lengths rather than read as digits.
+  function renderTierProgress() {
+    var tiers = sortedTiers();
+    var h = '<div class="card"><h2 class="section display">Next reward tier</h2>';
+    // Three reasons this card can have nothing to say, and each is a different sentence. Saying
+    // "no scouts" for any of them would be a lie about a different problem.
+    if (!tiers.length) {
+      return h + '<p class="small muted" style="margin:0">No reward tiers set yet, so there is nothing for a scout ' +
+        'to be working toward. Set them up on <button type="button" class="btn small ghost" data-act="goto" ' +
+        'data-tab="popcorn" data-section="rewards">Popcorn · Rewards</button></p></div>';
+    }
+    if (tierRateMissing()) {
+      return h + '<p class="small muted" style="margin:0">A tier is measured in the commission a scout has earned ' +
+        'the pack, and this pack has no commission rate set — so there is no way to turn what a scout brought in ' +
+        'into what the pack earned. Set a rate on <button type="button" class="btn small ghost" data-act="goto" ' +
+        'data-tab="pack" data-section="season">Pack · Season</button></p></div>';
+    }
+    var rows = tierProgressRows();
+    if (!rows.length) {
+      return h + '<p class="small muted" style="margin:0">No active scouts on the roster yet.</p></div>';
+    }
+    var chasing = rows.filter(function (r) { return !!r.next; }).length;
+    h += '<p class="small muted" style="margin:0 0 4px">' +
+      (chasing
+        ? '<strong>' + chasing + '</strong> scout' + (chasing === 1 ? ' is' : 's are') + ' still working toward a tier, ' +
+          '<strong>closest first</strong> — the smallest nudge is the best return on a phone call.'
+        : 'Every scout has reached the top tier.') + '</p>' +
+      // Say what the threshold IS. It is the single most misread thing about tiers: it is not
+      // sales, it is the commission the scout earned the pack, and the popcorn figure beside it
+      // is that same gap converted at the rate the goal uses.
+      '<p class="small muted" style="margin:0 0 10px">A tier is reached on the ' +
+      '<strong>commission a scout has earned the pack</strong>, not on what they sold. ' +
+      'The “in popcorn” figure is what the gap means at the pack’s lower rate — ' +
+      'sell it all online and they get there sooner.</p>';
+    rows.forEach(function (r) {
+      var name = esc(r.scout.name || 'Unnamed scout');
+      var segs = [];
+      if (r.next) {
+        segs.push('<span class="bseg">' + esc(r.next.name || 'the next tier') + '</span>');
+        segs.push('<span class="bseg">earned ' + fmt(r.base) + ' of ' + fmt(r.need) + '</span>');
+        // Null when the pack has no goal rate. The commission gap is still true, so the row
+        // still works — it just cannot offer the popcorn figure.
+        if (r.shortSales) segs.push('<span class="bseg">about ' + fmt(r.shortSales) + ' more in popcorn</span>');
+        if (r.unlocks > 0) segs.push('<span class="bseg">unlocks ' + fmt(r.unlocks) + '</span>');
+        if (r.next.dueBy) segs.push('<span class="bseg">by ' + esc(fmtDateShort(r.next.dueBy)) + '</span>');
+      } else {
+        segs.push('<span class="bseg">' + (r.earned
+          ? 'Top tier reached · ' + esc(r.earned.name || 'top tier')
+          : 'No tier reached yet') + '</span>');
+        // A scout with tiers above them that have all CLOSED is not finished — they ran out of
+        // time. Reporting that as "top tier reached" would be wrong, and it is the case a
+        // deadline creates.
+        if (r.closedAhead) segs.push('<span class="bseg">higher tiers have closed</span>');
+      }
+      h += '<div class="tprog">' +
+        '<div class="tprog-main"><span class="tprog-name">' + name + '</span>' +
+        '<span class="tprog-fig money">' + (r.next ? fmt(r.short) : '—') + '</span></div>' +
+        '<div class="tprog-meta">' + segs.join(' ') +
+        (r.next ? '<span class="tprog-pct">' + r.pct + '%</span>' : '') + '</div>' +
+        // aria-hidden: the bar is a second reading of the percentage already in the text beside
+        // it, so a screen reader would otherwise announce the same fact twice.
+        (r.next
+          ? '<div class="bar tprog-bar" aria-hidden="true"><div class="bar-fill" style="width:' + r.pct + '%"></div></div>'
+          : '') +
+        '</div>';
+    });
+    return h + '</div>';
+  }
   function renderTotals() {
     var pack = computePackTotals();
     var totals = computeScoutTotals();
@@ -11692,6 +11871,7 @@
     // through Trail's End, so this matches the pack-level teEligible in both modes.
     var teOf = goalBaseOf;
 
+    h += renderTierProgress();
     h += '<div class="card"><h2 class="section display">Trail’s End standings</h2>';
     if (!rows.length) h += '<p class="small muted">Add scouts and record some sales to see standings.</p>';
     else {

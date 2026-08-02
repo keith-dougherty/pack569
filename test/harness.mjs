@@ -980,6 +980,155 @@ test('a record holding only a ledger does not read as empty', () => {
   ok(/s\.ledger && s\.ledger\.length/.test(fn[0]), 'isStateEmpty ignores the ledger');
 });
 
+/* ================================================================
+   Next reward tier — owner ask, 2026-08-02: "a view somewhere that tracks and shows each
+   scout's progress towards earning their next rewards tier."
+   ================================================================ */
+
+const tpCtx = (() => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    ${slice('tierProgressRows')}
+    ${slice('earnedTierFor')}
+    ${slice('tierIsClosed')}
+    var TIERS = [], MAP = {}, SCOUTS = [], COMM = 0, NO_RATE = false, NO_SALES = false;
+    var TOTALS_CALLS = [];
+    function sortedTiers() { return TIERS; }
+    function tierRateMissing() { return NO_RATE; }
+    function tierEarnedMap() { return MAP; }
+    function activeScouts() { return SCOUTS; }
+    function computeScoutTotals(k) { TOTALS_CALLS.push(k); var m = {}; SCOUTS.forEach(function (s) { m[s.id] = {}; }); return m; }
+    function scoutCommissionOf() { return COMM; }
+    function salesForCommission(c) { return NO_SALES ? null : (c ? Math.ceil(c / 0.30) : null); }
+    function tierCumulativeCoverCents(t) { return t.cover || 0; }
+    function todayISO() { return '2026-08-02'; }
+  `, ctx);
+  return ctx;
+})();
+
+function tp(opts) {
+  Object.assign(tpCtx, {
+    TIERS: opts.tiers, MAP: opts.map || {}, SCOUTS: opts.scouts,
+    COMM: opts.comm == null ? 0 : opts.comm,
+    NO_RATE: !!opts.noRate, NO_SALES: !!opts.noSales
+  });
+  tpCtx.TOTALS_CALLS = [];
+  return tpCtx.tierProgressRows();
+}
+const TP_TIERS = [
+  { id: 'b', name: 'Bronze', thresholdCents: 5000, cover: 2000 },
+  { id: 's', name: 'Silver', thresholdCents: 15000, cover: 9500 },
+  { id: 'g', name: 'Gold', thresholdCents: 30000, cover: 20000, dueBy: '2026-11-30' },
+  { id: 'p', name: 'Platinum', thresholdCents: 50000, cover: 30000, dueBy: '2026-07-01' }
+];
+const TP_ONE = [{ id: 'a', name: 'Ada' }];
+
+test('progress is measured toward the next tier a scout can still reach', () => {
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 13160 });
+  eq(r.earned.name, 'Bronze', 'the tier already earned');
+  eq(r.next.name, 'Silver', 'the tier being worked toward');
+  eq(r.short, 1840, 'the gap, in commission');
+  eq(r.pct, 88, 'percent of the way there');
+  // The one figure a family can act on — nobody sells commission.
+  eq(r.shortSales, Math.ceil(1840 / 0.30), 'the gap said in popcorn');
+  // What REACHING it adds, not what the whole ladder is worth: Silver 9500 less Bronze 2000.
+  eq(r.unlocks, 7500, 'the incremental value of the next tier');
+});
+
+test('a CLOSED tier is never the next tier, and saying so is not the same as finishing', () => {
+  // Platinum's deadline passed on 2026-07-01. Telling a family to chase it would be a lie, and
+  // reporting Gold as the ceiling would be a different lie — they ran out of time, they did not
+  // top the ladder.
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE,
+    map: { b: { a: 'earned' }, s: { a: 'earned' }, g: { a: 'earned' } }, comm: 31000 });
+  eq(r.next, null, 'a closed tier is being offered as reachable');
+  eq(r.closedAhead, true, 'the closed tier above is not reported');
+  eq(r.short, 0, 'a scout with no reachable tier has no gap');
+  eq(r.pct, 100, 'the bar is not full for a scout with nothing left to reach');
+});
+
+test('a tier credited by a make-up payment is behind them, not ahead', () => {
+  // tierEarnedMap marks these 'madeUp' rather than 'earned'. Either way the tier is settled, so
+  // offering it as the next target would ask a family to buy something they already have.
+  // This is carried by earnedTierFor (which honours any mark) plus the ascending threshold walk —
+  // there is deliberately no separate check, because one was unreachable. Pinning the BEHAVIOUR
+  // rather than the mechanism is what lets that stay true.
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE,
+    map: { b: { a: 'earned' }, s: { a: 'madeUp' } }, comm: 6000 });
+  eq(r.next.name, 'Gold', 'a made-up tier is being offered again');
+});
+
+test('the card refuses to guess when tiers cannot be measured', () => {
+  // With no commission rate anywhere there is no way to turn what a scout brought in into what
+  // the pack earned. Showing every scout at zero would report a rate problem as a sales problem.
+  eq(tp({ tiers: TP_TIERS, scouts: TP_ONE, noRate: true }).length, 0, 'rows are built with no rate');
+  eq(tp({ tiers: [], scouts: TP_ONE }).length, 0, 'rows are built with no tiers');
+  // A missing GOAL rate is different: the commission gap is still true, so the row survives and
+  // only the popcorn figure is withheld rather than invented.
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, comm: 0, noSales: true });
+  ok(r, 'the row disappears when only the sales conversion is unavailable');
+  eq(r.shortSales, null, 'a sales figure was invented with no goal rate');
+  eq(r.short, 5000, 'the commission gap is still reported');
+});
+
+test('rows are ordered closest-first, with everyone finished at the end', () => {
+  const rows = tp({
+    tiers: TP_TIERS,
+    scouts: [{ id: 'far', name: 'Far' }, { id: 'done', name: 'Done' }, { id: 'near', name: 'Near' }],
+    map: { b: { far: 'earned', near: 'earned', done: 'earned' },
+           s: { near: 'earned', done: 'earned' },
+           g: { done: 'earned' } },
+    comm: 14000
+  });
+  // Far needs Silver (1000 short); Near needs Gold (16000 short); Done is blocked by closed
+  // Platinum. So: smallest gap, larger gap, then the one with nothing ahead.
+  eq(rows.map((r) => r.scout.name), ['Far', 'Near', 'Done'], 'the order is not closest-first');
+});
+
+test('the tier-progress rows never recompute what "earned" means', () => {
+  // tierEarnedMap's own comment: ONE map read by coverage, the waivers, the badges and the
+  // deadline report, "so those four can never disagree about who earned what". This is the fifth
+  // reader. A private threshold comparison here would let this card promise a tier the budget
+  // does not waive fees for.
+  const fn = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'tierProgressRows() not found');
+  ok(/tierEarnedMap\(\)/.test(fn[0]), 'it no longer reads the shared earned map');
+  ok(/earnedTierFor\(/.test(fn[0]), 'it no longer uses the shared "highest tier reached" helper');
+  ok(/tierIsClosed\(/.test(fn[0]), 'a closed tier can be offered as reachable again');
+  // activeScouts, matching every other tier function — visibleScoutRows deliberately keeps an
+  // archived scout who has sales, and history is not a future tier.
+  ok(/activeScouts\(\)/.test(fn[0]), 'it no longer walks the active roster');
+  ok(!/visibleScoutRows/.test(fn[0]), 'archived scouts are being offered future tiers');
+  // Sorts what .map() just built. Sorting a stored array would reorder the saved record.
+  ok(/\}\)\.sort\(function/.test(fn[0]), 'the sort is no longer applied to a freshly built array');
+  ok(!/state\.scouts\.sort/.test(fn[0]), 'it sorts the stored roster in place');
+});
+
+test('the tier-progress card states each reason it can say nothing', () => {
+  const fn = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderTierProgress() not found');
+  ok(/No reward tiers set yet/.test(fn[0]), 'no tiers is not explained');
+  ok(/no commission rate set/.test(fn[0]), 'a missing rate is not explained');
+  ok(/No active scouts/.test(fn[0]), 'an empty roster is not explained');
+  // The threshold basis is the most misread thing about tiers, so the card says it outright.
+  ok(/commission a scout has earned the pack/.test(fn[0]), 'the card does not say what a threshold measures');
+  ok(/closest first/.test(fn[0]), 'the row order is unlabelled, so it reads as random');
+  // Reuses the shared segment idiom rather than a private copy that can drift.
+  ok(/class="bseg"/.test(fn[0]), 'the meta line no longer uses the shared .bseg segments');
+  // The bar restates the percentage already in the text, so it must not be announced twice.
+  ok(/aria-hidden="true"><div class="bar-fill"/.test(fn[0]), 'the progress bar is not hidden from screen readers');
+  // The fill has to be visible against its own track in BOTH themes. --accent on --surface-2 is
+  // 2.54:1 in light, under the 3:1 non-text floor — a progress bar you cannot read the length of.
+  ok(/\.bar-fill \{[^}]*background: var\(--accent-text\)/.test(SCRIPT_CSS),
+    'the bar fill is back on --accent, which is 2.54:1 on its own track in light mode');
+  // It is on Popcorn · Standings, above the leaderboards.
+  const rt = /function renderTotals\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(rt && /renderTierProgress\(\)/.test(rt[0]), 'the card is not rendered on Standings');
+  const at = rt[0].indexOf('renderTierProgress()');
+  const boards = rt[0].indexOf('Trail’s End standings');
+  ok(at > -1 && boards > -1 && at < boards, 'the card is no longer above the leaderboards');
+});
+
 test('the parent view never carries the ledger', () => {
   // Parents get a sanitized calendar. The pack's transactions are not theirs to see, and
   // the published doc is world-readable to anyone the pack has approved as a parent.
@@ -2647,7 +2796,9 @@ test('the payer rail is legible in BOTH themes', () => {
 });
 
 test('the summary breaks between facts, never through one', () => {
-  ok(/\.brow-meta \.bsum \.bseg \{[^}]*white-space: nowrap/.test(SCRIPT_CSS),
+  // Unscoped, so a second surface (Next reward tier) builds the same sentence from the same
+  // rules rather than a copy that can drift. Assert the RULE, not where it is scoped.
+  ok(/\n  \.bseg \{[^}]*white-space: nowrap/.test(SCRIPT_CSS),
     'a segment can wrap inside itself again — "Activities & outings" comes apart');
   // The separator belongs to the segment AFTER it. Emitted between them it can end a line,
   // which leaves a dot pointing at nothing.
