@@ -791,7 +791,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
   'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'CHARGE_WHO',
-  'linePlannedHeads', 'linePlannedCents',
+  'linePerHead', 'linePlannedHeads', 'linePlannedCents',
   'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS',
   'freshBook', 'TE_LINEUP', 'freshInventory', 'JOBS', 'arrOf', 'jobsFromRoleText',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
@@ -1223,7 +1223,8 @@ test('the head-count grid is only asked for where heads cost something', () => {
    ================================================================ */
 
 const PRICE_FNS = ['centsOf', 'uid', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS',
-  'linePlannedHeads', 'linePlannedCents'];
+  // linePerHead: both per-head kinds price off the roster, and the planning math asks it.
+  'linePerHead', 'linePlannedHeads', 'linePlannedCents'];
 
 test('Phase 3a: the line-shape migration does not move a single total', () => {
   // Same discipline as Phase 1. Today's planned is estCents x roster for a per-scout line
@@ -1526,8 +1527,8 @@ test('a covered adult share is priced at the ADULT rate, and is new pack spendin
     "the Budget card's Planned leaves out what the worksheet added to A");
   // Only the shares a tier actually names are offered, and a rate of zero is not one of them.
   const shares = /function coverableShares\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(shares && /if \(who !== 'scout' && !rate\) return;/.test(shares[0]),
-    'an unpriced adult share is offered as something a tier can cover');
+  ok(shares && /if \(who !== 'scout' && \(family \|\| !rate\)\) return;/.test(shares[0]),
+    'an unpriced adult share is offered as something a tier can cover, or a per-family fee is split');
 });
 
 test('reconciling charges never removes one that has been settled or paid against', () => {
@@ -2012,7 +2013,8 @@ test('season-over-season reports money only, and says why', () => {
    ================================================================ */
 
 const REG_FNS = ['centsOf', 'uid', 'freshLine', 'SA_FEES', 'SEED_EXPENSES',
-  'linePlannedHeads', 'linePlannedCents'];
+  // linePerHead: both per-head kinds price off the roster, and the planning math asks it.
+  'linePerHead', 'linePlannedHeads', 'linePlannedCents'];
 
 test('the national fees live in one dated place, and the seed reads them', () => {
   const { SA_FEES } = sandbox(['SA_FEES']);
@@ -2669,11 +2671,12 @@ test('the editor asks for a per-scout price, not a per-head guess', () => {
   ok(fn[0].includes('>per scout<'), 'the scout rate is not labelled per scout');
   ok(fn[0].includes('Include registered leaders'), 'there is no way to include leaders');
   ok(!/adults\/scout|an assumption/.test(fn[0]), 'the invented-parents assumption is still on screen');
-  // The family rates are asked for ONLY where families are billed through the pack.
-  const fam = /if \(mode === 'families'\) \{[\s\S]*?\n    \}/.exec(fn[0]);
-  ok(fam, 'the family-heads group was not found');
+  // The family rates are asked for on every line a family is billed for — whether the pack
+  // collects it or the council does — but never on a per-family fee, which has no separate heads.
+  const fam = /if \(\(mode === 'families' \|\| mode === 'direct'\) && !perFamily\) \{[\s\S]*?\n    \}/.exec(fn[0]);
+  ok(fam, 'the family-heads group was not found, or is back to families-pay only');
   ok(/data-ch="line-adult-rate"/.test(fam[0]) && /data-ch="line-sibling-rate"/.test(fam[0]),
-    'the family billing rates are outside the families-pay branch');
+    'the family billing rates are outside that branch');
 });
 
 test('a scout’s name can be corrected', () => {
@@ -3029,6 +3032,52 @@ test('the guidance is quoted where the decision is made, not buried', () => {
   ok(/over: net != null && net > 0 && back > net \/ 2/.test(pb[0]),
     'the majority-of-net test is not applied to the pack’s own figures');
   ok(/majority of the NET PROCEEDS/.test(SCRIPT), 'the sentence the check comes from is not quoted');
+});
+
+/* ================================================================
+   Per-family pricing, and the split on every line — owner asks, 2026-07-27
+   ================================================================ */
+
+test('a per-family fee is one price for whoever the family brings', () => {
+  // Council camping is priced per family, not per head: no adult price, no sibling price, and
+  // nothing for a higher tier to cover separately because there is nothing separate.
+  const { LINE_BASES, linePerHead, linePerFamily, linePlannedCents, freshLine } =
+    sandbox(['LINE_BASES', 'linePerHead', 'linePerFamily', 'linePlannedHeads', 'linePlannedCents',
+      'centsOf', 'uid', 'freshLine', 'LINE_FUNDERS']);
+  ok(LINE_BASES.indexOf('per-family') !== -1, 'per-family is not a basis a line can have');
+  const camp = freshLine({ basis: 'per-family', scoutRateCents: 7500, fundedBy: 'families', paidDirectTo: 'Council' });
+  ok(linePerFamily(camp), 'linePerFamily does not recognise it');
+  // It shares ALL the per-head math — one charge per scout, planned = rate x roster — so nothing
+  // downstream has to learn a third shape.
+  ok(linePerHead(camp), 'a per-family line is not treated as per-head by the planning math');
+  eq(linePlannedCents(camp, 13, 4), 97500, 'thirteen families at $75');
+  // An adult rate on it is meaningless, and switching a line to per-family clears any it had.
+  const fn = /\} else if \(bk === 'basis'\) \{[\s\S]*?\n      \}/.exec(SCRIPT);
+  ok(fn, 'the basis handler was not found');
+  ok(/if \(bl\.basis === 'per-family'\) \{\s*\n\s*bl\.adultRateCents = 0; bl\.siblingRateCents = 0;/.test(fn[0]),
+    'switching to per-family leaves a stale adult rate behind for a tier to cover');
+  ok(/bl\.basis = LINE_BASES\.indexOf\(el\.value\) === -1 \? 'flat' : el\.value;/.test(fn[0]),
+    'the basis select cannot reach per-family');
+});
+
+test('the per-family count is honest about siblings', () => {
+  // One fee per family, counted once per scout — which is one too many for two scouts who are
+  // brother and sister. The app has no family link, so it says so instead of pretending.
+  ok(/brothers or sisters\. The app has no way to know that yet, and it errs high/.test(SCRIPT),
+    'the sibling double-count is not disclosed');
+});
+
+test('the scout/adult split is available on every billed line, not just shirts', () => {
+  // It was only ever asked for where the pack collects, which quietly made it a feature of
+  // shirts and dinners: a council-paid campout had nowhere to put an adult price, so no tier
+  // could cover an adult's place at one.
+  const fn = /function lineOptionControls\(l, scoutN, collectKey\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/if \(\(mode === 'families' \|\| mode === 'direct'\) && !perFamily\) \{/.test(fn[0]),
+    'a council-paid line still has nowhere to enter an adult price');
+  ok(/straight to/.test(fn[0]), 'the direct case does not say who the family pays');
+  // And a line with no adult price yet says what setting one would buy you.
+  ok(/gives a reward tier something separate to cover/.test(fn[0]),
+    'nothing tells a pack that setting an adult price makes it coverable');
 });
 
 /* ---------------- report ---------------- */

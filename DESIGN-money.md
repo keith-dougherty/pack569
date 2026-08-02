@@ -260,7 +260,7 @@ and the heads are not all the same kind or price.
                                  // |'events'|'activities'|'camp'|'materials'|'training'
                                  // |'uniforms'|'reserve'|'other'|'income'
   name,
-  basis: 'per-head'|'flat',
+  basis: 'per-head'|'per-family'|'flat',
   scoutRateCents,                // per scout            — PLANNED and CHARGED
   includeLeaders,                // does the pack pay for leaders on this line?
   leaderRateCents,               // per registered leader — PLANNED, the pack's own money
@@ -558,6 +558,27 @@ an adult share is deliberate, per tier, and **costs the plan real money** the mo
 
 Getting that second row wrong would put the cost nowhere at all, so `coverCostForKeys` returns the
 two apart and the worksheet prints *"…of which reward tiers buy for adults or siblings"* under A.
+
+**This is not a shirt feature.** The split is offered on every line a family is billed for, and on
+every arrangement — the pack collecting it *or* the council. It was originally asked for only where
+the pack collects, which quietly made it a property of shirts and dinners: a council-paid campout
+had nowhere to put an adult price, so no tier could ever cover an adult's place at one. A line with
+no adult price yet says what setting one would buy: something separate for a higher tier to cover.
+
+#### One price for the whole family — `basis: 'per-family'`
+
+Council camping is priced **per family**: one fee, whoever they bring. That is not a per-head line
+with the adult rate left blank — it is a line where *there are no separate heads to price*, and
+saying so is what stops a tier being pointed at an adult share that does not exist.
+
+`per-family` is a per-head line with exactly one head, so it inherits all the same math (one charge
+per scout, `planned = rate × roster`) and nothing downstream learns a third shape. What changes is
+what the editor asks for — one figure, no leader box, no adult or sibling price — and that the
+picker offers the whole fee as a single thing to cover.
+
+> **Known limit, stated in the UI rather than hidden:** the fee is counted once per scout, and the
+> app has no family link, so two scouts who are brother and sister are counted twice. It errs
+> **high**, which is the safe direction for a plan, and the note on the line says so.
 
 **Tiers stack, so a higher tier names only what it ADDS.** The adult-shirt tier covers
 `L-shirt#adult` alone — the scout's shirt already came from the tier below — which is exactly what
