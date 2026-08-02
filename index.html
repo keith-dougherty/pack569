@@ -760,6 +760,36 @@
   .list-row:last-child { border-bottom: none; }
   .list-row:hover .lr-name { color: var(--accent-text); }
   .lr-name { font-weight: 650; }
+  /* A storefront row carries its own shift list under the summary, making it the one list row
+     that is taller than a line — so its money has to align with the NAME rather than float in
+     the middle of the shifts. */
+  .list-row.sf-row { align-items: flex-start; }
+  /* Takes the width rather than hugging its content: a content-sized column made every
+     storefront's shift table a different width — and the narrowest ones fell under the two
+     columns' combined basis and wrapped every line in half. */
+  .sf-main { flex: 1 1 auto; min-width: 0; }
+  .sf-shifts { list-style: none; margin: 8px 0 0; padding: 0; }
+  .sf-shift {
+    display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+    padding: 3px 0; font-size: 0.82rem;
+  }
+  .sf-shift + .sf-shift { border-top: 1px solid var(--line-soft); }
+  /* Fixed column + tabular figures: the times stack into one straight edge down the card, which
+     is what makes a page of storefronts scannable instead of a wall of text. */
+  .sf-when {
+    flex: 0 0 150px; color: var(--ink-soft); font-weight: 650;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .sf-who { flex: 1 1 140px; min-width: 0; }
+  .sf-shift.sf-open .sf-who { color: var(--ink-soft); font-style: italic; }
+  /* A phone cannot hold a 17-character time range and two full names on one line, and the
+     wrapped two-column form reads as a mistake — a phantom column with nothing beside it. So
+     below 520px the shift stacks on purpose: time as a small label, names under it. */
+  @media (max-width: 520px) {
+    .sf-shift { display: block; padding: 5px 0; }
+    .sf-when { display: block; font-size: 0.74rem; letter-spacing: 0.02em; }
+    .sf-who { display: block; }
+  }
   .assign-row {
     display: flex; align-items: center; gap: 8px; padding: 6px 0;
     border-bottom: 1px solid var(--line-soft); flex-wrap: wrap;
@@ -1178,7 +1208,6 @@
   /* Program-features backlog wave. No new tokens — every color below derives from
      existing vars, so all four theme blocks stay untouched. */
   /* (15) Day sheet: blank ruled lines for walk-up names — render and print alike. */
-  .ruled-line { border-bottom: 1px solid var(--ink-soft); height: 26px; }
   /* (30) Bobcat-first nudge: subtle amber tint on the blank Bobcat cell (non-enforcing;
      the title/aria carries "Bobcat is completed first"). */
   .adv-cell.bobcat-nudge { background: var(--accent-soft); }
@@ -7921,6 +7950,51 @@
     return { covered: covered, total: total, full: total > 0 && covered === total };
   }
 
+  // A storefront's blocks in the order the DAY happens, not the order they were added: a third
+  // block set to 08:00 belongs above the 12:00 one. Untimed blocks sink, with a label tiebreak
+  // so they hold a stable order.
+  // ⚠ A COPY, and this must stay a copy. blockShares() hands the rounding remainder to the LAST
+  // element of block.assignments, and storefrontTotals walks sf.blocks — sorting either stored
+  // array in place would move real cents onto a different scout.
+  function blocksInDayOrder(sf) {
+    return ((sf && sf.blocks) || []).slice().sort(function (x, y) {
+      return String(x.start || '99:99').localeCompare(String(y.start || '99:99')) ||
+        String(x.label || '').localeCompare(String(y.label || ''));
+    });
+  }
+
+  // Who is signed up for one block, by name, alphabetically — the same rule every other list of
+  // scouts in the app follows, so a rename never reshuffles a shift. Display only: the stored
+  // assignments array keeps its own order, because blockShares() reads position from it.
+  function blockScoutNames(b) {
+    return ((b && b.assignments) || []).map(function (a) {
+      var s = getScout(a.scoutId);
+      return s ? s.name : 'Unknown scout';
+    }).sort(function (x, y) { return String(x).localeCompare(String(y)); });
+  }
+
+  // The shift list that hangs under a storefront row, so the schedule answers "what have we
+  // actually got set" without opening every storefront. One line per shift: the time in a fixed
+  // column (tabular figures, so the eye runs straight down it) and the names beside it. An
+  // unstaffed shift keeps its line and says so — an absent name is the clearest possible signal
+  // that a shift is a gap, and it needs no colour to make the point.
+  function storefrontShiftLines(sf) {
+    var blocks = blocksInDayOrder(sf);
+    if (!blocks.length) return '';
+    var h = '<ul class="sf-shifts">';
+    blocks.forEach(function (b, i) {
+      var when = fmtTimeRange(b.start, b.end) || b.label || ('Block ' + (i + 1));
+      var names = blockScoutNames(b);
+      h += '<li class="sf-shift' + (names.length ? '' : ' sf-open') + '">' +
+        '<span class="sf-when">' + esc(when) + '</span>' +
+        // "Open" — one word, the same language the calendar legend already uses for an unstaffed
+        // shift. A sentence here read as five separate announcements on a storefront with nothing
+        // booked; a single word lets the eye skip it and land on the names that are there.
+        '<span class="sf-who">' + (names.length ? esc(names.join(', ')) : 'Open') + '</span></li>';
+    });
+    return h + '</ul>';
+  }
+
   // Wave 21 — adults on storefront blocks (Wave 16) are GONE. This pack requires a parent
   // to accompany their scout at a storefront, so the adults were always 1:1 with the scouts
   // signed up: a separate roster was data nobody would ever fill in, and a "needs two-deep"
@@ -7934,11 +8008,20 @@
     var covSeg = cov.total === 0 ? '—' :
       '<span style="color:' + (cov.full ? 'var(--good)' : 'var(--accent-text)') + '">' +
       cov.covered + ' of ' + cov.total + ' shift' + (cov.total === 1 ? '' : 's') + ' covered</span>';
-    return '<div class="list-row" data-act="open-storefront" data-id="' + sf.id + '" role="button" tabindex="0">' +
-      '<div><div class="lr-name">' + esc(sf.name) + '</div>' +
+    // role="button" flattens everything inside it to the button's accessible NAME, so the shift
+    // list would otherwise be read out as one forty-word label. An explicit aria-label keeps the
+    // row's spoken form to its summary; the shifts themselves stay reachable where they are
+    // editable — inside the storefront this row opens, and in the agenda row's detail.
+    var aria = sf.name + ', ' + fmtDate(sf.date) + ', ' +
+      (cov.total ? cov.covered + ' of ' + cov.total + ' shift' + (cov.total === 1 ? '' : 's') + ' covered' : 'no shifts added yet') +
+      (t.combined ? ', ' + fmt(t.combined) + ' recorded' : '');
+    return '<div class="list-row sf-row" data-act="open-storefront" data-id="' + sf.id +
+      '" role="button" tabindex="0" aria-label="' + esc(aria) + '">' +
+      '<div class="sf-main"><div class="lr-name">' + esc(sf.name) + '</div>' +
       '<div class="small muted">' + esc(fmtDate(sf.date)) + ' · ' + sf.blocks.length + ' block' + (sf.blocks.length === 1 ? '' : 's') +
       ' · ' + covSeg +
-      (function () { var rp = rsvpPill('sf:' + sf.id); return rp ? ' · ' + rp : ''; })() + '</div></div>' +
+      (function () { var rp = rsvpPill('sf:' + sf.id); return rp ? ' · ' + rp : ''; })() + '</div>' +
+      storefrontShiftLines(sf) + '</div>' +
       '<div class="money" style="font-weight:650">' + (t.combined ? fmt(t.combined) : '<span class="muted">—</span>') + '</div></div>';
   }
 
@@ -8037,12 +8120,9 @@
         ? (cov.covered + ' of ' + cov.total + ' covered' + (cov.full ? ' — fully staffed' : ''))
         : 'No shifts added yet');
       if (tot.combined) h += line('Recorded', '<span class="money">' + fmt(tot.combined) + '</span> (' + fmt(tot.sales) + ' sales · ' + fmt(tot.don) + ' donations)');
-      (sf.blocks || []).forEach(function (b, i) {
+      blocksInDayOrder(sf).forEach(function (b, i) {
         var when = fmtTimeRange(b.start, b.end) || ('Block ' + (i + 1));
-        var kids = (b.assignments || []).map(function (as) {
-          var sc = getScout(as.scoutId);
-          return sc ? sc.name : '(removed scout)';
-        });
+        var kids = blockScoutNames(b);
         var who = kids.length ? esc(kids.join(', ')) : '<span class="muted">nobody signed up</span>';
         h += line(when, who, 'mo-shift');
       });
@@ -8623,16 +8703,7 @@
     // Wave 2 — RSVP / headcount for this storefront shift
     h += '<div class="card"><p class="eyebrow">RSVP / headcount</p>' + renderRsvpBlock('sf:' + sf.id) + '</div>';
 
-    // In the order the DAY happens, not the order the blocks were added: a third block set to
-    // 08:00 used to render below the 12:00 one. Untimed blocks sink, with a label tiebreak so
-    // they hold a stable order.
-    // ⚠ A COPY, and this must stay a copy. blockShares() hands the rounding remainder to the
-    // LAST element of block.assignments, and storefrontTotals walks sf.blocks — sorting either
-    // stored array in place would move real cents onto a different scout.
-    sf.blocks.slice().sort(function (x, y) {
-      return String(x.start || '99:99').localeCompare(String(y.start || '99:99')) ||
-        String(x.label || '').localeCompare(String(y.label || ''));
-    }).forEach(function (b) { h += renderBlock(sf, b); });
+    blocksInDayOrder(sf).forEach(function (b) { h += renderBlock(sf, b); });
     h += '<button type="button" class="btn" data-act="add-block" data-id="' + sf.id + '">+ Add another block</button>';
     return h;
   }
@@ -8655,7 +8726,13 @@
     // Assignments
     h += '<div class="block-card"><p class="eyebrow">Scouts on this block</p>';
     if (!b.assignments.length) h += '<p class="small muted" style="margin:4px 0 8px">No scouts assigned yet.</p>';
-    b.assignments.forEach(function (a) {
+    // Alphabetical, like the shift list that led you here — the editor reading back in a
+    // different order than the row you tapped is its own small confusion. A copy: blockShares()
+    // reads position out of the stored array. The shares table below stays in that stored
+    // order, because that is the order the rounding remainder is actually assigned in.
+    b.assignments.slice().sort(function (x, y) {
+      return String((getScout(x.scoutId) || {}).name || '').localeCompare(String((getScout(y.scoutId) || {}).name || ''));
+    }).forEach(function (a) {
       var s = getScout(a.scoutId);
       h += '<div class="assign-row">' +
         '<span class="assign-name">' + esc(s ? s.name : 'Unknown scout') + '</span>' +
@@ -13968,14 +14045,13 @@
     var lines = [];
     lines.push((state.packName || 'Pack') + ' — ' + (sf.name || 'Storefront') + ' day sheet');
     lines.push(fmtDate(sf.date));
-    (sf.blocks || []).forEach(function (b) {
+    blocksInDayOrder(sf).forEach(function (b) {
       lines.push('');
       var rng = fmtTimeRange(b.start, b.end);
       lines.push(b.label + (rng ? ' — ' + rng : ''));
-      var dsScouts = (b.assignments || []).map(function (a) { var s = getScout(a.scoutId); return s ? s.name : 'Unknown scout'; });
+      var dsScouts = blockScoutNames(b);
       lines.push('  Scouts: ' + (dsScouts.length ? dsScouts.join(', ') : '—'));
       lines.push('  (each scout is accompanied by their parent)');
-      lines.push('  Walk-ups: ______________  ______________  ______________');
       lines.push('  Trail’s End $ ______   Cash donations $ ______');
     });
     lines.push('');
@@ -13994,15 +14070,13 @@
       '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
       '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — ' + esc(sf.name || 'Storefront') + '</h1></div>' +
       '<p class="muted small" style="margin:0 0 14px">Day sheet · ' + esc(fmtDate(sf.date)) + '</p>';
-    (sf.blocks || []).forEach(function (b) {
+    blocksInDayOrder(sf).forEach(function (b) {
       var rng = fmtTimeRange(b.start, b.end);
-      var dsScouts = (b.assignments || []).map(function (a) { var s = getScout(a.scoutId); return s ? s.name : 'Unknown scout'; });
+      var dsScouts = blockScoutNames(b);
       h += '<div class="block-card" style="margin-bottom:10px">' +
         '<p class="eyebrow" style="margin:0 0 6px">' + esc(b.label) + (rng ? ' · ' + esc(rng) : '') + '</p>' +
         '<p class="small" style="margin:0 0 4px"><strong>Scouts:</strong> ' + (dsScouts.length ? esc(dsScouts.join(', ')) : '<span class="muted">none assigned</span>') + '</p>' +
-        '<p class="small" style="margin:0 0 2px"><strong>Walk-ups:</strong></p>' +
-        '<div class="ruled-line"></div><div class="ruled-line"></div><div class="ruled-line"></div>' +
-        '<p class="small money" style="margin:12px 0 0">Trail’s End $ ________&nbsp;&nbsp;&nbsp;Cash donations $ ________</p>' +
+        '<p class="small money" style="margin:8px 0 0">Trail’s End $ ________&nbsp;&nbsp;&nbsp;Cash donations $ ________</p>' +
         '</div>';
     });
     h += '<p class="small" style="margin:6px 0 0"><strong>Two-deep leadership required at all times.</strong></p>' +

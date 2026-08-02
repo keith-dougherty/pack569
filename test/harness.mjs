@@ -4905,6 +4905,106 @@ test('a line priced per person plans the parent, and knows who is paying for the
     'the close-out projections drop the per-person flag');
 });
 
+/* ========================================================================
+   Storefront rows carry their own shift list — 2026-08-02
+   ===================================================================== */
+
+// getScout is stubbed: these functions only ever ask it for a name, and a sandbox has no state.
+function shiftListCtx(roster) {
+  const ctx = sandbox(['esc', 'fmtClock', 'fmtTimeRange', 'blocksInDayOrder', 'blockScoutNames',
+    'storefrontShiftLines']);
+  vm.runInContext(
+    'var ROSTER = ' + JSON.stringify(roster || {}) + ';' +
+    'function getScout(id) { return ROSTER[id] ? { id: id, name: ROSTER[id] } : null; }', ctx);
+  return ctx;
+}
+const shiftBlk = (label, start, end, ids) => ({
+  id: 'b-' + label, label: label, start: start, end: end,
+  assignments: (ids || []).map((id) => ({ scoutId: id, weight: 1 }))
+});
+
+test('a storefront shows its shifts in the order the day happens, not the order they were added', () => {
+  const ctx = shiftListCtx({});
+  const sf = { blocks: [shiftBlk('Block 1', '12:00', '14:00'), shiftBlk('Block 2', '08:00', '10:00'),
+    shiftBlk('Block 3', '', ''), shiftBlk('Block 4', '10:00', '12:00')] };
+  eq(ctx.blocksInDayOrder(sf).map((b) => b.label),
+    ['Block 2', 'Block 4', 'Block 1', 'Block 3'],
+    'shift order');
+  // The stored array must be untouched: blockShares() hands the rounding remainder to the LAST
+  // element it finds, so sorting in place would move real cents onto a different scout.
+  eq(sf.blocks.map((b) => b.label), ['Block 1', 'Block 2', 'Block 3', 'Block 4'],
+    'blocksInDayOrder mutated the stored blocks');
+});
+
+test('the scouts on a shift read alphabetically, whatever order they signed up in', () => {
+  const ctx = shiftListCtx({ s1: 'Phoenix Gladden', s2: 'Ada Reyes', s3: 'Bowie Gladden' });
+  // The sign-up order here matches NEITHER the alphabetical order nor the id order. With
+  // ['s1','s2','s3'] a sort-in-place by id is a no-op, so the guard below passed on code that
+  // reordered the stored array — the mutation probe is the only reason that showed up.
+  const b = shiftBlk('Block 1', '10:00', '12:00', ['s1', 's3', 's2']);
+  eq(ctx.blockScoutNames(b), ['Ada Reyes', 'Bowie Gladden', 'Phoenix Gladden'], 'names');
+  // Display only — the stored assignments keep their own order for the same reason as above.
+  eq(b.assignments.map((a) => a.scoutId), ['s1', 's3', 's2'],
+    'blockScoutNames mutated the stored assignments');
+  eq(ctx.blockScoutNames({ assignments: [{ scoutId: 'gone' }] }), ['Unknown scout'],
+    'a scout who was deleted still leaves their slot visible');
+});
+
+test('every shift gets a line, and an unstaffed one says so', () => {
+  const ctx = shiftListCtx({ s1: 'Ada Reyes' });
+  const html = ctx.storefrontShiftLines({ blocks: [
+    shiftBlk('Block 1', '10:00', '12:00', ['s1']), shiftBlk('Block 2', '12:00', '14:00', [])] });
+  // The trailing [ "] matters — the <ul class="sf-shifts"> wrapper is a prefix match otherwise.
+  eq((html.match(/class="sf-shift[ "]/g) || []).length, 2, 'one line per shift');
+  ok(/10:00 AM–12:00 PM<\/span><span class="sf-who">Ada Reyes/.test(html),
+    'a staffed shift shows the time and who is on it');
+  ok(/class="sf-shift sf-open"/.test(html), 'an unstaffed shift is marked as open');
+  eq((html.match(/>Open</g) || []).length, 1, 'exactly the empty shift reads "Open"');
+  // A storefront with no shifts yet must add nothing at all — the summary line already says so.
+  eq(ctx.storefrontShiftLines({ blocks: [] }), '', 'no shifts, no list');
+});
+
+test('a shift with no time set still shows up, under its block name', () => {
+  const ctx = shiftListCtx({});
+  const html = ctx.storefrontShiftLines({ blocks: [shiftBlk('Saturday morning', '', '', [])] });
+  ok(/Saturday morning/.test(html), 'an untimed shift falls back to its block name');
+});
+
+test('the storefront row names itself, instead of reading out its whole shift list', () => {
+  // role="button" flattens a row's contents into its accessible NAME, so without an explicit
+  // label the shift list becomes forty words of button name.
+  const row = /function storefrontRow\(sf\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(row, 'storefrontRow() not found');
+  ok(/role="button" tabindex="0" aria-label="/.test(row[0]),
+    'the row is a button with no aria-label of its own');
+  ok(/shift' \+ \(cov\.total === 1 \? '' : 's'\) \+ ' covered'/.test(row[0]),
+    'the spoken label drops the coverage summary, which is the whole point of the row');
+});
+
+test('the printable day sheets list shifts in day order too', () => {
+  // Both sheets used to walk sf.blocks raw, so a shift added later printed out of sequence —
+  // on the sheet that gets carried to the store.
+  for (const fn of ['daySheetText', 'renderDaySheet']) {
+    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
+    ok(src, `${fn}() not found`);
+    ok(/blocksInDayOrder\(sf\)/.test(src[0]), `${fn} walks the stored block order`);
+    ok(/blockScoutNames\(b\)/.test(src[0]), `${fn} lists the scouts in stored order`);
+  }
+});
+
+test('the shift list survives a phone, and its times never wrap', () => {
+  // A 17-character time range plus two names does not fit 375px, and the half-wrapped
+  // two-column form reads as a bug rather than a layout.
+  ok(/\.sf-when \{[^}]*white-space: nowrap/.test(SCRIPT_CSS),
+    'the time column can wrap, which breaks the straight edge that makes the list scannable');
+  ok(/@media \(max-width: 520px\) \{\s*\.sf-shift \{ display: block/.test(SCRIPT_CSS),
+    'the shift row keeps its two columns on a narrow screen');
+  // Content-sized, every storefront's shift table came out a different width — and the narrow
+  // ones fell under the two columns' combined basis and wrapped every single line.
+  ok(/\.sf-main \{ flex: 1 1 auto; min-width: 0; \}/.test(SCRIPT_CSS),
+    'the shift list is content-sized again, so its width varies per storefront');
+});
+
 test('the source is text, with no control characters hiding in it', () => {
   // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
   // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened
