@@ -1235,6 +1235,95 @@ test('the tier-progress card states each reason it can say nothing', () => {
   ok(at > -1 && boards > -1 && at < boards, 'the card is no longer above the leaderboards');
 });
 
+/* ================================================================
+   Trail's End shift import — owner, 2026-08-02: "I just tried to import this file, but since the
+   storefronts already exist, nothing got imported. What I want is for the shifts to populate from
+   the report if they are not already set."
+   ================================================================ */
+
+const shiftCtx = (() => {
+  const ctx = vm.createContext({});
+  vm.runInContext(['detectReport', 'mapShiftReport', 'teParseShiftTime', 'teShiftMinutes',
+    'teStorefrontKey', 'teMissingShifts', 'parseLegacyTime', 'pad2'].map(slice).join('\n'), ctx);
+  return ctx;
+})();
+// The real report's shape: a row per SCOUT, so a shift two scouts signed up for appears twice.
+const SHIFT_ROWS = [
+  ['Master Shift Report'],
+  ['Date', 'Site Name', 'Address Line 1', 'Shift', 'Scout Name'],
+  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '10:00 AM - 12:00 PM US/Eastern', 'Bowie G'],
+  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '10:00 AM - 12:00 PM US/Eastern', 'Phoenix G'],
+  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '12:00 PM - 02:00 PM US/Eastern', 'Logan D'],
+  ['2026-08-29', 'Kroger', '950 Herrington Rd', '10:00 AM - 12:00 PM US/Eastern', ''],
+];
+
+test('one block per SHIFT, not one per scout who signed up for it', () => {
+  // The report prints a row per scout. Two sign-ups on one slot is not two shifts, and this used
+  // to emit the 10:00 AM slot twice — two identical blocks on the schedule, every import.
+  const mapped = shiftCtx.mapShiftReport(SHIFT_ROWS, shiftCtx.detectReport(SHIFT_ROWS));
+  const first = mapped.storefronts[0];
+  eq(first.shifts.map((s) => s.start), ['10:00 AM', '12:00 PM'], 'a shift was duplicated per scout');
+  eq(mapped.totalShifts, 3, 'the shift count double-counts a shared slot');
+  // Same site at two addresses is still disambiguated by address.
+  eq(mapped.storefronts.map((sf) => sf.name),
+    ['Kroger – 2100 Riverside Pkwy', 'Kroger – 950 Herrington Rd'], 'two addresses were merged');
+});
+
+test('an existing storefront gets the shifts it is missing, matched on start time', () => {
+  const mapped = shiftCtx.mapShiftReport(SHIFT_ROWS, shiftCtx.detectReport(SHIFT_ROWS));
+  const shifts = mapped.storefronts[0].shifts;
+  // The owner's case: the storefront is on the schedule with no shifts set at all.
+  eq(shiftCtx.teMissingShifts({ blocks: [] }, shifts).length, 2, 'an empty storefront gains nothing');
+  // A storefront that already has one of them keeps it and gains only the other.
+  const partial = { blocks: [{ start: '10:00', assignments: [{ scoutId: 's1' }], salesCents: 12345 }] };
+  const miss = shiftCtx.teMissingShifts(partial, shifts);
+  eq(miss.length, 1, 'a shift already on the schedule was going to be added again');
+  eq(miss[0].start, '12:00 PM', 'the wrong shift was picked as missing');
+  // ...and nothing about the block it already had was read as replaceable.
+  eq(partial.blocks[0].salesCents, 12345, 'teMissingShifts mutated an existing block');
+  // Re-importing the same file is a no-op, which is what makes this safe to run twice.
+  const full = { blocks: shifts.map((sh) => ({ start: shiftCtx.parseLegacyTime(sh.start) })) };
+  eq(shiftCtx.teMissingShifts(full, shifts).length, 0, 're-importing the same report duplicates blocks');
+  // A shift with an unreadable time is skipped rather than added blind — it can never be matched
+  // on a later import, so adding it would duplicate it every single time.
+  eq(shiftCtx.teMissingShifts({ blocks: [] }, [{ start: 'whenever', end: '' }]).length, 0,
+    'an unparseable shift time is added anyway, and will duplicate on every re-import');
+});
+
+test('the shift import never edits a block that is already there', () => {
+  // The old rule was "never edit an existing storefront", which is why a pack that had typed its
+  // dates in imported nothing. The rule that actually matters is narrower: never touch an existing
+  // BLOCK, because a block carries sign-ups and recorded sales.
+  const fn = /function teCommitShiftImport\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'teCommitShiftImport() not found');
+  ok(/teMissingShifts\(match, it\.shifts\)/.test(fn[0]), 'it no longer fills only the missing shifts');
+  ok(/match\.blocks = \(match\.blocks \|\| \[\]\)\.concat\(/.test(fn[0]),
+    'existing blocks are replaced rather than appended to');
+  ok(!/match\.blocks = it\.shifts\.map/.test(fn[0]), 'an existing storefront has its blocks overwritten');
+  // The dead skip that caused the whole complaint must not come back.
+  ok(!/if \(existing\[key\]\) return;/.test(fn[0]),
+    'an existing storefront is skipped whole again, so its shifts never import');
+  // Both outcomes are reported, so "nothing happened" can never be silent again.
+  // Anchored to the CONDITION, not just the string: a bare match on the message still passed when
+  // the branch was disabled to `if (false)`. A source scan cannot see reachability, so pin the
+  // guard that makes it reachable.
+  ok(/if \(filled\) say\.push\('filled in ' \+ filled/.test(fn[0]),
+    'filling shifts is not reported to the user');
+  ok(/Every shift on this report is already on your schedule/.test(fn[0]),
+    'a genuine no-op is not explained');
+});
+
+test('the shift preview says what it is about to do', () => {
+  const fn = /function renderTePreview\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/o\.fillCount/.test(fn), 'the preview does not count the shifts it will fill in');
+  ok(/Everything here is already on your schedule/.test(fn),
+    'the disabled button still claims the storefronts were the problem');
+  ok(/No existing block is changed, renamed, moved or removed/.test(fn),
+    'the preview no longer promises that recorded sales and sign-ups are safe');
+  const build = /function teBuildShiftPreview\(mapped\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/addCount:/.test(build) && /fillCount:/.test(build), 'the preview data carries no fill counts');
+});
+
 test('the parent view never carries the ledger', () => {
   // Parents get a sanitized calendar. The pack's transactions are not theirs to see, and
   // the published doc is world-readable to anyone the pack has approved as a parent.

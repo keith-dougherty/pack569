@@ -13691,9 +13691,14 @@
     }
     if (o.report === 'shifts') {
       var alreadyCount = o.items.length - o.newCount;
-      var confirmBtn = o.newCount
-        ? '<button type="button" class="btn primary" data-act="te-confirm-shifts">Add ' + o.newCount + ' new storefront' + (o.newCount === 1 ? '' : 's') + '</button>'
-        : '<button type="button" class="btn" disabled>All already added</button>';
+      // The button says both halves of what will happen, because "Add 0 new storefronts" was the
+      // whole complaint: a pack that had already typed its dates in saw nothing to do.
+      var doing = [];
+      if (o.newCount) doing.push('Add ' + o.newCount + ' storefront' + (o.newCount === 1 ? '' : 's'));
+      if (o.fillCount) doing.push((o.newCount ? 'fill ' : 'Fill in ') + o.fillCount + ' shift' + (o.fillCount === 1 ? '' : 's'));
+      var confirmBtn = doing.length
+        ? '<button type="button" class="btn primary" data-act="te-confirm-shifts">' + doing.join(' and ') + '</button>'
+        : '<button type="button" class="btn" disabled>Everything here is already on your schedule</button>';
       var h = head +
         '<div class="row no-print" style="margin-bottom:12px">' +
         '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
@@ -13703,17 +13708,31 @@
         '<h1 style="margin:0">Storefront schedule</h1></div>' +
         '<p class="muted small" style="margin:0 0 14px">Found <strong>' + o.items.length + ' storefront date' + (o.items.length === 1 ? '' : 's') + '</strong> · ' +
         o.totalShifts + ' shift' + (o.totalShifts === 1 ? '' : 's') + (o.season ? ' — ' + esc(o.season) + ' season' : '') + '</p>';
-      if (alreadyCount) h += '<p class="small muted" style="margin:0 0 10px">' + alreadyCount + ' already on your schedule ' +
-        '(skipped — nothing is overwritten).</p>';
-      h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Storefront</th><th scope="col" class="num">Shifts</th><th scope="col">Status</th></tr></thead><tbody>';
+      if (alreadyCount) h += '<p class="small muted" style="margin:0 0 10px">' + alreadyCount +
+        ' already on your schedule. ' +
+        (o.fillCount
+          ? '<strong>' + o.fillCount + ' shift' + (o.fillCount === 1 ? '' : 's') + '</strong> from this report ' +
+            (o.fillCount === 1 ? 'is' : 'are') + ' missing from ' + o.fillWhere +
+            ' of them and will be added. Blocks you already have are left exactly as they are.'
+          : 'Every shift on the report is already there.') + '</p>';
+      h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Storefront</th>' +
+        '<th scope="col" class="num">Shifts</th><th scope="col" class="num">Adding</th><th scope="col">Status</th></tr></thead><tbody>';
       o.items.forEach(function (it) {
+        var status = it.isNew
+          ? '<span class="pill">New</span>'
+          : (it.addCount
+            ? '<span class="pill good">Filling in shifts</span>'
+            : '<span class="pill navy">Already complete</span>');
         h += '<tr><td>' + esc(fmtDate(it.date)) + '</td><td>' + esc(it.name) + '</td>' +
           '<td class="num">' + it.count + '</td>' +
-          '<td>' + (it.isNew ? '<span class="pill">New</span>' : '<span class="pill navy">Already added</span>') + '</td></tr>';
+          '<td class="num">' + (it.addCount || '\u2014') + '</td>' +
+          '<td>' + status + '</td></tr>';
       });
       h += '</tbody></table></div>' +
-        '<p class="small muted" style="margin:14px 0 0">Only the <strong>New</strong> rows are added, each with its shifts as blocks. ' +
-        'Existing storefronts, blocks, assignments, and sales are never touched.</p>' +
+        '<p class="small muted" style="margin:14px 0 0">A <strong>New</strong> row is added with all its shifts as blocks. ' +
+        'A storefront you already have keeps everything it has — this only adds the shifts it is missing, matched on ' +
+        'start time. <strong>No existing block is changed, renamed, moved or removed</strong>, so nothing you have ' +
+        'recorded against one — sign-ups, sales, donations — can be lost by importing this.</p>' +
         '</div></div></div>';
       return h;
     }
@@ -14650,8 +14669,15 @@
       if (!date2) continue;
       var site2 = cell(c2, cSite), addr2 = cell(c2, cAddr), shift2 = cell(c2, cShift);
       var key = date2 + '|' + site2 + '|' + addr2;
-      if (!groups[key]) { groups[key] = { date: date2, site: site2, addr: addr2, shifts: [] }; order.push(key); }
-      if (shift2) groups[key].shifts.push(teParseShiftTime(shift2));
+      if (!groups[key]) { groups[key] = { date: date2, site: site2, addr: addr2, shifts: [], seen: {} }; order.push(key); }
+      // ONE ENTRY PER SHIFT, not per row. The Master Shift Report prints a row per SCOUT, so a
+      // shift two scouts have signed up for appears twice — and this used to emit it as two
+      // identical blocks. Two sign-ups on one shift is not two shifts. Keyed on the raw shift
+      // string, which is what the report uses to mean "the same slot".
+      if (shift2 && !groups[key].seen[shift2]) {
+        groups[key].seen[shift2] = true;
+        groups[key].shifts.push(teParseShiftTime(shift2));
+      }
     }
     var storefronts = [], totalShifts = 0;
     order.forEach(function (key) {
@@ -14751,17 +14777,50 @@
   // Match key for "is this storefront already on the schedule?": date + case-insensitive name.
   function teStorefrontKey(name, date) { return (date || '') + '|' + String(name || '').trim().toLowerCase(); }
 
+  // Which shifts on this report are not already blocks on this storefront, matched on START TIME.
+  // Owner, 2026-08-02: "since the storefronts already exist, nothing got imported — what I want is
+  // for the shifts to populate from the report if they are not already set."
+  //
+  // Start time is the identity of a shift. Not the label, which a leader renames; not the index,
+  // which shifts the moment one block is added. parseLegacyTime normalises both sides so
+  // "10:00 AM" off the report and a stored "10:00" compare equal.
+  function teMissingShifts(sf, shifts) {
+    var have = {};
+    (sf ? sf.blocks || [] : []).forEach(function (b) { if (b.start) have[b.start] = true; });
+    return shifts.filter(function (sh) {
+      var st = parseLegacyTime(sh.start);
+      // A shift with no readable start cannot be matched against anything, so it is never
+      // auto-added — silently duplicating blocks on every re-import would be worse than skipping.
+      return !!st && !have[st];
+    });
+  }
   function teBuildShiftPreview(mapped) {
     var existing = {};
     state.storefronts.forEach(function (sf) { existing[teStorefrontKey(sf.name, sf.date)] = true; });
+    var byKey = {};
+    state.storefronts.forEach(function (sf) { byKey[teStorefrontKey(sf.name, sf.date)] = sf; });
     var season = '';
     var items = mapped.storefronts.map(function (sf) {
       var y = (sf.date || '').slice(0, 4);
       if (y > season) season = y;
-      return { name: sf.name, date: sf.date, count: sf.shifts.length, isNew: !existing[teStorefrontKey(sf.name, sf.date)], shifts: sf.shifts };
+      var key = teStorefrontKey(sf.name, sf.date);
+      var match = byKey[key];
+      var missing = teMissingShifts(match, sf.shifts);
+      return {
+        name: sf.name, date: sf.date, count: sf.shifts.length,
+        isNew: !existing[key], shifts: sf.shifts,
+        // On a NEW storefront every shift is added, so `missing` is the whole list either way.
+        addCount: match ? missing.length : sf.shifts.length,
+        haveCount: match ? (match.blocks || []).length : 0
+      };
     });
     var newCount = items.filter(function (it) { return it.isNew; }).length;
-    return { kind: 'te-preview', report: 'shifts', items: items, newCount: newCount, totalShifts: mapped.totalShifts, season: season };
+    // Shifts going onto storefronts that already exist — the case that used to import nothing.
+    var fillCount = items.reduce(function (n, it) { return n + (it.isNew ? 0 : it.addCount); }, 0);
+    var fillWhere = items.filter(function (it) { return !it.isNew && it.addCount; }).length;
+    return { kind: 'te-preview', report: 'shifts', items: items, newCount: newCount,
+      fillCount: fillCount, fillWhere: fillWhere,
+      totalShifts: mapped.totalShifts, season: season };
   }
   // Wave 16 — case-insensitive trimmed roster matcher, shared by the sales preview AND
   // the live-import commit (extracted from the old inline preview matcher). Returns
@@ -14864,23 +14923,47 @@
     if (!o || o.report !== 'shifts') return;
     var existing = {};
     state.storefronts.forEach(function (sf) { existing[teStorefrontKey(sf.name, sf.date)] = true; });
-    var added = 0;
+    var byKey = {};
+    state.storefronts.forEach(function (sf) { byKey[teStorefrontKey(sf.name, sf.date)] = sf; });
+    function blockFor(sh, n) {
+      return { id: uid(), label: 'Block ' + n, start: parseLegacyTime(sh.start), end: parseLegacyTime(sh.end),
+        assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
+    }
+    var added = 0, filled = 0, filledOn = 0;
     o.items.forEach(function (it) {
       var key = teStorefrontKey(it.name, it.date);
-      if (existing[key]) return; // already added — never edit/overwrite an existing storefront
-      state.storefronts.push({
-        id: uid(), name: it.name, date: it.date,
-        blocks: it.shifts.map(function (s, i) {
-          return { id: uid(), label: 'Block ' + (i + 1), start: parseLegacyTime(s.start), end: parseLegacyTime(s.end), assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
-        })
-      });
+      var match = byKey[key];
+      // A storefront that already exists is FILLED, not skipped and not replaced. The old rule was
+      // "never edit an existing storefront", which is why a pack that had already put its dates in
+      // by hand imported nothing at all. The rule that actually matters is narrower and is kept
+      // exactly: never touch a block that is already there. A block carries assignments and
+      // recorded sales, so overwriting one would destroy money and sign-ups. Adding the shifts it
+      // does NOT have costs nothing and is the whole point of the report.
+      if (match) {
+        var missing = teMissingShifts(match, it.shifts);
+        if (!missing.length) return;
+        // Numbering continues from what is there; the display sorts blocks by start time anyway.
+        var base = (match.blocks || []).length;
+        match.blocks = (match.blocks || []).concat(missing.map(function (sh, i) { return blockFor(sh, base + i + 1); }));
+        filled += missing.length;
+        filledOn += 1;
+        return;
+      }
+      var fresh = { id: uid(), name: it.name, date: it.date,
+        blocks: it.shifts.map(function (sh, i) { return blockFor(sh, i + 1); }) };
+      state.storefronts.push(fresh);
+      byKey[key] = fresh;
       existing[key] = true;
       added += 1;
     });
     sortStorefronts();
     ui.overlay = null;
     commit();
-    showToast(added ? ('Added ' + added + ' storefront' + (added === 1 ? '' : 's')) : 'Nothing new to add');
+    var say = [];
+    if (added) say.push('added ' + added + ' storefront' + (added === 1 ? '' : 's'));
+    if (filled) say.push('filled in ' + filled + ' shift' + (filled === 1 ? '' : 's') +
+      ' on ' + filledOn + ' existing storefront' + (filledOn === 1 ? '' : 's'));
+    showToast(say.length ? (say.join(' and ').charAt(0).toUpperCase() + say.join(' and ').slice(1)) : 'Every shift on this report is already on your schedule');
   }
   function teCommitSalesArchive() {
     var o = ui.overlay;
