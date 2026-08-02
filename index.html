@@ -2922,11 +2922,10 @@
     // campout as pure cost until the day it happens, and inflate the popcorn goal by the
     // whole of it — the pack would be told to raise money it was never going to spend.
     //
-    // ...unless the pack has named a tier it PLANS on. Then the SCOUT share of every line that
-    // tier (and the tiers below it) covers is not family income at all — it is what fundraising
-    // is for — and leaving it in B would set the goal too low by exactly what the pack promised.
-    // A STRETCH tier's covers are not here: nothing above the planned tier is budgeted for.
-    // Heads a family brought are untouched either way — a tier never covers those.
+    // ...unless the pack has named a tier it PLANS on. Then every SHARE that tier (and the tiers
+    // below it) covers stops being family income — it is what fundraising is for — and leaving it
+    // in B would set the goal too low by exactly what the pack promised. A STRETCH tier's covers
+    // are not here: nothing above the planned tier is budgeted for.
     var assumeCov = plannedCoverKeys();
     var fees = 0, tierAssumed = 0;
     allBudgetLines().forEach(function (r) {
@@ -2934,20 +2933,29 @@
       if (!lineRaisesCharges(l)) return;
       var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
       var owed = rows.length ? chargeTotals(rows, state.ledger).standing : linePlanned(l);
-      if (assumeCov[r.key]) {
-        // Only what still STANDS can move onto the pack: a charge already waived by a tier
-        // left `standing` long ago, and counting it again would take it off twice.
+      COVER_WHO.forEach(function (who) {
+        if (!assumeCov[coverKeyOf(r.key, who)]) return;
+        // Only what still STANDS can move onto the pack: a charge already waived by a tier left
+        // `standing` long ago, and counting it again would take it off twice. With no charges
+        // raised yet, the scout share falls back to the planning figure — an adult share does
+        // not, because nothing bills a family for a head nobody has recorded.
         var mine = rows.length
           ? rows.reduce(function (n, c) {
-            return (chargeIsOpen(c) && c.who === 'scout') ? n + (c.amountCents || 0) : n;
+            return (chargeIsOpen(c) && c.who === who) ? n + (c.amountCents || 0) : n;
           }, 0)
-          : tierScoutShareForLine(r);
+          : (who === 'scout' ? tierScoutShareForLine(r) : 0);
         mine = Math.min(mine, owed);
+        if (mine <= 0) return;
         owed -= mine;
         tierAssumed += mine;
-      }
+      });
       fees += owed;
     });
+    // An adult or sibling share the pack has taken on is NEW spending: those rates are never
+    // planned (they are what a family owes for the heads it brings), so buying adult shirts as a
+    // reward has to enter A or the cost sits nowhere at all.
+    var tierExtra = coverCostForKeys(assumeCov).extra;
+    expenses += tierExtra;
     var otherFr = 0;
     state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
     var cashGoal = state.cashGoalCents || 0;
@@ -2968,6 +2976,8 @@
       tierAssumed: tierAssumed,
       incomeLines: incomeLines, familyDirect: familyDirect,
       pct: pct, pctOk: pctOk, salesGoal: salesGoal,
+      // What a covered non-scout share added to A, so the worksheet can show it as its own line.
+      tierExtra: tierExtra,
       // Which rate that was, so the screens can name it instead of assuming the storefront one.
       goalIsOnline: rates.goalIsOnline, ratesSplit: rates.split,
       basePct: rates.base, onlinePct: rates.online,
@@ -2998,21 +3008,30 @@
     // pack really paid, on a date, to somebody. The roster changing afterwards cannot alter
     // it, and that is the point.
     //
-    // A line with a payee in paidDirectTo is excluded from BOTH: that money never passes
-    // through the pack's account, so counting it would overstate what the pack spends.
+    // A line with a payee in paidDirectTo is excluded from the PLAN: that money is the family's
+    // and never passes through the pack's account, so planning it would overstate what the pack
+    // spends. Its ACTUAL is a different question. Once a tier can reimburse a council fee
+    // (2026-07-27) there ARE ledger entries against such a line — real money out of the pack's
+    // account — and leaving them out would overstate the balance by exactly what was paid back.
+    // Planned excluded, actual counted: they were never the same question.
     var actPlanned = 0, actActual = 0, familyDirect = 0;
     b.activities.forEach(function (a) {
-      if (!lineThroughPack(a)) { familyDirect += linePlanned(a); return; }
+      var spent = lineActualCents(state.ledger, a.id);
+      if (!lineThroughPack(a)) { familyDirect += linePlanned(a); actActual += spent; return; }
       actPlanned += linePlanned(a);
-      actActual += lineActualCents(state.ledger, a.id);
+      actActual += spent;
     });
     var expPlanned = 0, expActual = 0;
     b.expenses.forEach(function (e) {
-      if (!lineThroughPack(e)) { familyDirect += linePlanned(e); return; }
+      var spentE = lineActualCents(state.ledger, e.id);
+      if (!lineThroughPack(e)) { familyDirect += linePlanned(e); expActual += spentE; return; }
       expPlanned += linePlanned(e);
-      expActual += lineActualCents(state.ledger, e.id);
+      expActual += spentE;
     });
-    var planned = actPlanned + expPlanned;
+    // The pack's own planned spending, plus anything a covered non-scout share commits it to
+    // (tierExtraPackCostCents — the same figure fundingSummary adds to A, from one place).
+    var tierExtra = tierExtraPackCostCents();
+    var planned = actPlanned + expPlanned + tierExtra;
     var actual = actActual + expActual;
     // Wave 17 — dues as income: per-scout items marked "families pay" are costs families
     // reimburse. Expected = est × roster (reduces what popcorn must raise); collected =
@@ -3032,7 +3051,8 @@
     // ...and on a line the PLANNED tier covers, every scout counts as absorbed, not just the
     // ones who have sold enough so far. Otherwise this figure would report $0 absorbed while
     // the funding worksheet was already treating it as the pack's — two screens describing the
-    // same money differently.
+    // same money differently. (Bare key = the SCOUT share, which is the only one this interim
+    // grid ever counted; a covered adult share is pack spending, not forgone fee income.)
     var assumeCovAll = plannedCoverKeys();
     var feesAbsorbed = 0;
     function addFeeItem(item, colKey) {
@@ -3404,11 +3424,12 @@
     var waiverEarned = tiers.length ? tierEarnedMap() : {};
     state.charges.forEach(function (c) {
       if (c.forgiven) return;
-      if (c.who !== 'scout') { c.waivedBy = ''; return; }   // never waive a head they brought
       var line = getBudgetLine(c.lineId);
       if (!line) return;
       var key = state.budget.expenses.indexOf(line) === -1 ? ('act:' + line.id) : line.id;
-      var hit = (covered[key] || {})[c.scoutId];
+      // A head other than the scout is waived only where a tier NAMES that share — the default
+      // is still that a scout's fundraising buys the scout's seat and nobody else's.
+      var hit = (covered[coverKeyOf(key, c.who)] || {})[c.scoutId];
       if (!hit) { c.waivedBy = ''; return; }
       // Record WHICH tier bought it, so total waived stays measurable against net proceeds.
       // Read from the same earned map as the coverage above, so a tier whose deadline has
@@ -3694,6 +3715,98 @@
   }
   // Every per-head, family-funded line the pack handles. Still used by the reward-tier
   // picker, which points a tier at the charges it buys.
+  // ---------------------------------------------------------------------------
+  // WHICH SHARE A TIER COVERS — owner ask, 2026-07-27.
+  //
+  // "One lower tier where we provide a pack shirt for the scout, then another higher reward
+  // where we provide an adult pack shirt." One budget line, two prices, two different rewards.
+  //
+  // So a tier covers a SHARE of a line, not the line: the collect key with an optional head
+  // kind after a '#'. A bare key is the SCOUT share, which is what every existing tier means,
+  // so nothing migrates.
+  //
+  //     'L-shirt'          the scout's shirt      (scoutRateCents)
+  //     'L-shirt#adult'    an adult's shirt       (adultRateCents)
+  //
+  // The tiers stack, so the higher tier names ONLY the adult share — a scout who reaches it
+  // already has the scout shirt from the tier below, and the higher tier's own cost is the adult
+  // shirt alone. That is what makes the per-tier margin figure mean anything.
+  //
+  // This deliberately relaxes the Phase 3b rule that a tier waives `who: 'scout'` charges only.
+  // That rule was there to stop a scout's fundraising quietly buying their parents' seats; the
+  // relaxation is not quiet — the pack has to name the adult share on a specific tier, and it
+  // costs the plan real money when it does (see tierExtraPackCostCents).
+  // ---------------------------------------------------------------------------
+  var COVER_WHO = ['scout', 'adult', 'sibling'];
+  function coverKeyOf(key, who) { return (who && who !== 'scout') ? key + '#' + who : key; }
+  function coverKeyParts(k) {
+    var s = String(k == null ? '' : k);
+    var i = s.indexOf('#');
+    if (i === -1) return { key: s, who: 'scout' };
+    var who = s.slice(i + 1);
+    return { key: s.slice(0, i), who: COVER_WHO.indexOf(who) === -1 ? 'scout' : who };
+  }
+  function lineRateForWho(l, who) {
+    if (!l) return 0;
+    if (who === 'adult') return l.adultRateCents || 0;
+    if (who === 'sibling') return l.siblingRateCents || 0;
+    return l.scoutRateCents || 0;
+  }
+  // Every share a tier could be pointed at: the scout share of each billable line, plus the
+  // adult and sibling shares wherever the line actually prices them. A rate of zero is not
+  // offered — covering nothing is what a reward-only tier is for.
+  // ---------------------------------------------------------------------------
+  // COVERING SOMETHING THE PACK NEVER HANDLED — owner ask, 2026-07-27.
+  //
+  // Spring and fall camping: parents register with the council and pay it directly, so the pack
+  // is not in the transaction at all (paidDirectTo). The pack still wants a tier that gives
+  // that money back.
+  //
+  // Scouting America's Unit Budgeting Guidelines are explicit about the shape this must take:
+  //
+  //   "At no point can a unit 'Pay' a Scout, leader or family. Expenses can be reimbursed
+  //    (according to individual unit bylaws) ... but don't write a check to a Scout or their
+  //    family."
+  //   "Scout account funds can only be used for Scouting activities and costs — payouts to
+  //    Scouts or families are NOT ALLOWED."
+  //   "To avoid 'Direct Benefit' — the majority of the NET PROCEEDS of a fundraiser have to go
+  //    to the unit, not individual Scouts."
+  //
+  // The two halves of that are not in conflict: reimbursing a DOCUMENTED SCOUTING EXPENSE
+  // against a receipt is expressly allowed; handing a family a share of what their scout sold
+  // is not. So the app treats this as a REIMBURSEMENT of a receipted council fee, keeps the
+  // receipt reference on the ledger entry, and says out loud that paying the council directly
+  // for the whole pack is the cleaner arrangement where the council will take it.
+  // ---------------------------------------------------------------------------
+  function lineIsFamilyDirect(l) {
+    return l.category !== 'income' && linePerHead(l) && lineFamilyFunded(l) && !lineThroughPack(l);
+  }
+  // Lines a tier can be pointed at: the ones that bill a family through the pack, plus the ones
+  // a family pays somebody else for and the pack can only give back afterwards.
+  function coverableLines() {
+    return allBudgetLines().filter(function (r) {
+      return lineRaisesCharges(r.line) || lineIsFamilyDirect(r.line);
+    });
+  }
+  function coverableShares() {
+    var out = [];
+    coverableLines().forEach(function (c) {
+      var reimb = lineIsFamilyDirect(c.line);
+      c = { item: c.line, key: c.key, kind: c.kind };
+      COVER_WHO.forEach(function (who) {
+        var rate = lineRateForWho(c.item, who);
+        if (who !== 'scout' && !rate) return;
+        out.push({
+          coverKey: coverKeyOf(c.key, who), key: c.key, who: who, item: c.item, kind: c.kind, rate: rate,
+          // A family-direct line can only ever be given BACK — there is no charge to waive.
+          reimburse: reimb,
+          label: (c.item.name || ('Untitled ' + c.kind)) + (who === 'scout' ? '' : ' · ' + who) +
+            (reimb ? ' · reimburse' : '') + ' · ' + fmt(rate)
+        });
+      });
+    });
+    return out;
+  }
   function perScoutCharges() {
     return state.budget.expenses.filter(lineRaisesCharges)
       .map(function (e) { return { item: e, key: e.id, kind: 'expense' }; })
@@ -6970,11 +7083,12 @@
     // which charges — this is where a parent asking gets answered.
     if (coveredCents > 0) {
       var covMap = tierCoverageConfigured() ? packCoverage() : {};
-      var covLines = perScoutCharges().filter(function (c) { return (covMap[c.key] || {})[s.id]; });
+      var covLines = coverableShares().filter(function (c) { return (covMap[c.coverKey] || {})[s.id]; });
       h += '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Covered by a reward tier</p>' +
         covLines.map(function (c) {
-          return '<div class="assign-row"><span class="assign-name">' + esc(c.item.name || ('Untitled ' + c.kind)) + '</span>' +
-            '<span class="money">' + fmt(c.item.scoutRateCents || 0) + '</span></div>';
+          return '<div class="assign-row"><span class="assign-name">' +
+            esc((c.item.name || ('Untitled ' + c.kind)) + (c.who === 'scout' ? '' : ' · ' + c.who)) + '</span>' +
+            '<span class="money">' + fmt(c.rate) + '</span></div>';
         }).join('') +
         '<p class="small muted" style="margin:8px 0 0">The pack pays these, so ' + esc(s.name || 'this scout') +
         '’s family isn’t billed for them. <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="rewards">Reward tiers</button></p></div>';
@@ -7067,9 +7181,10 @@
     var out = {};
     if (!tierCoverageConfigured()) return out;
     var cov = packCoverage();
-    perScoutCharges().forEach(function (c) {
-      Object.keys(cov[c.key] || {}).forEach(function (sid) {
-        out[sid] = (out[sid] || 0) + (c.item.scoutRateCents || 0);
+    // Per SHARE, at that share's own rate: an adult shirt costs the adult price.
+    coverableShares().forEach(function (s) {
+      Object.keys(cov[s.coverKey] || {}).forEach(function (sid) {
+        out[sid] = (out[sid] || 0) + s.rate;
       });
     });
     return out;
@@ -7178,6 +7293,73 @@
     return earned;
   }
   function tierIsClosed(t) { return !!t.dueBy && todayISO() > t.dueBy; }
+  // WHAT A SCOUT HAS TO SELL FOR A TIER TO PAY FOR ITSELF — owner ask, 2026-07-27.
+  //
+  // A threshold is a SALES figure ("reach $250 in sales and online donations"), but what the
+  // pack gets from it is the COMMISSION on that — $75 at 30%. The rewards are priced in real
+  // dollars, so the two only meet at the break-even: the sales at which the commission covers
+  // what the tier hands back. Cumulative, because the tiers stack and so does what a scout at
+  // this level walks away with.
+  function tierCumulativeCoverCents(t) {
+    var cents = 0;
+    sortedTiers().forEach(function (o) {
+      if (o.thresholdCents <= t.thresholdCents) cents += tierCoverCentsPerScout(o);
+    });
+    return cents;
+  }
+  function tierBreakEven(t) {
+    var cover = tierCumulativeCoverCents(t);
+    var pct = commissionRates().goal;
+    var own = tierCoverCentsPerScout(t);
+    return {
+      cover: cover, own: own, pct: pct,
+      earns: pct == null ? null : Math.round((t.thresholdCents || 0) * pct / 100),
+      sales: (pct == null || pct <= 0 || !cover) ? null : Math.round(cover / (pct / 100))
+    };
+  }
+  // Who is owed a reimbursement, and what the ledger says has gone back. A family-direct line
+  // raises no charge to waive, so this is the only record of the promise — and the payment is
+  // an ordinary ledger entry OUT against the line, which is what makes it auditable.
+  function tierReimbursements(map) {
+    var earned = map || tierEarnedMap();
+    var covered = {};
+    sortedTiers().forEach(function (t) {
+      arrOf(t.covers).forEach(function (k) {
+        if (!covered[k]) covered[k] = {};
+        Object.keys(earned[t.id] || {}).forEach(function (sid) { covered[k][sid] = t; });
+      });
+    });
+    var rows = [];
+    coverableShares().filter(function (s) { return s.reimburse && s.rate > 0; }).forEach(function (s) {
+      var who = covered[s.coverKey] || {};
+      scoutsInDens(activeScouts(), lineDens(s.item)).forEach(function (sc) {
+        if (!who[sc.id]) return;
+        var paid = state.ledger.reduce(function (n, e) {
+          return (e.direction === 'out' && e.lineId === s.item.id && e.scoutId === sc.id)
+            ? n + (e.amountCents || 0) : n;
+        }, 0);
+        rows.push({ share: s, scout: sc, tier: who[sc.id], owed: s.rate, paid: paid, left: Math.max(0, s.rate - paid) });
+      });
+    });
+    return rows;
+  }
+  // The private-benefit sanity check the Unit Budgeting Guidelines ask for: "the majority of the
+  // NET PROCEEDS of a fundraiser have to go to the unit, not individual Scouts." Net proceeds
+  // here is the commission — the only part of a Trail's End sale the pack ever keeps.
+  function privateBenefitCheck() {
+    var pack = computePackTotals();
+    var net = pack.commission;
+    var back = 0;
+    var cov = packCoverage();
+    coverableShares().forEach(function (s) {
+      back += Object.keys(cov[s.coverKey] || {}).length * s.rate;
+    });
+    return {
+      net: net, back: back,
+      pct: (net == null || net <= 0) ? null : Math.round(back / net * 100),
+      over: net != null && net > 0 && back > net / 2
+    };
+  }
   // The deadline in words: a date in a box does not say whether it has passed, and that is the
   // only thing anybody wants to know about it.
   function tierDeadlineText(t) {
@@ -7194,8 +7376,10 @@
     var keys = {};
     arrOf(t.covers).forEach(function (k) { keys[k] = true; });
     var cents = 0;
-    allBudgetLines().forEach(function (r) {
-      if (keys[r.key] && lineRaisesCharges(r.line)) cents += r.line.scoutRateCents || 0;
+    coverableLines().forEach(function (r) {
+      COVER_WHO.forEach(function (who) {
+        if (keys[coverKeyOf(r.key, who)]) cents += lineRateForWho(r.line, who);
+      });
     });
     return cents;
   }
@@ -7295,16 +7479,38 @@
     return (r.line.scoutRateCents || 0) * lineRoster(r.line).length;
   }
   // What a set of collect keys costs the pack across the roster, itemised.
+  // What a set of cover keys costs the pack across the roster, itemised — and split by where
+  // that money already sits:
+  //
+  //   fees   the SCOUT share of a families-pay line. The line's planned cost already includes
+  //          it (planned = scoutRate × scouts), so the pack picking it up does not add to A —
+  //          it takes the money OFF the fees the plan expects from families.
+  //   extra  an ADULT or SIBLING share. Those rates are charge-only and never planned (the
+  //          "pack covers scouts and leaders" ruling), so the pack buying adult shirts is new
+  //          spending: it ADDS to A. Anything else would leave the cost nowhere at all.
   function coverCostForKeys(keys) {
-    var picked = 0, lines = [];
-    allBudgetLines().forEach(function (r) {
-      if (!keys[r.key] || !lineRaisesCharges(r.line)) return;
-      var cents = tierScoutShareForLine(r);
-      if (cents > 0) lines.push({ name: r.line.name || ('Untitled ' + r.kind), cents: cents });
-      picked += cents;
+    var picked = 0, fees = 0, extra = 0, lines = [];
+    coverableLines().forEach(function (r) {
+      var reimb = lineIsFamilyDirect(r.line);
+      COVER_WHO.forEach(function (who) {
+        if (!keys[coverKeyOf(r.key, who)]) return;
+        var cents = lineRateForWho(r.line, who) * lineRoster(r.line).length;
+        if (cents <= 0) return;
+        lines.push({
+          name: (r.line.name || ('Untitled ' + r.kind)) + (who === 'scout' ? '' : ' · ' + who),
+          who: who, cents: cents, reimburse: reimb
+        });
+        picked += cents;
+        // A reimbursement is money leaving the pack for something it never collected, so it can
+        // never be "fees the plan stops expecting" — it is spending, like an adult share.
+        if (who === 'scout' && !reimb) fees += cents; else extra += cents;
+      });
     });
-    return { picked: picked, lines: lines };
+    return { picked: picked, fees: fees, extra: extra, lines: lines };
   }
+  // What the PLAN has to spend because of a non-scout share it covers. Reported and added to A
+  // in one place, so the Budget card and the worksheet cannot disagree about it.
+  function tierExtraPackCostCents() { return coverCostForKeys(plannedCoverKeys()).extra; }
   // The plan's promise, priced, and whether the sales that earn it pay for it. Null until some
   // tier covers something.
   function tierAssumption() {
@@ -7318,7 +7524,9 @@
     var commission = (pt && pct != null && pct > 0) ? Math.round(sales * pct / 100) : null;
     return {
       planned: pt, roster: roster, sales: sales, commission: commission, pct: pct,
-      picked: cost.picked, lines: cost.lines,
+      // picked = the lot. fees = the part that was family income; extra = the part the pack buys
+      // outright (an adult or sibling share), which is new spending in A rather than lost income.
+      picked: cost.picked, fees: cost.fees, extra: cost.extra, lines: cost.lines,
       // Positive = the commission on those sales more than pays for the rewards it earns.
       net: commission == null ? null : commission - cost.picked,
       on: !!pt,
@@ -7765,6 +7973,13 @@
     h += '<hr class="divider"><p class="eyebrow">Funding the plan (Pack Operating Budget, 510-278)</p>' +
       '<table class="tbl fund-tbl"><tbody>' +
       '<tr><td><strong>A</strong> Total budgeted program expenses</td><td class="num money"><strong>' + fmt(fs2.A) + '</strong></td></tr>' +
+      // An adult or sibling share a tier covers is money the pack has taken on that is in no
+      // line's planned cost — those rates bill a family, they are never budgeted. It is inside
+      // A, so A has to say so rather than growing for no visible reason.
+      (fs2.tierExtra
+        ? '<tr><td class="fund-sub">…of which reward tiers buy for adults or siblings</td>' +
+          '<td class="num money">' + fmt(fs2.tierExtra) + '</td></tr>'
+        : '') +
       '<tr><td class="fund-sub">Carryover from last year</td><td class="num money">' + fmt(fs2.carryover) + '</td></tr>' +
       // Money the pack has decided popcorn will pick up is NOT in B — that is the whole point
       // of the assumption — but it has to be visible, and the two lines have to TIE. So the
@@ -9725,6 +9940,10 @@
     var baseLabel = 'sales + online donations' + (state.cashThroughTrailsEnd ? ' + cash donations' : '');
     // Wave 21 — every per-scout "families pay" line is something a tier can cover.
     var coverable = perScoutCharges().filter(function (c) { return lineFamilyFunded(c.item); });
+    // Every share a tier can point at: the scout share of each billable line, plus the adult and
+    // sibling shares wherever the line prices them. One line with a scout AND an adult price is
+    // two different rewards, which is exactly what a pack shirt is.
+    var shares = coverableShares();
     var coverage = packCoverage();
     var tierEarned = tierEarnedMap();
     var planned = plannedTier();
@@ -9732,10 +9951,12 @@
 
     var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Scouts earn a tier by their <strong>' + baseLabel +
-      '</strong> total — the same figure as the goal standings above. Each tier can cover any of the pack’s ' +
-      '<strong>per-scout “families pay”</strong> charges, and tiers <strong>stack</strong>: reaching tier 3 also ' +
-      'gets you what tiers 1 and 2 cover. A tier that covers nothing is fine too — that’s how you record a prize, ' +
-      'a pack shirt or a patch. These are pack rewards, separate from Trail’s End’s own program in their app.</p>';
+      '</strong> total — the same figure as the goal standings above. Each tier can cover any ' +
+      '<strong>“families pay”</strong> charge, and where a line prices an adult or a sibling too, ' +
+      'each of those is its own thing to cover — so one tier can buy the scout’s shirt and a higher one an ' +
+      'adult’s. Tiers <strong>stack</strong>: reaching tier 3 also gets you what tiers 1 and 2 cover, so a higher ' +
+      'tier only needs to name what it ADDS. A tier that covers nothing is fine too — that’s how you record a ' +
+      'prize or a patch. These are pack rewards, separate from Trail’s End’s own program in their app.</p>';
 
     if (sum.tiers.length) {
       sum.tiers.forEach(function (t, i) {
@@ -9762,6 +9983,30 @@
           '<label class="fld">Reach it by<input type="date" data-ch="tier-due" data-id="' + t.id + '" value="' + esc(t.dueBy || '') + '"></label>' +
           '<span class="small muted" style="flex:1 1 200px">' + esc(tierDeadlineText(t)) + '</span>' +
           '</div>' +
+          // What the threshold means in the two currencies a pack thinks in: the sales a scout
+          // has to ring up, and the commission that leaves the pack with.
+          (function () {
+            var be = tierBreakEven(t);
+            if (!be.cover) {
+              return '<span class="small muted" style="display:block;margin-top:4px">Reaching it means ' +
+                fmt(t.thresholdCents) + ' of sales and online donations' +
+                (be.earns == null ? '' : ', which earns the pack ' + fmt(be.earns) + ' in commission') +
+                '. This tier hands nothing back, so it costs the pack nothing.</span>';
+            }
+            if (be.sales == null) {
+              return '<span class="small muted" style="display:block;margin-top:4px">Hands back ' + fmt(be.cover) +
+                ' a scout. Set a commission rate to see what that needs in sales.</span>';
+            }
+            var clears = (t.thresholdCents || 0) >= be.sales;
+            return '<span class="small" style="display:block;margin-top:4px;color:var(--ink-soft)">Reaching it means <strong>' +
+              fmt(t.thresholdCents) + '</strong> of sales → <strong class="money">' + fmt(be.earns) +
+              '</strong> commission at ' + esc(String(be.pct)) + '%, against <strong class="money">' + fmt(be.cover) +
+              '</strong> handed back' + (be.own !== be.cover ? ' by this tier and the ones below it' : '') + '. ' +
+              (clears
+                ? '<span class="pill navy">pays for itself</span>'
+                : 'A scout would need <strong class="money">' + fmt(be.sales) +
+                  '</strong> of sales for the commission to cover it.') + '</span>';
+          })() +
           // One tier at a time is "the level we plan on". Ticking another moves it; unticking
           // plans on none. A tier below the chosen one is included automatically — coverage
           // stacks — so it says so rather than offering a tick that would change nothing.
@@ -9781,21 +10026,18 @@
         // reward level the same full list repeated on every tier is mostly empty boxes.
         // Chips show only what's chosen, and the select offers what's left — the same shape
         // as the leader jobs picker and storefront scout assignment.
-        if (coverable.length) {
+        if (shares.length) {
           var byKey = {};
-          coverable.forEach(function (c) { byKey[c.key] = c; });
-          var chargeLabel = function (c) {
-            return (c.item.name || ('Untitled ' + c.kind)) + ' · ' + fmt(c.item.scoutRateCents || 0);
-          };
+          shares.forEach(function (s) { byKey[s.coverKey] = s; });
           h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p>' +
             chipPicker({
               id: t.id, canEdit: canEdit(), removeAct: 'tier-cover-remove', addCh: 'tier-cover-add',
               addLabel: '+ Add a charge this tier covers…',
-              // Stale keys (a deleted budget line) simply drop out here.
+              // Stale keys (a deleted budget line, or an adult rate since zeroed) drop out here.
               chosen: covers.filter(function (k) { return byKey[k]; })
-                .map(function (k) { return { value: k, label: chargeLabel(byKey[k]) }; }),
-              addable: coverable.filter(function (c) { return covers.indexOf(c.key) === -1; })
-                .map(function (c) { return { value: c.key, label: chargeLabel(c) }; })
+                .map(function (k) { return { value: k, label: byKey[k].label }; }),
+              addable: shares.filter(function (s) { return covers.indexOf(s.coverKey) === -1; })
+                .map(function (s) { return { value: s.coverKey, label: s.label }; })
             });
           if (!covers.length) {
             h += '<p class="small muted" style="margin:6px 0 0">Covers no charges — a reward in its own right.</p>';
@@ -9825,6 +10067,31 @@
               'saves you is not a rule anybody means. Recording it puts the money in the ledger as a family payment and covers ' +
               'the fee from then on.</p>';
           }
+        }
+        // Money the pack owes BACK, where the tier covers something a family paid the council
+        // for. There is no charge to waive on a line like that — the only record is this one and
+        // the ledger entry that settles it.
+        var reimb = tierReimbursements(tierEarned).filter(function (r) { return r.tier.id === t.id; });
+        if (reimb.length) {
+          h += '<p class="eyebrow" style="margin:10px 0 4px">Reimbursements this tier owes</p>';
+          reimb.forEach(function (r) {
+            h += '<div class="assign-row"><span class="assign-name">' + esc(r.scout.name) +
+              ' <span class="small muted">' + esc(r.share.item.name || 'a council fee') +
+              ' · paid to ' + esc(r.share.item.paidDirectTo || 'the council') + '</span></span>' +
+              (r.left > 0
+                ? '<span class="small">owed <strong class="money">' + fmt(r.left) + '</strong></span>' +
+                  '<button type="button" class="btn small" data-act="tier-reimburse:' + esc(r.share.item.id) + ':' +
+                  esc(r.scout.id) + ':' + esc(String(r.left)) + '">Record ' + fmt(r.left) + ' paid back</button>'
+                : '<span class="small"><span class="pill navy">paid ' + fmt(r.paid) + '</span></span>') +
+              '</div>';
+          });
+          h += '<p class="small muted" style="margin:6px 0 0">Scouting America\u2019s Unit Budgeting Guidelines: ' +
+            '<em>"At no point can a unit \u2018Pay\u2019 a Scout, leader or family. Expenses can be reimbursed ' +
+            '(according to individual unit bylaws) \u2026 but don\u2019t write a check to a Scout or their family."</em> ' +
+            'So this is a reimbursement of a receipted Scouting expense, not a payout \u2014 <strong>keep the ' +
+            'council receipt</strong> and put its number on the ledger entry. Cleaner still where the council will ' +
+            'take it: have the PACK register and pay for those scouts, and set the line to <em>pack pays</em> ' +
+            'instead \u2014 then no money goes to a family at all.</p>';
         }
         // And who took the second path, with a way back if it was recorded by mistake.
         var made = arrOf(t.madeUp).map(function (sid) { return getScout(sid); }).filter(Boolean);
@@ -9857,10 +10124,18 @@
           'expect everyone to reach \u2014 the goal goes UP by what the pack would pick up, never down, and anything above ' +
           'that tier stays a stretch.</p>';
       } else {
+        // Two different kinds of money, so they are named separately: a covered SCOUT share is
+        // family income the plan stops expecting, while a covered adult or sibling share is the
+        // pack buying something outright. Calling both "family fees" would be wrong about the
+        // second one, and it is the one that adds to A.
         h += '<p class="small" style="margin:0">Planning on <strong>' + esc(ta.planned.name || 'a tier') + '</strong> (' +
-          fmt(ta.planned.thresholdCents) + '): the plan treats <strong class="money">' + fmt(ta.picked) +
-          '</strong> of family fees as the pack\u2019s to raise, so the Trail\u2019s End goal covers what you are promising ' +
-          'at that level.</p>';
+          fmt(ta.planned.thresholdCents) + '): the plan takes on <strong class="money">' + fmt(ta.picked) +
+          '</strong>' +
+          (ta.extra
+            ? ' \u2014 <strong class="money">' + fmt(ta.fees) + '</strong> of family fees it stops expecting, plus <strong class="money">' +
+              fmt(ta.extra) + '</strong> of adult or sibling shares it buys outright (which is why A went up)'
+            : ' of family fees it stops expecting') +
+          ', so the Trail\u2019s End goal covers what you are promising at that level.</p>';
         if (ta.picked > 0) {
           var reachWord = ta.roster === 1 ? 'scout reaches' : 'scouts reach';
           h += '<p class="small" style="margin:6px 0 0">If all <strong>' + ta.roster + '</strong> ' + reachWord + ' it, ' +
@@ -9868,7 +10143,8 @@
             (ta.commission == null
               ? ' \u2014 set a commission rate to see what it earns.'
               : ' \u2192 <strong class="money">' + fmt(ta.commission) + '</strong> commission at ' +
-                esc(String(ta.pct)) + '%, against <strong class="money">' + fmt(ta.picked) + '</strong> of fees.') + '</p>';
+                esc(String(ta.pct)) + '%, against <strong class="money">' + fmt(ta.picked) +
+                '</strong> of rewards.') + '</p>';
           if (ta.net != null) {
             h += '<p class="small" style="margin:4px 0 0">' + (ta.net >= 0
               ? '<span class="pill navy">clears it</span> The commission those sales earn covers it with <strong class="money">' +
@@ -9901,6 +10177,24 @@
       }
     }
 
+    // The guidance's own test, run on this pack's numbers. Not advice — a number and the sentence
+    // it comes from, so a committee can see where it stands before somebody else asks.
+    var pb = privateBenefitCheck();
+    if (pb.back > 0 && pb.net != null && pb.net > 0) {
+      h += '<hr class="divider"><p class="eyebrow">Private benefit</p>' +
+        '<p class="small" style="margin:0">Tiers have handed <strong class="money">' + fmt(pb.back) +
+        '</strong> back to individual scouts, against <strong class="money">' + fmt(pb.net) +
+        '</strong> of commission the pack has earned \u2014 <strong>' + pb.pct + '%</strong>.</p>' +
+        '<p class="small ' + (pb.over ? '' : 'muted') + '" style="margin:4px 0 0">' +
+        (pb.over ? '<span class="pill bad">over half</span> ' : '') +
+        'Scouting America\u2019s Unit Budgeting Guidelines: <em>"To avoid \u2018Direct Benefit\u2019 \u2014 the ' +
+        'majority of the NET PROCEEDS of a fundraiser have to go to the unit, not individual Scouts."</em>' +
+        (pb.over
+          ? ' On these figures more than half is going to individuals. Lower a reward, raise a threshold, or move ' +
+            'the spend to something the whole pack gets.'
+          : ' The pack is keeping the majority, which is the side of that line to be on.') + '</p>';
+    }
+
     if (!coverable.length) {
       h += '<p class="small muted" style="margin:10px 0 0">Nothing is chargeable to families yet. Mark a budget line ' +
         '<strong>per scout</strong> and <strong>families pay</strong> on ' +
@@ -9931,9 +10225,14 @@
     if (sum.tiers.length && configured) {
       var bud = computeBudget();
       var lines = [];
-      coverable.forEach(function (c) {
-        var n = Object.keys(coverage[c.key] || {}).length;
-        if (n) lines.push({ name: c.item.name || ('Untitled ' + c.kind), n: n, cents: n * (c.item.scoutRateCents || 0) });
+      shares.forEach(function (s) {
+        var n = Object.keys(coverage[s.coverKey] || {}).length;
+        if (n) {
+          lines.push({
+            name: (s.item.name || ('Untitled ' + s.kind)) + (s.who === 'scout' ? '' : ' · ' + s.who),
+            n: n, cents: n * s.rate
+          });
+        }
       });
       h += '<hr class="divider"><p class="eyebrow">What the pack is covering</p>';
       if (lines.length) {
@@ -13314,6 +13613,27 @@
       });
       showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
         (mkT.name || 'the tier') + '.');
+      commit(); return;
+    }
+    // Reimbursing a council fee a family already paid. Money OUT, against the line, carrying the
+    // scout so "who has been paid back" is answerable from the book rather than from memory — and
+    // described as a reimbursement, because the Unit Budgeting Guidelines allow reimbursing a
+    // receipted expense and forbid paying a family out of fundraising proceeds. The two look the
+    // same in a bank statement; only the record tells them apart.
+    if (act.indexOf('tier-reimburse:') === 0) {
+      var rbP = act.split(':');
+      var rbLine = getBudgetLine(rbP[1]);
+      var rbS = getScout(rbP[2]);
+      var rbCents = parseInt(rbP[3], 10);
+      if (!rbLine || !rbS || !isFinite(rbCents) || rbCents <= 0) return;
+      state.ledger.push({
+        id: uid(), date: todayISO(),
+        description: 'Reimbursed ' + (rbS.name || 'a scout') + ' \u2014 ' + (rbLine.name || 'council fee') +
+          ' (reward tier)',
+        amountCents: rbCents, direction: 'out', lineId: rbLine.id, method: '', ref: '',
+        source: '', donor: '', scoutId: rbS.id, reconciled: false
+      });
+      showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.');
       commit(); return;
     }
     if (act.indexOf('tier-unmakeup:') === 0) {

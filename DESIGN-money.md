@@ -526,13 +526,101 @@ payment against a charge, tagged to that line, so the remaining balance is alway
 > Once the tier is reached, the family covers **only the people they bring** — the scout's own
 > share is paid from fundraising.
 
-So a reward tier waives **`who: 'scout'` charges only**. Adults and siblings always stand — a
-scout's fundraising buys the scout's seat, not the family's. In the model that is a one-line rule,
-and it is the entire feature:
+So a reward tier waives **`who: 'scout'` charges** by default. Adults and siblings stand — a
+scout's fundraising buys the scout's seat, not the family's.
+
+#### A tier covers a SHARE of a line, not the line
+
+*Owner ask, 2026-07-27.* "One lower tier where we provide a pack shirt for the scout, then another
+higher reward where we provide an adult pack shirt." One budget line, two prices, two rewards — and
+the default above made the second one unsayable.
+
+A cover entry is therefore the collect key with an optional head kind after a `#`. A **bare key is
+the scout share**, which is what every existing tier means, so nothing migrates:
+
+```
+'L-shirt'          the scout's shirt   scoutRateCents
+'L-shirt#adult'    an adult's shirt    adultRateCents
+```
 
 ```js
-waived = (charge.who === 'scout') && scoutReachedTier(charge.scoutId, line)
+waived = coveredShares[coverKey(line, charge.who)][charge.scoutId]
 ```
+
+The scout-only rule becomes a **default rather than a prohibition**. What kept it honest was that
+nobody could quietly bill fundraising for a parent's seat; what keeps it honest now is that naming
+an adult share is deliberate, per tier, and **costs the plan real money** the moment it is named:
+
+| Covered share | Already in A? | Effect |
+|---|---|---|
+| scout | yes — `planned = scoutRate × scouts` | **B falls**: fees the plan stops expecting |
+| adult / sibling | **no** — those rates bill a family, they are never planned | **A rises**: the pack is buying something outright |
+
+Getting that second row wrong would put the cost nowhere at all, so `coverCostForKeys` returns the
+two apart and the worksheet prints *"…of which reward tiers buy for adults or siblings"* under A.
+
+**Tiers stack, so a higher tier names only what it ADDS.** The adult-shirt tier covers
+`L-shirt#adult` alone — the scout's shirt already came from the tier below — which is exactly what
+makes the per-tier margin figure meaningful:
+
+```
+"Adult shirt" $400 — $150 more a scout than the tier below, earning $45 at 30%,
+                     against $18 of cover → pays for itself
+```
+
+#### What a threshold is worth — the break-even
+
+A threshold is a **sales** figure ("reach $250 in sales and online donations"); what the pack gets
+from it is the **commission** on that. The rewards are priced in real dollars, so the two only meet
+at the break-even — the sales at which the commission covers what the tier hands back, cumulative
+because the tiers stack:
+
+```
+Reaching it means $250 of sales → $75 commission at 30%, against $87 handed back
+                                  by this tier and the ones below it
+                                → a scout would need $290 of sales to cover it
+```
+
+Valued at the same rate the goal uses (`commissionRates().goal`), so the two can never disagree.
+
+#### Reimbursing a fee the family paid the council
+
+*Owner ask, 2026-07-27.* Spring and fall camping: parents register with the council and pay it
+directly, so the pack is not in the transaction (`paidDirectTo`). The pack still wants a tier that
+gives that money back. [Scouting America's Unit Budgeting Guidelines](https://lhcscouting.org/wp-content/uploads/2021/09/unit-budgeting-guidelines.pdf)
+set the shape this has to take:
+
+> "At no point can a unit 'Pay' a Scout, leader or family. **Expenses can be reimbursed** (according
+> to individual unit bylaws), and money can be transferred to another unit, but **don't write a
+> check to a Scout or their family**."
+>
+> "Scout account funds can only be used for Scouting activities and costs — **payouts to Scouts or
+> families are NOT ALLOWED**."
+>
+> "To avoid 'Direct Benefit' — **the majority of the NET PROCEEDS** of a fundraiser have to go to
+> the unit, not individual Scouts."
+
+Those are not in conflict: reimbursing a **documented Scouting expense against a receipt** is
+expressly allowed; handing a family a share of what their scout sold is not. The two can look
+identical in a bank statement, so only the record tells them apart — which makes this a records
+problem, and the app's job:
+
+- a family-direct line is offerable to a tier, labelled **reimburse**;
+- it can never be "fees the plan stops expecting" (the pack never collected them), so it is always
+  **spending** — it lands in the same `extra` bucket as an adult share and enters A;
+- settling one writes a ledger entry **out**, against the line, **carrying the scout**, described as
+  a reimbursement, with a prompt to put the council receipt number on it;
+- the card says the cleaner arrangement out loud: **have the pack register and pay the council for
+  those scouts** and set the line to *pack pays* — then no money goes to a family at all.
+
+**A paid-direct line is out of the PLAN but not out of the BOOK.** `computeBudget` used to skip
+those lines for planned *and* actual; a reimbursement is real money leaving the pack's account, so
+actual now counts ledger entries on them. Planned excluded, actual counted — they were never the
+same question, and the balance was wrong by exactly what had been paid back.
+
+Finally, `privateBenefitCheck()` runs the guidance's own test on the pack's own numbers — what the
+tiers have handed to individuals against the commission earned — and says which side of "the
+majority stays with the unit" the pack is on. Not advice: a number, and the sentence it came from.
 
 #### Which tier the pack plans on — `planOnTierId`
 

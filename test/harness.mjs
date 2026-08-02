@@ -912,8 +912,13 @@ test('actual is no longer a field a budget row can type into', () => {
   // computeBudget must read the ledger, and must NOT multiply actual by the roster.
   const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'computeBudget() not found');
-  ok(/actActual \+= lineActualCents\(state\.ledger, a\.id\)/.test(fn[0]), 'activity actual is not ledger-derived');
-  ok(/expActual \+= lineActualCents\(state\.ledger, e\.id\)/.test(fn[0]), 'expense actual is not ledger-derived');
+  ok(/var spent = lineActualCents\(state\.ledger, a\.id\);/.test(fn[0]), 'activity actual is not ledger-derived');
+  ok(/var spentE = lineActualCents\(state\.ledger, e\.id\);/.test(fn[0]), 'expense actual is not ledger-derived');
+  // A paid-direct line is out of the PLAN but its ledger entries are still money that left the
+  // pack — a tier reimbursing a council fee posts exactly that, and dropping it would overstate
+  // the balance by whatever was paid back.
+  ok(/if \(!lineThroughPack\(a\)\) \{ familyDirect \+= linePlanned\(a\); actActual \+= spent; return; \}/.test(fn[0]),
+    'money really paid out on a paid-direct line never reaches actual');
   ok(!/actualCents \|\| 0\) \* /.test(fn[0]), 'computeBudget still multiplies an actual by the roster');
 });
 
@@ -1470,15 +1475,59 @@ test('Phase 3b: a family is never shown as owing a negative amount', () => {
   eq(familyOutstanding(charges, [{ direction: 'in', scoutId: 's1', amountCents: 5000 }], 's1'), 0, 'overpayment');
 });
 
-test('a reward tier waives the scout share only, never the heads they brought', () => {
-  // "A scout's fundraising buys the scout's seat, not the family's." One line of rule, and
-  // it is the entire feature.
+test('a tier waives a head other than the scout only where it NAMES that share', () => {
+  // The rule was "a scout's fundraising buys the scout's seat, not the family's", enforced by
+  // refusing to waive any charge but the scout's. Pack 569 wants a higher tier that buys an
+  // ADULT pack shirt, so the refusal is now a DEFAULT rather than a prohibition: a bare cover
+  // key is the scout share, and an adult share has to be named on a specific tier — where it
+  // costs the plan real money (fundingSummary adds it to A).
   const fn = /function applyTierWaivers\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'applyTierWaivers() not found');
-  ok(/if \(c\.who !== 'scout'\) \{ c\.waivedBy = ''; return; \}/.test(fn[0]),
-    'a tier is waiving adult or sibling charges');
+  ok(!/if \(c\.who !== 'scout'\) \{ c\.waivedBy = ''; return; \}/.test(fn[0]),
+    'the blanket refusal is back, so a named adult share can never be honoured');
+  ok(/var hit = \(covered\[coverKeyOf\(key, c\.who\)\] \|\| \{\}\)\[c\.scoutId\];/.test(fn[0]),
+    'the waiver does not look up the charge’s own head kind');
   ok(/c\.waivedBy = et \? et\.id/.test(fn[0]),
     'the waiver does not record WHICH tier bought it — total waived stops being measurable');
+  // And the default really is scout-only: a bare key must not resolve to an adult share.
+  const { coverKeyOf, coverKeyParts } = sandbox(['COVER_WHO', 'coverKeyOf', 'coverKeyParts']);
+  eq(coverKeyOf('L1', 'scout'), 'L1', 'the scout share must stay a bare key — nothing migrates');
+  eq(coverKeyOf('L1', ''), 'L1', 'an unspecified head kind is the scout');
+  eq(coverKeyOf('L1', 'adult'), 'L1#adult', 'an adult share needs its own key');
+  eq(coverKeyParts('L1'), { key: 'L1', who: 'scout' }, 'an existing tier means the scout share');
+  eq(coverKeyParts('act:A1#adult'), { key: 'act:A1', who: 'adult' }, 'an activity key survives the split');
+  eq(coverKeyParts('L1#nonsense'), { key: 'L1', who: 'scout' }, 'an unknown head kind falls back to the scout');
+});
+
+test('a covered adult share is priced at the ADULT rate, and is new pack spending', () => {
+  // One line, two prices, two rewards: the lower tier buys the scout's shirt, the higher one an
+  // adult's. The scout share is already inside the line's planned cost, so covering it only
+  // moves money out of expected fees; the adult rate is never planned, so covering THAT has to
+  // add to A or the cost lands nowhere.
+  const { lineRateForWho } = sandbox(['lineRateForWho']);
+  const shirt = { scoutRateCents: 1200, adultRateCents: 1500, siblingRateCents: 800 };
+  eq(lineRateForWho(shirt, 'scout'), 1200, 'scout rate');
+  eq(lineRateForWho(shirt, 'adult'), 1500, 'adult rate');
+  eq(lineRateForWho(shirt, 'sibling'), 800, 'sibling rate');
+  eq(lineRateForWho(shirt, undefined), 1200, 'no head kind means the scout');
+  const cost = /function coverCostForKeys\(keys\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cost, 'coverCostForKeys() not found');
+  ok(/if \(who === 'scout' && !reimb\) fees \+= cents; else extra \+= cents;/.test(cost[0]),
+    'the two kinds of covered money are not kept apart');
+  ok(/lineRateForWho\(r\.line, who\) \* lineRoster\(r\.line\)\.length/.test(cost[0]),
+    'a share is not priced at its own rate across the line’s own roster');
+  const fs2 = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/var tierExtra = coverCostForKeys\(assumeCov\)\.extra;\s*\n\s*expenses \+= tierExtra;/.test(fs2[0]),
+    'a covered adult share never reaches A, so the pack plans to buy shirts with no money for them');
+  ok(/tierExtra: tierExtra,/.test(fs2[0]), 'the figure is not reported for the worksheet to show');
+  // The Budget card must agree with the worksheet about it.
+  const cb = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/var tierExtra = tierExtraPackCostCents\(\);\s*\n\s*var planned = actPlanned \+ expPlanned \+ tierExtra;/.test(cb[0]),
+    "the Budget card's Planned leaves out what the worksheet added to A");
+  // Only the shares a tier actually names are offered, and a rate of zero is not one of them.
+  const shares = /function coverableShares\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(shares && /if \(who !== 'scout' && !rate\) return;/.test(shares[0]),
+    'an unpriced adult share is offered as something a tier can cover');
 });
 
 test('reconciling charges never removes one that has been settled or paid against', () => {
@@ -2700,8 +2749,12 @@ test('a charge already waived is not taken off twice', () => {
   // A scout who really earned coverage left `standing` when the charge was waived. Counting
   // their share again would understate family income by that much a second time.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/return \(chargeIsOpen\(c\) && c\.who === 'scout'\) \? n \+ \(c\.amountCents \|\| 0\) : n;/.test(fn[0]),
-    'the assumption counts settled or family-head charges');
+  ok(/return \(chargeIsOpen\(c\) && c\.who === who\) \? n \+ \(c\.amountCents \|\| 0\) : n;/.test(fn[0]),
+    'the deduction counts settled charges, or charges for a head the tier did not cover');
+  // With nothing charged yet only the SCOUT share has a planning figure to fall back on: an
+  // adult head nobody has recorded is not money any family owes.
+  ok(/: \(who === 'scout' \? tierScoutShareForLine\(r\) : 0\);/.test(fn[0]),
+    'an unrecorded adult head is being treated as forgone family income');
 });
 
 test('the plan is priced at the CHOSEN tier, and checked against the sales that earn it', () => {
@@ -2717,14 +2770,16 @@ test('the plan is priced at the CHOSEN tier, and checked against the sales that 
   ok(/var pct = commissionRates\(\)\.goal;/.test(fn[0]),
     'the check values the sales at a rate other than the one the goal uses');
   ok(/net: commission == null \? null : commission - cost\.picked/.test(fn[0]), 'there is no self-funding verdict');
-  ok(/if \(!keys\[r\.key\] \|\| !lineRaisesCharges\(r\.line\)\) return;/.test(
-    /function coverCostForKeys\(keys\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
-    'the price includes lines no tier covers, or lines that raise no charges at all');
-  // Priced from the SCOUT share only: a tier never covers a head a family brought.
+  const cost = /function coverCostForKeys\(keys\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/coverableLines\(\)\.forEach/.test(cost),
+    'the price walks lines that are not coverable at all');
+  ok(/if \(!keys\[coverKeyOf\(r\.key, who\)\]\) return;/.test(cost),
+    'the price includes shares no tier covers');
+  const able = /function coverableLines\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(able && /lineRaisesCharges\(r\.line\) \|\| lineIsFamilyDirect\(r\.line\)/.test(able[0]),
+    'a council-paid line cannot be covered, or a pack-funded line can');
+  // The scout share is priced across the line's own roster — a den-limited line bills its dens.
   const share = /function tierScoutShareForLine\(r\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(share && /\(r\.line\.scoutRateCents \|\| 0\) \* lineRoster\(r\.line\)\.length/.test(share[0]),
-    'the promise is priced off something other than the scout rate × the line’s own roster');
-  ok(!/adultRateCents|siblingRateCents/.test(share[0]), 'a tier is pricing in parents and siblings');
 });
 
 test('the choice is per tier, one at a time, and the worksheet says why B dropped', () => {
@@ -2737,6 +2792,14 @@ test('the choice is per tier, one at a time, and the worksheet says why B droppe
   ok(/Not asked for &mdash; reward tiers cover it|Not asked for \u2014 reward tiers cover it/.test(SCRIPT),
     'B drops with no line on the worksheet to say why');
   ok(/clears it|short by/.test(SCRIPT), 'the self-funding verdict is never shown');
+});
+
+test('the worksheet says why A grew when a tier buys adult shirts', () => {
+  // A covered adult share is real pack spending that no line's planned cost contains. It goes
+  // into A — and A silently growing is exactly the sort of thing this document keeps refusing.
+  ok(/of which reward tiers buy for adults or siblings/.test(SCRIPT),
+    'A grows with nothing on the worksheet to explain it');
+  ok(/fs2\.tierExtra/.test(SCRIPT), 'the worksheet never reads the figure');
 });
 
 test('tiers above the planned one are stretch, and judged at the margin', () => {
@@ -2801,8 +2864,8 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
   ok(/makeup: Math\.min\(short, cover\)/.test(fn[0]), 'the makeup is not capped at the fee');
   ok(/if \(!t\.dueBy\) return \[\];/.test(fn[0]), 'a tier with no deadline is reporting people as having missed it');
   const cover = /function tierCoverCentsPerScout\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(cover && /lineRaisesCharges\(r\.line\)/.test(cover[0]),
-    'the fee counts lines that cannot bill a family in the first place');
+  ok(cover && /coverableLines\(\)\.forEach/.test(cover[0]),
+    'the fee counts lines a tier cannot be pointed at in the first place');
 });
 
 test('making up the difference records money and a decision, separately', () => {
@@ -2903,6 +2966,69 @@ test('what families pay directly is split by who they pay', () => {
   ok(/if \(lineThroughPack\(l\)\) return;/.test(fn[0]), 'it counts money the pack actually handles');
   ok(/by\[l\.paidDirectTo\]/.test(fn[0]), 'it does not group by payee');
   ok(/return b\.cents - a\.cents \|\| a\.payee\.localeCompare\(b\.payee\)/.test(fn[0]), 'the split is in no order');
+});
+
+/* ================================================================
+   Break-even sales, and reimbursing a council fee — owner asks, 2026-07-27
+   ================================================================ */
+
+test('a tier says what its threshold is worth in sales AND in commission', () => {
+  // A threshold is a SALES figure; what the pack gets from it is the commission on that. The
+  // rewards are priced in real dollars, so the two only meet at the break-even.
+  const fn = /function tierBreakEven\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'tierBreakEven() not found');
+  ok(/earns: pct == null \? null : Math\.round\(\(t\.thresholdCents \|\| 0\) \* pct \/ 100\)/.test(fn[0]),
+    'it does not say what reaching the threshold earns the pack');
+  ok(/sales: \(pct == null \|\| pct <= 0 \|\| !cover\) \? null : Math\.round\(cover \/ \(pct \/ 100\)\)/.test(fn[0]),
+    'it does not work out the sales needed to cover what the tier hands back');
+  // Cumulative, because the tiers stack and so does what a scout at that level walks away with.
+  const cum = /function tierCumulativeCoverCents\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cum && /if \(o\.thresholdCents <= t\.thresholdCents\) cents \+= tierCoverCentsPerScout\(o\);/.test(cum[0]),
+    'the break-even ignores what the tiers below already hand out');
+  ok(/A scout would need/.test(SCRIPT), 'the figure is never shown');
+  // It is valued at the same rate as the goal, so the two cannot disagree.
+  ok(/var pct = commissionRates\(\)\.goal;/.test(fn[0]), 'the break-even uses a different rate from the goal');
+});
+
+test('a council-paid fee can be covered, and only ever as a reimbursement', () => {
+  // Spring and fall camping: the parents pay the council directly, so there is no charge to
+  // waive and the pack can only give the money back afterwards.
+  const fn = /function lineIsFamilyDirect\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'lineIsFamilyDirect() not found');
+  ok(/linePerHead\(l\) && lineFamilyFunded\(l\) && !lineThroughPack\(l\)/.test(fn[0]),
+    'it does not describe a line families pay somebody else for');
+  const rows = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(rows, 'tierReimbursements() not found');
+  ok(/e\.direction === 'out' && e\.lineId === s\.item\.id && e\.scoutId === sc\.id/.test(rows[0]),
+    'what has already been paid back is not read from the ledger');
+  ok(/left: Math\.max\(0, s\.rate - paid\)/.test(rows[0]), 'a part-paid reimbursement is not tracked');
+  // The payment is a ledger entry OUT that carries the scout — that is what makes "who has been
+  // paid back" answerable from the book. It must never be counted as family money coming IN.
+  const act = /if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(act, 'the reimburse handler was not found');
+  ok(/direction: 'out'/.test(act[0]), 'a reimbursement is being recorded as money coming in');
+  ok(/scoutId: rbS\.id/.test(act[0]), 'the entry does not say who was paid back');
+  ok(/source: ''/.test(act[0]), 'a payment OUT is carrying an income source');
+  ok(/Reimbursed /.test(act[0]), 'the entry does not describe itself as a reimbursement');
+  ok(/receipt/.test(act[0]), 'nothing reminds the treasurer to keep the council receipt');
+  // Money in is what settles a family's account; money out must not touch it.
+  const pay = /function paymentsForScout\(ledger, scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(pay && /e\.direction === 'in' && e\.scoutId === scoutId/.test(pay[0]),
+    'a reimbursement OUT would be counted as a payment from the family');
+});
+
+test('the guidance is quoted where the decision is made, not buried', () => {
+  // Scouting America's Unit Budgeting Guidelines, on the two things this feature sits between.
+  ok(/At no point can a unit/.test(SCRIPT) && /t write a check to a Scout or their family/.test(SCRIPT),
+    'the rule against paying a family is not stated where a pack would act on it');
+  ok(/Expenses can be reimbursed/.test(SCRIPT), 'the exception that makes this legitimate is not stated');
+  ok(/have the PACK register and pay/.test(SCRIPT), 'the cleaner arrangement is not suggested');
+  // And the pack's own numbers, against the guidance's own test.
+  const pb = /function privateBenefitCheck\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(pb, 'privateBenefitCheck() not found');
+  ok(/over: net != null && net > 0 && back > net \/ 2/.test(pb[0]),
+    'the majority-of-net test is not applied to the pack’s own figures');
+  ok(/majority of the NET PROCEEDS/.test(SCRIPT), 'the sentence the check comes from is not quoted');
 });
 
 /* ---------------- report ---------------- */
