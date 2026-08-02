@@ -1290,6 +1290,81 @@ test('an existing storefront gets the shifts it is missing, matched on start tim
     'an unparseable shift time is added anyway, and will duplicate on every re-import');
 });
 
+test('a sign-up matches the roster on "First L", and refuses to guess', () => {
+  // The report abbreviates: "Bowie G", not "Bowie Gladden". teMatchScouts, which the SALES import
+  // uses, compares whole names and would match almost nobody here.
+  const ctx = vm.createContext({});
+  vm.runInContext(slice('teMatchShiftScout') + '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
+  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Logan Dougherty' }];
+  eq(ctx.teMatchShiftScout('Bowie G'), 's1', 'first name plus last initial does not match');
+  eq(ctx.teMatchShiftScout('Bowie Gladden'), 's1', 'an exact full name does not match');
+  eq(ctx.teMatchShiftScout('bowie  g'), 's1', 'case and spacing are not normalised');
+  eq(ctx.teMatchShiftScout('Bowie G.'), 's1', 'a trailing full stop on the initial breaks it');
+  // Assigning the wrong child to a shift is worse than assigning none: the shift is who turns up,
+  // and once sales land on the block it is who gets the credit. So ambiguity refuses.
+  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
+  eq(ctx.teMatchShiftScout('Bowie G'), null, 'it guessed between two scouts who both fit');
+  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }];
+  eq(ctx.teMatchShiftScout('Casey T'), null, 'a name nobody on the roster fits was matched anyway');
+  eq(ctx.teMatchShiftScout(''), null, 'an empty name matched something');
+  eq(ctx.teMatchShiftScout('Bowie'), null, 'a bare first name was matched on its own');
+});
+
+test('sign-ups never re-split money that has already been recorded', () => {
+  // blockShares divides a block's takings across its assignees by weight, so adding one to a block
+  // that already holds sales silently changes what every scout on it earned. This is the guard
+  // that makes importing sign-ups safe to do at any point in the season.
+  const ctx = vm.createContext({});
+  vm.runInContext([slice('teNewSignups'), slice('teMatchShiftScout')].join('\n') +
+    '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
+  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' }];
+  const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
+  eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 0 }, shift).length, 2,
+    'an empty block did not take its sign-ups');
+  eq(ctx.teNewSignups({ assignments: [], salesCents: 48000, donationsCents: 0 }, shift).length, 0,
+    'a block with recorded SALES took a new assignee, re-splitting the money');
+  eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 2500 }, shift).length, 0,
+    'a block with recorded DONATIONS took a new assignee');
+  // Someone already on the block is not added twice, however many times the report is imported.
+  eq(ctx.teNewSignups({ assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0 }, shift)
+    .map((m) => m.scoutId), ['s2'], 'a scout already signed up was added again');
+  // A name that matches nobody is skipped rather than dropped in as a blank assignment.
+  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }];
+  eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 0 },
+    { start: '10:00 AM', scouts: ['Nobody Q'] }).length, 0, 'an unmatched name became an assignment');
+});
+
+test('the shift report carries its sign-ups through the parser', () => {
+  // The rows that used to be discarded as duplicate shifts ARE the sign-ups.
+  const mapped = shiftCtx.mapShiftReport(SHIFT_ROWS, shiftCtx.detectReport(SHIFT_ROWS));
+  const first = mapped.storefronts[0];
+  eq(first.shifts[0].scouts, ['Bowie G', 'Phoenix G'], 'both scouts on one shift were not collected');
+  eq(first.shifts[1].scouts, ['Logan D'], 'the second shift lost its scout');
+  eq(mapped.storefronts[1].shifts[0].scouts, [], 'an unstaffed shift invented a scout');
+});
+
+test('the preview discloses what the sign-up import will NOT do', () => {
+  const fn = /function renderTePreview\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  // Pin the CONDITIONS. Matching the strings alone passed while the branches were disabled — a
+  // source scan cannot see reachability, so assert the thing that makes them reachable.
+  // These two strings exist ONLY in the shifts branch. `o.unmatched` does not — the sales and
+  // inventory branches have their own, so a guard aimed at it passed by matching theirs.
+  //
+  // ⚠ KNOWN LIMIT, stated rather than papered over: these assertions catch the copy being
+  // DELETED, which is the regression that actually happens. They cannot catch the branch being
+  // switched off — `if (false)` leaves every string in the file, and a source scan has no idea
+  // what runs. Proving reachability needs the rendered output, and this harness has no DOM (see
+  // the header). It was checked in a browser instead; if this ever needs to be automated it
+  // belongs in test/scenario-browser.js, not here.
+  ok(/Not signed up<\/span>/.test(fn), 'names that matched nobody are not surfaced');
+  ok(/Left alone<\/span>/.test(fn), 'sign-ups skipped for landing on paid blocks are not surfaced');
+  ok(/re-split money already/.test(fn), 'the reason a sign-up was held back is not given');
+  ok(/refuses to guess/.test(fn), 'the preview does not say it declines ambiguous names');
+  const build = /function teBuildShiftPreview\(mapped\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/signUps:/.test(build) && /unmatched:/.test(build) && /heldBack:/.test(build),
+    'the preview data does not carry the sign-up outcome');
+});
+
 test('the shift import never edits a block that is already there', () => {
   // The old rule was "never edit an existing storefront", which is why a pack that had typed its
   // dates in imported nothing. The rule that actually matters is narrower: never touch an existing

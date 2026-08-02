@@ -13695,7 +13695,8 @@
       // whole complaint: a pack that had already typed its dates in saw nothing to do.
       var doing = [];
       if (o.newCount) doing.push('Add ' + o.newCount + ' storefront' + (o.newCount === 1 ? '' : 's'));
-      if (o.fillCount) doing.push((o.newCount ? 'fill ' : 'Fill in ') + o.fillCount + ' shift' + (o.fillCount === 1 ? '' : 's'));
+      if (o.fillCount) doing.push((doing.length ? 'fill ' : 'Fill in ') + o.fillCount + ' shift' + (o.fillCount === 1 ? '' : 's'));
+      if (o.signCount) doing.push((doing.length ? 'sign up ' : 'Sign up ') + o.signCount + ' scout' + (o.signCount === 1 ? '' : 's'));
       var confirmBtn = doing.length
         ? '<button type="button" class="btn primary" data-act="te-confirm-shifts">' + doing.join(' and ') + '</button>'
         : '<button type="button" class="btn" disabled>Everything here is already on your schedule</button>';
@@ -13715,8 +13716,25 @@
             (o.fillCount === 1 ? 'is' : 'are') + ' missing from ' + o.fillWhere +
             ' of them and will be added. Blocks you already have are left exactly as they are.'
           : 'Every shift on the report is already there.') + '</p>';
+      // The two things a leader has to see before pressing the button, because both are cases
+      // where the import will NOT do what the report says and staying quiet would be a lie.
+      if (o.unmatched.length) {
+        h += '<p class="small" style="margin:0 0 10px"><span class="pill">Not signed up</span> ' +
+          'These names on the report do not match one scout on the roster, so their shifts are left ' +
+          'empty: <strong>' + o.unmatched.map(esc).join(', ') + '</strong>. The report abbreviates ' +
+          '(“Bowie G”), so this is usually a spelling difference or a scout not on the roster yet — ' +
+          'and where two scouts share a first name and an initial it refuses to guess. Add them by ' +
+          'hand on the storefront.</p>';
+      }
+      if (o.heldBack) {
+        h += '<p class="small" style="margin:0 0 10px"><span class="pill navy">Left alone</span> ' +
+          o.heldBack + ' sign-up' + (o.heldBack === 1 ? '' : 's') + ' fall on shifts that already ' +
+          'have sales or donations recorded. Adding somebody to those would re-split money already ' +
+          'earned, so they are not touched — add them by hand if the takings should be shared.</p>';
+      }
       h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Storefront</th>' +
-        '<th scope="col" class="num">Shifts</th><th scope="col" class="num">Adding</th><th scope="col">Status</th></tr></thead><tbody>';
+        '<th scope="col" class="num">Shifts</th><th scope="col" class="num">Adding</th>' +
+        '<th scope="col" class="num">Sign-ups</th><th scope="col">Status</th></tr></thead><tbody>';
       o.items.forEach(function (it) {
         var status = it.isNew
           ? '<span class="pill">New</span>'
@@ -13726,13 +13744,16 @@
         h += '<tr><td>' + esc(fmtDate(it.date)) + '</td><td>' + esc(it.name) + '</td>' +
           '<td class="num">' + it.count + '</td>' +
           '<td class="num">' + (it.addCount || '\u2014') + '</td>' +
+          '<td class="num">' + (it.signUps || '\u2014') + '</td>' +
           '<td>' + status + '</td></tr>';
       });
       h += '</tbody></table></div>' +
         '<p class="small muted" style="margin:14px 0 0">A <strong>New</strong> row is added with all its shifts as blocks. ' +
         'A storefront you already have keeps everything it has — this only adds the shifts it is missing, matched on ' +
         'start time. <strong>No existing block is changed, renamed, moved or removed</strong>, so nothing you have ' +
-        'recorded against one — sign-ups, sales, donations — can be lost by importing this.</p>' +
+        'recorded against one — sign-ups, sales, donations — can be lost by importing this. Scouts on the report are ' +
+        'signed up for their shifts, but only onto blocks with no money recorded against them yet: adding somebody to a ' +
+        'block that already has takings would change how those takings are split.</p>' +
         '</div></div></div>';
       return h;
     }
@@ -14650,8 +14671,11 @@
   function mapShiftReport(rows, hdr) {
     var col = hdr.col;
     var cDate = col['Date'], cSite = col['Site Name'], cAddr = col['Address Line 1'], cShift = col['Shift'];
+    // The report prints a row per SCOUT, so the sign-ups arrive as repeated rows of one shift.
+    var cScout = col['Scout Name'];
     function cell(cells, ci) { return (ci != null && cells[ci] != null) ? String(cells[ci]).trim() : ''; }
     // First pass: sites appearing with 2+ distinct addresses need address disambiguation.
+    function shiftEntry(t) { return { start: t.start, end: t.end, raw: t.raw, scouts: [] }; }
     var addrsBySite = {};
     for (var r = hdr.headerRow + 1; r < rows.length; r++) {
       var c1 = rows[r] || [];
@@ -14674,9 +14698,17 @@
       // shift two scouts have signed up for appears twice — and this used to emit it as two
       // identical blocks. Two sign-ups on one shift is not two shifts. Keyed on the raw shift
       // string, which is what the report uses to mean "the same slot".
-      if (shift2 && !groups[key].seen[shift2]) {
-        groups[key].seen[shift2] = true;
-        groups[key].shifts.push(teParseShiftTime(shift2));
+      if (shift2) {
+        if (!groups[key].seen[shift2]) {
+          groups[key].seen[shift2] = shiftEntry(teParseShiftTime(shift2));
+          groups[key].shifts.push(groups[key].seen[shift2]);
+        }
+        // ...and the repeated rows are exactly where the sign-ups live, so they are collected
+        // onto the one shift rather than thrown away with the duplicate.
+        var who = cell(c2, cScout);
+        if (who && groups[key].seen[shift2].scouts.indexOf(who) === -1) {
+          groups[key].seen[shift2].scouts.push(who);
+        }
       }
     }
     var storefronts = [], totalShifts = 0;
@@ -14794,6 +14826,54 @@
       return !!st && !have[st];
     });
   }
+  // Match a Master Shift Report sign-up to a scout on the roster.
+  //
+  // The report abbreviates: "Bowie G", not "Bowie Gladden". So teMatchScouts, which the SALES
+  // import uses and which compares whole names, matches almost nobody here — and quietly
+  // assigning the wrong child to a shift is worse than assigning none, because the shift is who
+  // turns up on the day and, once sales are recorded against the block, who gets the credit.
+  //
+  // So: exact full name first, then first-name plus last-initial, and ONLY where exactly one
+  // scout on the roster fits. Two Bowies whose surnames both begin with G is a question for a
+  // human, and this returns null rather than picking one.
+  function teMatchShiftScout(name) {
+    var want = String(name == null ? '' : name).trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!want) return null;
+    var roster = activeScouts();
+    var exact = roster.filter(function (s) {
+      return String(s.name || '').trim().toLowerCase().replace(/\s+/g, ' ') === want;
+    });
+    if (exact.length === 1) return exact[0].id;
+    if (exact.length > 1) return null;
+    var parts = want.split(' ');
+    if (parts.length !== 2 || parts[1].replace(/\./g, '').length !== 1) return null;
+    var first = parts[0], initial = parts[1].charAt(0);
+    var byInitial = roster.filter(function (s) {
+      var p = String(s.name || '').trim().toLowerCase().replace(/\s+/g, ' ').split(' ');
+      return p.length >= 2 && p[0] === first && p[p.length - 1].charAt(0) === initial;
+    });
+    return byInitial.length === 1 ? byInitial[0].id : null;
+  }
+  // Which sign-ups on a shift are not already on the block, and can be safely added.
+  //
+  // ⚠ ONLY ONTO A BLOCK HOLDING NO MONEY. blockShares splits a block's sales and donations across
+  // its assignees by weight, so adding one to a block with recorded takings silently re-divides
+  // real money and changes what every scout on it earned. An empty block splits nothing, so
+  // filling one in is free. A block with takings is left exactly as it is and reported instead.
+  function teNewSignups(block, shift) {
+    if (!block || !shift) return [];
+    if ((block.salesCents || 0) > 0 || (block.donationsCents || 0) > 0) return [];
+    var have = {};
+    (block.assignments || []).forEach(function (a) { have[a.scoutId] = true; });
+    var out = [], seen = {};
+    (shift.scouts || []).forEach(function (nm) {
+      var sid = teMatchShiftScout(nm);
+      if (!sid || have[sid] || seen[sid]) return;
+      seen[sid] = true;
+      out.push({ scoutId: sid, name: nm });
+    });
+    return out;
+  }
   function teBuildShiftPreview(mapped) {
     var existing = {};
     state.storefronts.forEach(function (sf) { existing[teStorefrontKey(sf.name, sf.date)] = true; });
@@ -14806,7 +14886,26 @@
       var key = teStorefrontKey(sf.name, sf.date);
       var match = byKey[key];
       var missing = teMissingShifts(match, sf.shifts);
+      // What the sign-ups will do, worked out the same way the commit will do it.
+      var signUps = 0, unmatched = [], heldBack = 0;
+      var byStart = {};
+      (match ? match.blocks || [] : []).forEach(function (b) { if (b.start) byStart[b.start] = b; });
+      sf.shifts.forEach(function (sh) {
+        var st = parseLegacyTime(sh.start);
+        var block = st ? byStart[st] : null;
+        var target = block || { assignments: [], salesCents: 0, donationsCents: 0 };
+        if (block && ((block.salesCents || 0) > 0 || (block.donationsCents || 0) > 0)) {
+          heldBack += (sh.scouts || []).length;
+          return;
+        }
+        var got = teNewSignups(target, sh);
+        signUps += got.length;
+        (sh.scouts || []).forEach(function (nm) {
+          if (!teMatchShiftScout(nm) && unmatched.indexOf(nm) === -1) unmatched.push(nm);
+        });
+      });
       return {
+        signUps: signUps, unmatched: unmatched, heldBack: heldBack,
         name: sf.name, date: sf.date, count: sf.shifts.length,
         isNew: !existing[key], shifts: sf.shifts,
         // On a NEW storefront every shift is added, so `missing` is the whole list either way.
@@ -14818,8 +14917,15 @@
     // Shifts going onto storefronts that already exist — the case that used to import nothing.
     var fillCount = items.reduce(function (n, it) { return n + (it.isNew ? 0 : it.addCount); }, 0);
     var fillWhere = items.filter(function (it) { return !it.isNew && it.addCount; }).length;
+    var signCount = items.reduce(function (n, it) { return n + it.signUps; }, 0);
+    var heldBack = items.reduce(function (n, it) { return n + it.heldBack; }, 0);
+    var unmatched = [];
+    items.forEach(function (it) {
+      it.unmatched.forEach(function (nm) { if (unmatched.indexOf(nm) === -1) unmatched.push(nm); });
+    });
     return { kind: 'te-preview', report: 'shifts', items: items, newCount: newCount,
       fillCount: fillCount, fillWhere: fillWhere,
+      signCount: signCount, unmatched: unmatched, heldBack: heldBack,
       totalShifts: mapped.totalShifts, season: season };
   }
   // Wave 16 — case-insensitive trimmed roster matcher, shared by the sales preview AND
@@ -14926,10 +15032,23 @@
     var byKey = {};
     state.storefronts.forEach(function (sf) { byKey[teStorefrontKey(sf.name, sf.date)] = sf; });
     function blockFor(sh, n) {
-      return { id: uid(), label: 'Block ' + n, start: parseLegacyTime(sh.start), end: parseLegacyTime(sh.end),
+      var b = { id: uid(), label: 'Block ' + n, start: parseLegacyTime(sh.start), end: parseLegacyTime(sh.end),
         assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
+      // A brand-new block holds no money, so its sign-ups go straight on.
+      teNewSignups(b, sh).forEach(function (m) { b.assignments.push({ scoutId: m.scoutId, weight: 1 }); signed += 1; });
+      return b;
     }
-    var added = 0, filled = 0, filledOn = 0;
+    // Sign-ups onto blocks that were ALREADY on the schedule, matched to the report by start time.
+    function signExisting(sf, shifts) {
+      var byStart = {};
+      shifts.forEach(function (sh) { var st = parseLegacyTime(sh.start); if (st) byStart[st] = sh; });
+      (sf.blocks || []).forEach(function (b) {
+        var sh = byStart[b.start];
+        if (!sh) return;
+        teNewSignups(b, sh).forEach(function (m) { b.assignments.push({ scoutId: m.scoutId, weight: 1 }); signed += 1; });
+      });
+    }
+    var added = 0, filled = 0, filledOn = 0, signed = 0;
     o.items.forEach(function (it) {
       var key = teStorefrontKey(it.name, it.date);
       var match = byKey[key];
@@ -14940,6 +15059,8 @@
       // recorded sales, so overwriting one would destroy money and sign-ups. Adding the shifts it
       // does NOT have costs nothing and is the whole point of the report.
       if (match) {
+        // Sign-ups first, onto the blocks that are already there — blockFor handles the new ones.
+        signExisting(match, it.shifts);
         var missing = teMissingShifts(match, it.shifts);
         if (!missing.length) return;
         // Numbering continues from what is there; the display sorts blocks by start time anyway.
@@ -14963,6 +15084,7 @@
     if (added) say.push('added ' + added + ' storefront' + (added === 1 ? '' : 's'));
     if (filled) say.push('filled in ' + filled + ' shift' + (filled === 1 ? '' : 's') +
       ' on ' + filledOn + ' existing storefront' + (filledOn === 1 ? '' : 's'));
+    if (signed) say.push('signed up ' + signed + ' scout' + (signed === 1 ? '' : 's'));
     showToast(say.length ? (say.join(' and ').charAt(0).toUpperCase() + say.join(' and ').slice(1)) : 'Every shift on this report is already on your schedule');
   }
   function teCommitSalesArchive() {
