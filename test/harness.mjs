@@ -3570,6 +3570,155 @@ test('the editor says the page is published before anyone types into it', () => 
     'the notice does not say what is NOT published, which is the other half of the reassurance');
 });
 
+/* ========================================================================
+   An adventure across several den meetings — 2026-08-02
+   ===================================================================== */
+
+// One den, one adventure tagged on several dated meetings, plus an attendance book.
+function runSandbox(setup) {
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `${setup}
+     ${slice('evAdventure')}
+     ${slice('meetingRoster')}
+     ${slice('wasCheckedIn')}
+     ${slice('adventureRuns')}
+     ${slice('runProgress')}
+     ${slice('runForMeeting')}
+     ${slice('sessionLabel')}
+     ${slice('nextPackMeetingAfter')}
+     ${slice('programYearStartISO')}
+     ${slice('programYearEndISO')}
+     ${slice('PROGRAM_START_MONTH')}
+     ${slice('pad2')}
+     function activeScouts() { return SCOUTS; }
+     function advKindFor() { return 'req'; }
+     function advStatus(sid, kind, name) { return (STATUS[sid] || {})[name] || ''; }
+     function todayISO() { return TODAY; }
+     var state = { events: EVENTS, attendance: ATT, budget: { programYear: 2026 } };`, ctx);
+  return ctx;
+}
+
+const RUN_SETUP = `
+  var TODAY = '2026-08-13';
+  var SCOUTS = [{ id: 'a', name: 'Ada', den: 'Wolf' }, { id: 'b', name: 'Ben', den: 'Wolf' },
+                { id: 'c', name: 'Cy', den: 'Bear' }];
+  var STATUS = {};
+  var EVENTS = [
+    { id: 'm1', kind: 'den', den: 'Wolf', date: '2026-08-05', time: '19:00', adventure: 'Bobcat' },
+    { id: 'm2', kind: 'den', den: 'Wolf', date: '2026-08-12', time: '19:00', adventure: 'Bobcat' },
+    { id: 'm3', kind: 'den', den: 'Wolf', date: '2026-08-19', time: '19:00', adventure: 'Bobcat' },
+    { id: 'p1', kind: 'pack', den: '', date: '2026-08-26', adventure: '' },
+    { id: 'x1', kind: 'den', den: 'Bear', date: '2026-08-05', adventure: 'Bobcat' }
+  ];
+  var ATT = {
+    m1: { a: { scout: true }, b: { scout: true } },
+    m2: { a: { scout: true } },
+    m3: {}
+  };`;
+
+test('meetings tagged with the same adventure form one run, per den', () => {
+  const ctx = runSandbox(RUN_SETUP);
+  const runs = vm.runInContext('adventureRuns()', ctx);
+  eq(runs.length, 2, 'Wolf and Bear each work Bobcat — two runs, not one');
+  eq(runs.map((r) => r.den + ':' + r.sessions.length).sort(), ['Bear:1', 'Wolf:3'],
+    'the sessions are not grouped by den');
+  eq(runs.find((r) => r.den === 'Wolf').sessions.map((s) => s.id), ['m1', 'm2', 'm3'],
+    'sessions are not in date order');
+  // A pack meeting is not a session of anything, and an untagged meeting is not either.
+  ok(!runs.some((r) => r.sessions.some((s) => s.kind === 'pack')), 'a pack meeting became a session');
+});
+
+test('a scout is 2 of 3, and the missed night is named', () => {
+  const ctx = runSandbox(RUN_SETUP);
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  eq(p.total, 3, 'three sessions');
+  eq(p.scouts.map((r) => r.scout.name), ['Ada', 'Ben'], 'the roster is not the den');
+  const ada = p.scouts.find((r) => r.scout.name === 'Ada');
+  const ben = p.scouts.find((r) => r.scout.name === 'Ben');
+  eq(ada.count, 2, 'Ada was at the two that have happened');
+  eq(ada.missed.length, 0, 'Ada has missed nothing — the third has not happened yet');
+  eq(ada.pending.map((e) => e.id), ['m3'], 'the still-to-come session is not tracked');
+  ok(!ada.full, 'attending 2 of 3 is not the whole run');
+  eq(ben.count, 1, 'Ben was at one');
+  eq(ben.missed.map((e) => e.id), ['m2'], 'Ben missed the 12th and it is not reported');
+  eq(p.onTrack.map((r) => r.scout.name), ['Ada'], 'on-track is "missed nothing so far"');
+  eq(p.short.map((r) => r.scout.name), ['Ben'], 'short is "missed at least one that happened"');
+  eq(p.complete.length, 0, 'nobody has been to all three yet');
+});
+
+test('a session still to come is never counted as missed', () => {
+  // The trap: treating every unattended session as a miss would report every scout as behind
+  // the moment a den schedules next month's meetings.
+  const ctx = runSandbox(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-06';"));
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  p.scouts.forEach((r) => eq(r.missed.length, 0, `${r.scout.name} was marked as missing a future meeting`));
+  eq(p.onTrack.length, 2, 'both scouts should still be on track the day after session one');
+});
+
+test('every session attended, and the run is complete', () => {
+  const ctx = runSandbox(RUN_SETUP
+    .replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-20';")
+    .replace('m3: {}', "m3: { a: { scout: true }, b: { scout: true } }"));
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  const ada = p.scouts.find((r) => r.scout.name === 'Ada');
+  ok(ada.full, 'Ada attended all three and is not marked complete');
+  eq(p.complete.map((r) => r.scout.name), ['Ada'], 'only Ada was at all three');
+  eq(p.onTrack.map((r) => r.scout.name), ['Ada'], 'Ben missed the 12th, so he is not on track');
+});
+
+test('a run is scoped to the program year, and a meeting knows its place in it', () => {
+  const ctx = runSandbox(RUN_SETUP);
+  const r2 = vm.runInContext("runForMeeting(state.events[1])", ctx);
+  eq(r2.position, 2, 'the second meeting is session 2');
+  eq(r2.of, 3, 'of three');
+  eq(vm.runInContext('sessionLabel(2, 3)', ctx), 'session 2 of 3', 'the label is wrong');
+  eq(vm.runInContext('sessionLabel(1, 1)', ctx), 'one session', 'a single session should not say "1 of 1"');
+  // Undated, and a pack meeting: neither is a session.
+  eq(vm.runInContext("runForMeeting({ kind: 'den', den: 'Wolf', date: '', adventure: 'Bobcat' })", ctx), null,
+    'an undated meeting became a session');
+  eq(vm.runInContext("runForMeeting({ kind: 'pack', den: '', date: '2026-08-05', adventure: 'Bobcat' })", ctx), null,
+    'a pack meeting became a session');
+  // LAST year's meeting on the same adventure must not join this year's run — the den is a
+  // different set of children by then, and counting it reports a scout as finished who has
+  // never been.
+  const prior = runSandbox(RUN_SETUP.replace("{ id: 'm1', kind: 'den', den: 'Wolf', date: '2026-08-05'",
+    "{ id: 'm1', kind: 'den', den: 'Wolf', date: '2025-08-05'"));
+  const wolf = vm.runInContext("adventureRuns().find(function (r) { return r.den === 'Wolf'; })", prior);
+  eq(wolf.sessions.map((s) => s.id), ['m2', 'm3'], 'a meeting outside the program year joined the run');
+});
+
+test('the award is presented at the next pack meeting', () => {
+  // Researched: recognition is immediate at the den meeting, and FORMAL at the next pack
+  // meeting, where the loop or pin is actually handed over. The calendar knows which one.
+  const ctx = runSandbox(RUN_SETUP);
+  eq(vm.runInContext("nextPackMeetingAfter('2026-08-13').id", ctx), 'p1', 'the next pack meeting is not found');
+  eq(vm.runInContext("nextPackMeetingAfter('2026-09-01')", ctx), null, 'a past pack meeting was offered');
+});
+
+test('the mark-off button credits the run, not the room', () => {
+  // The defect this replaces: on a three-meeting adventure the old button credited everyone
+  // checked in TONIGHT, so a scout marked at session one who then missed two kept the credit.
+  const m = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(m, 'the mtg-adv-mark action is missing');
+  ok(/var mamRun = runForMeeting\(mam\);/.test(m[0]), 'it does not resolve the run');
+  ok(/mamRun\.prog\.onTrack\.forEach/.test(m[0]),
+    'it still credits the attendance book for this one meeting');
+  ok(!/state\.attendance\[mam\.id\]/.test(m[0]), 'it still reads tonight’s attendance directly');
+});
+
+test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
+  // Researched, and it decides the wording: Cub Scout advancement is per requirement, "Do Your
+  // Best" is the standard, and work done at home is signed by a parent and approved by the den
+  // leader. A tracker that implied a missed den meeting forfeits the adventure would be wrong
+  // about the programme, not just harsh.
+  ok(/does not cost them the/.test(SCRIPT), 'the make-up path is never stated');
+  ok(/“Do Your Best” is the standard/.test(SCRIPT), 'the actual standard is not named');
+  ok(/Attendance is <strong>evidence, /.test(SCRIPT), 'the runs card does not say what attendance is');
+  ok(!/cannot earn|missed out on the adventure|forfeit/i.test(SCRIPT),
+    'the copy says a missed meeting loses the adventure');
+});
+
 test('the source is text, with no control characters hiding in it', () => {
   // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
   // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened

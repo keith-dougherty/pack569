@@ -247,6 +247,17 @@
   /* Multi-line notes field: full width, comfortable leading, vertical resize only. */
   textarea.notes-in { width: 100%; min-height: 68px; line-height: 1.45; resize: vertical; }
 
+  /* ---------- Adventure runs ----------
+     An adventure spanning several den meetings: the session list plus one row per scout showing
+     how many of those sessions they were at. Reuses .pill and the muted ink; the only new thing
+     is a compact row that keeps the name, the count and the badge readable on a phone. */
+  .adv-run { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 10px; }
+  .adv-run:first-of-type { border-top: 0; margin-top: 8px; padding-top: 0; }
+  .adv-prog-list { margin-top: 6px; }
+  .adv-prog { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 3px 0; font-size: 0.9rem; }
+  .adv-prog-name { flex: 1 1 130px; min-width: 0; }
+  .adv-prog-n { font-variant-numeric: tabular-nums; color: var(--ink-soft); flex: 0 0 auto; }
+
   /* ---------- Camping ----------
      Long-form prose, which nothing else in this app has. Two things only: a readable measure,
      and a facts list that stacks on a phone. Existing tokens throughout. */
@@ -618,6 +629,13 @@
   :root[data-theme="dark"] .pill.bad { color: #1A0904; }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) .pill.bad { color: #1A0904; }
+  }
+  /* The counterpart, for "recorded" / "awarded". Same shape as .pill.bad, including the
+     dark-theme ink flip: --good goes light in dark mode, so white-on-it would fail contrast. */
+  .pill.good { background: var(--good); color: #FFF; }
+  :root[data-theme="dark"] .pill.good { color: #06210F; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .pill.good { color: #06210F; }
   }
   .btiny.armed { background: var(--bad); border-color: var(--bad); color: #FFF; }
   :root[data-theme="dark"] .btiny.armed { color: #1A0904; }
@@ -4571,6 +4589,59 @@
     return '<button type="button" class="adv-cell' + (st ? ' ' + st : '') + (nudge ? ' bobcat-nudge' : '') + '" data-act="adv-cycle" data-scout="' + scoutId +
       '" data-kind="' + kind + '" data-name="' + esc(name) + '"' + (nudge ? ' title="Bobcat is completed first"' : '') + ' aria-label="' + esc(lbl) + '">' + glyph + '</button>';
   }
+  // Every adventure the dens are working this program year, and who the attendance is behind.
+  // The grid below this card answers "has Ada got Bobcat"; this answers the question that comes
+  // first — "are we going to get the den through Bobcat, and who is behind" — which nothing in
+  // the app could answer before, because it lives across several meetings rather than in one.
+  function renderAdventureRunsCard() {
+    var runs = adventureRuns();
+    if (!runs.length) return '';
+    var today = todayISO();
+    var h = '<div class="card"><h2 class="section display">Adventures in progress</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">One row per adventure a den is working this year. ' +
+      'A meeting counts as a <strong>session</strong> when it names the adventure, so tagging the two or ' +
+      'three meetings that work it is what makes “2 of 3” mean anything. Attendance is <strong>evidence, ' +
+      'not the requirement</strong> — a scout who missed a night can do the work at home and be signed off.</p>';
+    runs.forEach(function (run) {
+      var p = runProgress(run, today);
+      var past = run.sessions.filter(function (ev) { return ev.date < today; }).length;
+      var short = p.short.filter(function (row) { return !row.status; });
+      var done = p.scouts.filter(function (row) { return row.status; });
+      h += '<div class="adv-run">' +
+        '<div class="spread"><strong>' + esc(run.adventure) + '</strong>' +
+        '<span class="small muted">' + esc(run.den || 'All dens') + '</span></div>' +
+        '<p class="small muted" style="margin:2px 0 0">' +
+        run.sessions.length + (run.sessions.length === 1 ? ' session' : ' sessions') +
+        (past < run.sessions.length ? ' · ' + past + ' held' : ' · all held') +
+        ' · ' + esc(advRunDates(run, '')) + '</p>';
+      if (!p.scouts.length) {
+        h += '<p class="small muted" style="margin:6px 0 0">No active scouts in this den.</p></div>';
+        return;
+      }
+      h += '<div class="adv-prog-list">' + p.scouts.slice().sort(function (a, b) {
+        return b.count - a.count || a.scout.name.localeCompare(b.scout.name);
+      }).map(function (row) {
+        var badge = row.status === 'awarded' ? '<span class="pill good">awarded</span>'
+          : row.status === 'done' ? '<span class="pill good">recorded</span>' : '';
+        return '<div class="adv-prog"><span class="adv-prog-name">' + esc(row.scout.name) + '</span>' +
+          '<span class="adv-prog-n">' + row.count + ' of ' + row.total + '</span>' +
+          (badge ? ' ' + badge : '') +
+          (row.missed.length && !row.status
+            ? '<span class="small muted">make up ' + esc(row.missed.map(function (ev) { return fmtDateShort(ev.date); }).join(', ')) + '</span>'
+            : '') + '</div>';
+      }).join('') + '</div>';
+      if (done.length === p.scouts.length) {
+        var np = nextPackMeetingAfter(today);
+        h += '<p class="small muted" style="margin:6px 0 0">Recorded for the whole den. Present at the next pack meeting' +
+          (np ? ' — <strong>' + esc(fmtDate(np.date)) + '</strong>' : '') + '.</p>';
+      } else if (short.length) {
+        h += '<p class="small muted" style="margin:6px 0 0">' + short.length +
+          (short.length === 1 ? ' scout has' : ' scouts have') + ' a session to make up at home.</p>';
+      }
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
   function renderAdvancement() {
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">Advancement</h2>' +
@@ -4591,6 +4662,7 @@
           'had an adventure planned that nobody has been credited for yet.');
       })() +
       '</div>';
+    h += renderAdventureRunsCard();
     // Wave 21 — a den leader lands on their own den. Never a lock: myDens() is [] for
     // everyone else, and the chips below always offer "All dens".
     // Three states, and null vs '' matters: null = untouched, so fall back to the signed-in
@@ -6713,10 +6785,14 @@
     // page. Runs LAST so it wins over the restore above, and clears itself so it can never
     // yank the page on a later render the user did not ask for. A missing target is a no-op —
     // the id may belong to a card this render did not produce.
+    // No `behavior: 'smooth'`. It was the first thing tried and in this app's own preview
+    // engine it does nothing at all — 2.4 seconds of polling, scrollY never left 0, while the
+    // plain call moved 1,131px instantly. A jump that sometimes silently does not happen is
+    // the very bug being fixed, so this stays unanimated.
     if (ui.scrollToId) {
       var jumpTo = document.getElementById(ui.scrollToId);
       ui.scrollToId = null;
-      if (jumpTo) jumpTo.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      if (jumpTo) jumpTo.scrollIntoView({ block: 'start' });
     }
   }
 
@@ -7192,7 +7268,20 @@
       var m = e.ev;
       h += line('When', esc(fmtDate(m.date)) + (fmtClock(m.time) ? ' · ' + esc(fmtClock(m.time)) : ' <span class="muted">· no time set</span>'));
       h += line('Who', m.kind === 'pack' ? 'Whole pack' : (m.den ? esc(m.den) + ' den' : 'All dens'));
-      if (m.adventure) h += line('Adventure', esc(m.adventure));
+      // The adventure, and — the reason any of this exists — where tonight sits in the run and
+      // who has the attendance behind it. This sheet gets printed and carried to the meeting.
+      if (evAdventure(m)) {
+        var mRun = runForMeeting(m);
+        h += line('Adventure', esc(evAdventure(m)) +
+          (mRun && mRun.of > 1 ? ' <span class="muted">· ' + esc(sessionLabel(mRun.position, mRun.of)) + '</span>' : ''));
+        if (mRun) {
+          var mDone = mRun.prog.complete.length, mShort = mRun.prog.short.length;
+          h += line('Progress', (mRun.of > 1
+            ? mDone + ' of ' + mRun.prog.scouts.length + ' have been to every session'
+            : mRun.prog.onTrack.length + ' of ' + mRun.prog.scouts.length + ' checked in') +
+            (mShort ? ' <span class="muted">· ' + mShort + ' with a session to make up</span>' : ''));
+        }
+      }
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(m.id))));
       var attT = attTotals(state.attendance[m.id]);
@@ -7277,7 +7366,10 @@
           var evWhen = fmtTimeRange(e.ev.time, e.ev.endTime);
           if (evWhen) meta.push(evWhen);
           if (e.ev.location) meta.push(firstLine(e.ev.location));
-          if (e.ev.adventure) meta.push(e.ev.adventure);
+          if (evAdventure(e.ev)) {
+            var agRun = runForMeeting(e.ev);
+            meta.push(evAdventure(e.ev) + (agRun && agRun.of > 1 ? ' (' + agRun.position + '/' + agRun.of + ')' : ''));
+          }
           if (e.ev.note) meta.push(firstLine(e.ev.note));
           // Phase 2 — cost is the linked BUDGET LINE's, not the event's. An event with no
           // line shows no money, which is exactly right for an imported calendar entry.
@@ -7542,27 +7634,140 @@
       '</div>';
   }
 
-  // Wave 16 — one-tap "mark the planned adventure done for everyone checked in".
-  // Only on den meetings with an adventure set and ≥1 attendance mark. Additive and
-  // reversible cell-by-cell on the Advancement tab, so no two-tap arm.
-  function renderMeetingAdvMark(m) {
-    if (m.kind !== 'den') return '';
-    var advName = String(m.adventure || '').trim();
-    if (!advName) return '';
-    advName = ADV_RENAMES[advName] || advName;
-    var marked = state.attendance[m.id] || {};
-    var checked = Object.keys(marked).filter(function (sid) { return marked[sid] && marked[sid].scout && getScout(sid); });
-    if (!checked.length) return '';
-    var pending = checked.filter(function (sid) {
-      return !advStatus(sid, advKindFor(getScout(sid), advName), advName);
-    });
-    if (!pending.length) {
-      return '<p class="small muted" style="margin:8px 0 0">“' + esc(advName) + '” recorded for everyone checked in.</p>';
+  // The adventure this meeting works toward — one box, one adventure (owner ruling), plus the
+  // run it belongs to. The run line is the whole point: a den meeting on its own cannot show
+  // that this is the second of three nights on Bobcat, and that is the question a den leader
+  // and a parent both actually have.
+  function advTargetPicker(m) {
+    var r = runForMeeting(m);
+    var h = '<input data-ch="mtg-adv" data-id="' + esc(m.id) + '" list="advOpts-' + esc(m.id) + '" value="' +
+      esc(m.adventure || '') + '" placeholder="Adventure this meeting works toward (optional)" ' +
+      'aria-label="Adventure this meeting works toward" style="width:100%;margin-top:6px">' +
+      '<datalist id="advOpts-' + esc(m.id) + '">' +
+      advOptionsForDen(m.den).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') +
+      '</datalist>';
+    if (r && r.of > 1) {
+      h += '<p class="small muted" style="margin:4px 0 0">' + esc(sessionLabel(r.position, r.of)) + ' · ' +
+        esc(advRunDates(r.run, m.id)) + '</p>';
+    } else if (evAdventure(m) && !m.date) {
+      h += '<p class="small muted" style="margin:4px 0 0">Set a date and this counts as a session — ' +
+        'tag the same adventure on the other meetings that work it.</p>';
     }
-    return '<div class="row" style="margin-top:8px"><button type="button" class="btn small" data-act="mtg-adv-mark" data-id="' + m.id + '">' +
-      'Mark “' + esc(advName) + '” done for the ' + checked.length + ' checked in</button></div>';
+    return h;
+  }
+  // "Aug 5 · Aug 12 (this one) · Aug 19" — what the run actually IS, which no single meeting
+  // row can show on its own.
+  function advRunDates(run, hereId) {
+    return run.sessions.map(function (ev) {
+      return fmtDateShort(ev.date) + (ev.id === hereId ? ' (this one)' : '');
+    }).join(' · ');
   }
 
+  /* Wave 16 gave a den meeting a one-tap "mark the adventure done for everyone checked in".
+     Rewritten 2026-08-02 to be SESSION-AWARE, because the old version was right only for an
+     adventure a den finishes in one evening: on a three-meeting adventure, marking it at the
+     first meeting credits a scout who then misses the other two.
+
+     WHAT ATTENDANCE IS AND IS NOT. Researched rather than assumed, and it decides the wording
+     here. Cub Scout advancement is per REQUIREMENT, and "Do Your Best" is the standard —
+     preparation happens "in den meetings, pack meetings, or other activities, or in family
+     settings", and for Tiger/Wolf/Bear a requirement done at home is signed by the parent and
+     then approved by the den leader; for Webelos and Arrow of Light the den leader signs.
+
+     So a missed den meeting does NOT cost a scout the adventure, and this app must never say it
+     does. What attendance gives is EVIDENCE: the scouts who were at every session are the ones
+     a den leader can sign off without chasing anybody, and the ones who were not are a
+     make-up-at-home list. That is what these two lists are, and the copy says so. `advMarkDone`
+     remains the only writer — nothing here marks anything on its own. */
+  function renderMeetingAdvMark(m) {
+    var r = runForMeeting(m);
+    if (!r) return '';
+    var p = r.prog, advName = r.run.adventure;
+    var multi = r.of > 1;
+    // Anyone with an attendance mark anywhere in the run, or already recorded. A den with no
+    // attendance taken yet has nothing to say, exactly as before.
+    var anyMarks = p.scouts.some(function (row) { return row.count || row.status; });
+    if (!anyMarks) return '';
+
+    var backed = p.onTrack.filter(function (row) { return !row.status; });   // every session so far
+    var shortOf = p.short.filter(function (row) { return !row.status; });    // missed at least one
+    var recorded = p.scouts.filter(function (row) { return row.status; });
+
+    var h = '<div class="adv-run">' +
+      '<div class="spread"><strong>' + esc(advName) + '</strong>' +
+      '<span class="small muted">' + esc(sessionLabel(r.position, r.of)) + '</span></div>';
+
+    // The per-scout line the owner asked for: n of N, and what they are missing.
+    h += '<div class="adv-prog-list">' + p.scouts.slice().sort(function (a, b) {
+      return b.count - a.count || a.scout.name.localeCompare(b.scout.name);
+    }).map(function (row) {
+      var badge = row.status === 'awarded' ? '<span class="pill good">awarded</span>'
+        : row.status === 'done' ? '<span class="pill good">recorded</span>'
+        : (row.full && multi) ? '<span class="pill">every session</span>'
+        : '';
+      return '<div class="adv-prog"><span class="adv-prog-name">' + esc(row.scout.name) + '</span>' +
+        '<span class="adv-prog-n">' + row.count + ' of ' + row.total + '</span>' +
+        (badge ? ' ' + badge : '') +
+        (row.missed.length
+          ? '<span class="small muted">missed ' + esc(row.missed.map(function (ev) { return fmtDateShort(ev.date); }).join(', ')) + '</span>'
+          : (row.pending.length && multi
+            ? '<span class="small muted">' + row.pending.length + ' still to come</span>'
+            : '')) +
+        '</div>';
+    }).join('') + '</div>';
+
+    if (backed.length) {
+      // "Every session" and "every session SO FAR" are different claims, and only one of them
+      // is true while a session is still to come. Saying the wrong one puts a number on the
+      // button that the list right above it contradicts — 2 of 3 is not every session.
+      var left = run_pendingCount(r);
+      var who = backed.length + (backed.length === 1 ? ' scout' : ' scouts');
+      h += '<div class="row" style="margin-top:8px"><button type="button" class="btn small" ' +
+        'data-act="mtg-adv-mark" data-id="' + esc(m.id) + '" data-name="' + esc(advName) + '">' +
+        'Mark “' + esc(advName) + '” done for ' + who +
+        (multi ? (left ? ' who have been to every session so far' : ' with all ' + r.of + ' sessions') : '') +
+        '</button></div>';
+      if (multi && left) {
+        h += '<p class="small muted" style="margin:6px 0 0">' +
+          (left === 1 ? 'One session is still to come' : left + ' sessions are still to come') +
+          ' — most dens wait for the last one.</p>';
+      }
+    }
+    // The honest half. A missed meeting is a make-up, not a lost adventure.
+    if (shortOf.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">' +
+        shortOf.map(function (row) { return esc(row.scout.name); }).join(', ') +
+        (shortOf.length === 1 ? ' has ' : ' have ') + 'missed a session. That does not cost them the ' +
+        'adventure — “Do Your Best” is the standard and the work can be done at home, signed by a ' +
+        'parent, then approved by you. Mark them on <strong>Advancement</strong> once it is.</p>';
+    }
+    if (!backed.length && recorded.length === p.scouts.length && p.scouts.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">Recorded for every scout in the den.</p>';
+    } else if (!backed.length && !shortOf.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">Nobody is checked in for every session yet.</p>';
+    }
+    // Where the award is actually handed over. Recognition is immediate at the den meeting and
+    // FORMAL at the next pack meeting — so name that meeting, since the calendar knows it.
+    if (recorded.length) {
+      var nextPack = nextPackMeetingAfter(m.date);
+      h += '<p class="small muted" style="margin:6px 0 0">Present the loop or pin at the next pack meeting' +
+        (nextPack ? ' — <strong>' + esc(fmtDate(nextPack.date)) + '</strong>' : ' (none on the calendar yet)') + '.</p>';
+    }
+    return h + '</div>';
+  }
+  // Sessions of this run that have not happened yet. Not "of − position": a run's sessions are
+  // in date order but the meeting being looked at may itself be in the past or the future, and
+  // what matters for the wording is how many are still ahead of TODAY.
+  function run_pendingCount(r) {
+    var t = todayISO();
+    return r.run.sessions.filter(function (ev) { return ev.date > t; }).length;
+  }
+  // The next pack meeting on or after a date — where adventure awards are formally presented.
+  function nextPackMeetingAfter(iso) {
+    var from = iso || todayISO();
+    return state.events.filter(function (e) { return e.kind === 'pack' && e.date && e.date >= from; })
+      .sort(function (a, b) { return a.date.localeCompare(b.date); })[0] || null;
+  }
   /* ----- Storefront detail ----- */
   function renderStorefrontDetail() {
     var sf = getStorefront(ui.storefrontId);
@@ -14860,18 +15065,22 @@
       var mamAdv = String(mam.adventure || '').trim();
       if (!mamAdv) return;
       mamAdv = ADV_RENAMES[mamAdv] || mamAdv;
-      var mamMarked = state.attendance[mam.id] || {};
+      // Session-aware since 2026-08-02: the scouts credited are the ones checked in at every
+      // session of the RUN that has happened, not merely everyone who turned up tonight. On a
+      // one-session adventure those are the same set, so this is a strict generalization of
+      // what the button did before.
+      var mamRun = runForMeeting(mam);
+      if (!mamRun) return;
       var mamDid = 0, mamHad = 0;
-      Object.keys(mamMarked).forEach(function (sid) {
-        if (!mamMarked[sid] || !mamMarked[sid].scout) return;
-        var mamScout = getScout(sid);
-        if (!mamScout) return;
-        if (advMarkDone(sid, advKindFor(mamScout, mamAdv), mamAdv)) mamDid += 1;
+      mamRun.prog.onTrack.forEach(function (row) {
+        if (advMarkDone(row.scout.id, advKindFor(row.scout, mamAdv), mamAdv)) mamDid += 1;
         else mamHad += 1;
       });
+      if (!mamDid && !mamHad) return;
       commit();
       showToast('Marked ' + mamAdv + ' done for ' + mamDid + ' scout' + (mamDid === 1 ? '' : 's') +
-        (mamHad ? ' · ' + mamHad + ' already had it' : ''));
+        (mamHad ? ' · ' + mamHad + ' already had it' : '') +
+        (mamRun.of > 1 ? ' · all ' + mamRun.of + ' sessions' : ''));
       return;
     }
     // Wave 19(15) — storefront day sheet overlay + copy.
