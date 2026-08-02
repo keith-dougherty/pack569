@@ -1619,7 +1619,8 @@
   ];
   function freshState() {
     return {
-      version: 1, packName: 'Pack 569', commissionPct: '', goalCents: 0, goalIsDerived: true,
+      version: 1, packName: 'Pack 569', commissionPct: '', commissionPctOnline: '',
+      goalCents: 0, goalIsDerived: true,
       stretchGoalCents: 0, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
@@ -1630,7 +1631,7 @@
       collected: {}, advancement: {},
       fundraisers: [],
       derby: { name: '', date: '', lanes: 4, cars: [], awards: [] },
-      rewardTiers: { duesCents: 0, tiers: [], assumeAllEarn: false },
+      rewardTiers: { duesCents: 0, tiers: [], planOnTierId: '' },
       inventory: freshInventory(),
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
@@ -1761,6 +1762,9 @@
     // Wave 21 — the one-time "nine tabs became six workspaces" notice on Home.
     d.movedNoticeDismissed = d.movedNoticeDismissed === true;
     if (typeof d.rev !== 'number') d.rev = 0;
+    // The online rate. Absent → '' , which means "the same as the main rate" — so no existing
+    // pack record's commission moves until somebody types a different figure.
+    d.commissionPctOnline = typeof d.commissionPctOnline === 'string' ? d.commissionPctOnline : '';
     if (typeof d.goalCents !== 'number') d.goalCents = 0;
     // Phase 4 — the Trail's End goal now comes from the plan. A pack that had already typed
     // one keeps it (and can switch); a pack that never did gets the derived figure.
@@ -2252,9 +2256,24 @@
     // Lowest-threshold tier is the "dues tier"; the pack covers duesCents per scout who reaches it.
     if (!d.rewardTiers || typeof d.rewardTiers !== 'object' || Array.isArray(d.rewardTiers)) d.rewardTiers = { duesCents: 0, tiers: [] };
     d.rewardTiers.duesCents = (typeof d.rewardTiers.duesCents === 'number' && isFinite(d.rewardTiers.duesCents) && d.rewardTiers.duesCents > 0) ? Math.round(d.rewardTiers.duesCents) : 0;
-    // Plan as if every scout earns their tier (owner ask, 2026-07-27). Absent → false, so no
-    // existing pack record's goal moves until somebody chooses this.
-    d.rewardTiers.assumeAllEarn = d.rewardTiers.assumeAllEarn === true;
+    // Which tier the pack PLANS on (owner ask, 2026-07-27, revised same day). Absent → '' , so
+    // no existing pack record's goal moves until somebody chooses one.
+    //
+    // The first cut was a boolean meaning "assume every tier", which in practice meant the top
+    // one. A pack record that had it ON is migrated to planning on the HIGHEST tier that covers
+    // something — the same figures it was already showing — and can then pick a lower one.
+    if (typeof d.rewardTiers.planOnTierId !== 'string') {
+      var wasAll = d.rewardTiers.assumeAllEarn === true;
+      var topCov = null;
+      if (wasAll && Array.isArray(d.rewardTiers.tiers)) {
+        d.rewardTiers.tiers.forEach(function (t) {
+          if (!t || !Array.isArray(t.covers) || !t.covers.length) return;
+          if (!topCov || (t.thresholdCents || 0) > (topCov.thresholdCents || 0)) topCov = t;
+        });
+      }
+      d.rewardTiers.planOnTierId = topCov ? topCov.id : '';
+    }
+    delete d.rewardTiers.assumeAllEarn;
     if (!Array.isArray(d.rewardTiers.tiers)) d.rewardTiers.tiers = [];
     d.rewardTiers.tiers = d.rewardTiers.tiers.filter(function (tier) {
       if (!tier || typeof tier !== 'object' || Array.isArray(tier)) return false;
@@ -2270,6 +2289,13 @@
       // normalizeState never resolves references.
       if (!Array.isArray(tier.covers)) tier.covers = [];
       else tier.covers = tier.covers.filter(function (k) { return typeof k === 'string' && !!k; });
+      // The deadline to reach it (owner ruling, 2026-07-27). Absent → '' , which is a tier with
+      // no deadline: reach it any time in the season, exactly as before.
+      tier.dueBy = typeof tier.dueBy === 'string' ? tier.dueBy : '';
+      // Scouts who paid the difference instead of selling it. Scout ids, never resolved here —
+      // normalizeState does not resolve references; a stale id simply matches nobody.
+      if (!Array.isArray(tier.madeUp)) tier.madeUp = [];
+      else tier.madeUp = tier.madeUp.filter(function (k) { return typeof k === 'string' && !!k; });
       return true;
     });
     // Wave 14: Inventory — Trail's End popcorn order (ordered / on-hand / handed out).
@@ -2660,12 +2686,17 @@
     });
     return out;
   }
-  function computeScoutTotals() {
+  // `asOf` (an ISO date, optional) counts only money dated ON OR BEFORE it — what a reward
+  // tier with a deadline has to be measured against. A record with NO date still counts:
+  // there is nothing to judge it by, and dropping a scout's sale because somebody left the
+  // date blank would take money off them for a clerical gap.
+  function computeScoutTotals(asOf) {
     var map = {};
     state.scouts.forEach(function (s) {
       map[s.id] = { storeS: 0, storeD: 0, wagonS: 0, wagonD: 0, onS: 0, onD: 0, blocks: 0 };
     });
     state.storefronts.forEach(function (sf) {
+      if (asOf && sf.date && sf.date > asOf) return;
       sf.blocks.forEach(function (b) {
         blockShares(b).forEach(function (sh) {
           var m = map[sh.scoutId];
@@ -2676,6 +2707,7 @@
     state.entries.forEach(function (e) {
       var m = map[e.scoutId];
       if (!m) return;
+      if (asOf && e.date && e.date > asOf) return;
       if (e.kind === 'wagon') { m.wagonS += e.salesCents; m.wagonD += e.donationsCents; }
       else { m.onS += e.salesCents; m.onD += e.donationsCents; }
     });
@@ -2687,15 +2719,45 @@
     });
     return map;
   }
+  // ONLINE PAYS A DIFFERENT RATE — owner ask, 2026-07-27.
+  //
+  // Trail's End does not pay one commission: online direct sales usually earn more than
+  // storefront and wagon, because there is no product to buy and no shift to staff. One rate
+  // for both understated the pack's earnings by whatever the difference is, on every dollar
+  // sold online.
+  //
+  // So the eligible money is split by CHANNEL and each half earns its own rate, rounded
+  // separately (the pack is paid on each, and rounding a blended figure once would be a cent
+  // out either way for no reason). `commissionPctOnline` blank = "the same as the main rate",
+  // which is what every existing pack record means and what most packs still have.
+  // The GOAL is derived at the LOWER of the two rates, whichever channel that turns out to be.
+  // Not "the storefront rate" — Pack 569 earns 35% at a storefront and 30% online, so a goal
+  // worked out at the storefront rate would be short by 5% of every dollar that came in online.
+  // The lower rate is the only choice that can leave the pack better off than planned rather
+  // than worse, and it stays right if the rates ever swap round.
+  function commissionRates() {
+    var base = parseFloat(state.commissionPct);
+    var online = parseFloat(state.commissionPctOnline);
+    if (!isFinite(base)) base = null;
+    if (!isFinite(online)) online = null;
+    var eff = online == null ? base : online;
+    var both = [base, eff].filter(function (v) { return v != null; });
+    return {
+      base: base, online: eff, split: online != null && online !== base,
+      // Which rate the goal is worked out at, and its name, so a screen can say so.
+      goal: both.length ? Math.min.apply(null, both) : null,
+      goalIsOnline: both.length > 1 && eff < base
+    };
+  }
   function computePackTotals() {
     // Summed from source records (not scout shares) so unassigned block money still counts.
-    var sales = 0, don = 0, onlineDon = 0;
+    var sales = 0, don = 0, onlineDon = 0, onlineSales = 0;
     state.storefronts.forEach(function (sf) {
       sf.blocks.forEach(function (b) { sales += b.salesCents || 0; don += b.donationsCents || 0; });
     });
     state.entries.forEach(function (e) {
       sales += e.salesCents; don += e.donationsCents;
-      if (e.kind === 'online') onlineDon += e.donationsCents;
+      if (e.kind === 'online') { onlineDon += e.donationsCents; onlineSales += e.salesCents; }
     });
     // Cash donations = all donations that aren't online (storefront-table + wagon cash).
     var cashDon = don - onlineDon;
@@ -2704,8 +2766,16 @@
     // AND counted toward the Trail's End goal — or the pack keeps 100% (neither, but budgeted).
     var teEligible = sales + onlineDon + (viaTE ? cashDon : 0);
     var cashKept = viaTE ? 0 : cashDon;
-    var pct = parseFloat(state.commissionPct);
-    var commission = isFinite(pct) ? Math.round(teEligible * pct / 100) : null;
+    // The two channels, each with the money it actually earns commission on. Cash donations
+    // ride with storefront/wagon: they are handed over in person, whatever the online rate is.
+    var onlineEligible = onlineSales + onlineDon;
+    var otherEligible = teEligible - onlineEligible;
+    var rates = commissionRates();
+    var pct = rates.base;
+    var commissionOnline = rates.online == null ? null : Math.round(onlineEligible * rates.online / 100);
+    var commissionOther = pct == null ? null : Math.round(otherEligible * pct / 100);
+    var commission = (commissionOnline == null && commissionOther == null)
+      ? null : (commissionOnline || 0) + (commissionOther || 0);
     var activeCount = activeScouts().length;
     var teGoalNow = packGoalCents();   // Phase 4 — from the plan unless overridden
     var stretchNow = stretchGoalOf(state.stretchGoalCents || 0, teGoalNow);
@@ -2713,6 +2783,10 @@
     return {
       sales: sales, don: don, combined: sales + don, commission: commission, pct: pct,
       onlineDon: onlineDon, cashDon: cashDon, eligible: teEligible, teEligible: teEligible,
+      // Per channel, so the Popcorn card can show the split when the rates differ.
+      onlineSales: onlineSales, onlineEligible: onlineEligible, otherEligible: otherEligible,
+      commissionOnline: commissionOnline, commissionOther: commissionOther,
+      onlinePct: rates.online, ratesSplit: rates.split,
       cashKept: cashKept, retainedCash: cashKept, viaTE: viaTE,
       teGoal: teGoalNow, goal: teGoalNow, target: teTarget, teTarget: teTarget,
       // The minimum is what the plan needs; the stretch is what the pack is reaching for.
@@ -2848,11 +2922,12 @@
     // campout as pure cost until the day it happens, and inflate the popcorn goal by the
     // whole of it — the pack would be told to raise money it was never going to spend.
     //
-    // ...unless the pack has decided popcorn will pick those fees up (assumeAllEarn). Then the
-    // SCOUT share of a tier-covered line is not family income at all — it is what fundraising
-    // is for — and leaving it in B would set the goal too low by exactly what the pack
-    // promised to cover. Heads a family brought are untouched: a tier never covers those.
-    var assumeCov = assumeAllEarnTiers() ? tierCoveredKeys() : {};
+    // ...unless the pack has named a tier it PLANS on. Then the SCOUT share of every line that
+    // tier (and the tiers below it) covers is not family income at all — it is what fundraising
+    // is for — and leaving it in B would set the goal too low by exactly what the pack promised.
+    // A STRETCH tier's covers are not here: nothing above the planned tier is budgeted for.
+    // Heads a family brought are untouched either way — a tier never covers those.
+    var assumeCov = plannedCoverKeys();
     var fees = 0, tierAssumed = 0;
     allBudgetLines().forEach(function (r) {
       var l = r.line;
@@ -2878,8 +2953,12 @@
     var cashGoal = state.cashGoalCents || 0;
     var income = carryover + fees + otherFr + cashGoal + incomeLines;
     var need = Math.max(0, expenses - income);
-    var pct = parseFloat(state.commissionPct);
-    var pctOk = isFinite(pct) && pct > 0;
+    // At the LOWER of the pack's rates (commissionRates), so a mix of channels can only beat
+    // the goal, never fall short of it. Selling everything at the better rate gets there early;
+    // that is the right way for a minimum to be wrong.
+    var rates = commissionRates();
+    var pct = rates.goal;
+    var pctOk = pct != null && pct > 0;
     var salesGoal = pctOk ? Math.round(need / (pct / 100)) : null;
     return {
       scouts: scouts, byCategory: byCategory,
@@ -2889,6 +2968,9 @@
       tierAssumed: tierAssumed,
       incomeLines: incomeLines, familyDirect: familyDirect,
       pct: pct, pctOk: pctOk, salesGoal: salesGoal,
+      // Which rate that was, so the screens can name it instead of assuming the storefront one.
+      goalIsOnline: rates.goalIsOnline, ratesSplit: rates.split,
+      basePct: rates.base, onlinePct: rates.online,
       perScoutGoal: (salesGoal != null && scouts > 0) ? Math.round(salesGoal / scouts) : null
     };
   }
@@ -2947,11 +3029,11 @@
     // fee shows up correctly as income it no longer expects. `feesAbsorbed` is that figure,
     // reported for display only.
     var coverage = tierCoverageConfigured() ? packCoverage() : {};
-    // ...and if the pack has decided to PLAN on covering them, every scout on a covered line
-    // counts as absorbed, not just the ones who have sold enough so far. Otherwise this figure
-    // would report $0 absorbed while the funding worksheet was already treating it as the
-    // pack's — two screens describing the same money differently.
-    var assumeCovAll = assumeAllEarnTiers() ? tierCoveredKeys() : {};
+    // ...and on a line the PLANNED tier covers, every scout counts as absorbed, not just the
+    // ones who have sold enough so far. Otherwise this figure would report $0 absorbed while
+    // the funding worksheet was already treating it as the pack's — two screens describing the
+    // same money differently.
+    var assumeCovAll = plannedCoverKeys();
     var feesAbsorbed = 0;
     function addFeeItem(item, colKey) {
       // Phase 3a — a family-funded line the pack fronts. Paid-direct lines raise nothing
@@ -3065,6 +3147,20 @@
       return !!(ev && ev.date && !dateInProgramYear(ev.date, state.budget.programYear));
     });
   }
+  // The other direction across the split: something on the calendar that no budget line
+  // points at. Either it was imported from a calendar and never budgeted, or its line was
+  // deleted. Both used to be invisible from the Budget, so a line deleted by mistake left no
+  // trace of what was lost — you had to already know to go and find the day on the calendar.
+  function unbudgetedActivities() {
+    return state.events.filter(function (e) {
+      return e.kind === 'activity' && !lineForEvent(e.id);
+    }).slice().sort(function (a, b) {
+      // Dated first, in date order; undated planning rows after them.
+      if (!!a.date !== !!b.date) return a.date ? -1 : 1;
+      return String(a.date).localeCompare(String(b.date)) ||
+        String(a.name).localeCompare(String(b.name));
+    });
+  }
   function unscheduledActivities() {
     return state.budget.activities.filter(function (a) { return lineSlot(a) === -1; });
   }
@@ -3142,6 +3238,23 @@
   }
   // The planning figure for one line: its own roster, which a den-limited event narrows.
   function linePlanned(l) { return linePlannedCents(l, lineRoster(l).length, activeLeaders().length); }
+  // What families pay directly, grouped by WHO they pay. `paidDirectTo` has always been a name
+  // rather than a flag, so it already covers a council and a vendor equally — this is where
+  // that pays off: council fees and vendor fees are two different conversations, and a single
+  // "paid directly" total cannot answer either. Biggest payee first.
+  function familyDirectByPayee() {
+    var by = {};
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      if (lineThroughPack(l)) return;
+      var cents = linePlanned(l);
+      if (!by[l.paidDirectTo]) by[l.paidDirectTo] = { payee: l.paidDirectTo, cents: 0, names: [] };
+      by[l.paidDirectTo].cents += cents;
+      by[l.paidDirectTo].names.push(l.name || ('Untitled ' + r.kind));
+    });
+    return Object.keys(by).map(function (k) { return by[k]; })
+      .sort(function (a, b) { return b.cents - a.cents || a.payee.localeCompare(b.payee); });
+  }
   // The rates, in the order they cost the pack money: what it plans first, then what a family
   // is billed. "family adult" rather than "adult", because the two used to be the same field
   // and confusing them is what put parents in the pack's budget.
@@ -3288,6 +3401,7 @@
   function applyTierWaivers() {
     var tiers = sortedTiers();
     var covered = tierCoverageConfigured() ? packCoverage() : {};
+    var waiverEarned = tiers.length ? tierEarnedMap() : {};
     state.charges.forEach(function (c) {
       if (c.forgiven) return;
       if (c.who !== 'scout') { c.waivedBy = ''; return; }   // never waive a head they brought
@@ -3297,8 +3411,9 @@
       var hit = (covered[key] || {})[c.scoutId];
       if (!hit) { c.waivedBy = ''; return; }
       // Record WHICH tier bought it, so total waived stays measurable against net proceeds.
-      var totals = computeScoutTotals();
-      var et = earnedTier(goalBaseOf({ t: totals[c.scoutId] || { sales: 0, onD: 0 } }), tiers);
+      // Read from the same earned map as the coverage above, so a tier whose deadline has
+      // passed cannot be credited with a waiver it did not buy.
+      var et = earnedTierFor(c.scoutId, tiers, waiverEarned);
       c.waivedBy = et ? et.id : (tiers.length ? tiers[0].id : 'tier');
     });
   }
@@ -5450,6 +5565,48 @@
       onAction: function () { restore(); commit(); showToast('Restored ' + label); }
     });
   }
+  // ONE removal for both halves of the budget, so the confirm dialog, the undo and the
+  // charge cascade cannot drift apart the way two copies of this did.
+  //
+  // AUDIT FIX (kept): the line's charges go with it. syncCharges deliberately KEEPS a settled
+  // charge (waived, forgiven, or paid against), so without this a deleted line leaves them
+  // behind for good, counted in every Dues total under "Removed line". Money that actually
+  // MOVED stays in the ledger either way — it happened, and a plan being deleted does not
+  // unspend it. The calendar event stays too; only the money side is being removed.
+  function removeBudgetLine(id) {
+    var arr = null, ix = -1;
+    [state.budget.activities, state.budget.expenses].forEach(function (list) {
+      if (arr) return;
+      list.forEach(function (l, i) { if (l.id === id) { arr = list; ix = i; } });
+    });
+    if (!arr) return null;
+    var gone = arr.splice(ix, 1)[0];
+    var chg = state.charges.filter(function (c) { return c.lineId === id; });
+    state.charges = state.charges.filter(function (c) { return c.lineId !== id; });
+    return {
+      label: gone.name || (arr === state.budget.activities ? 'activity' : 'expense'),
+      restore: function () {
+        arr.splice(Math.min(ix, arr.length), 0, gone);
+        chg.forEach(function (c) { state.charges.push(c); });
+      }
+    };
+  }
+  // What deleting this line would actually cost, for the dialog to state plainly.
+  function budgetLineDeleteFacts(l) {
+    var chg = state.charges.filter(function (c) { return c.lineId === l.id; });
+    var settled = chg.filter(function (c) { return !chargeIsOpen(c); }).length;
+    var paidAgainst = chg.filter(function (c) {
+      return chargeIsOpen(c) && paymentsForScout(state.ledger, c.scoutId) > 0;
+    }).length;
+    return {
+      planned: linePlanned(l),
+      charges: chg.length,
+      chargeCents: chg.reduce(function (n, c) { return n + (c.amountCents || 0); }, 0),
+      settled: settled, paidAgainst: paidAgainst,
+      entries: lineEntryCount(l.id), actual: lineActual(l.id),
+      event: eventForLine(l)
+    };
+  }
   var SYNC_PILL = {
     local: { cls: 'local', label: 'This device' },
     connecting: { cls: 'connecting', label: 'Connecting…' },
@@ -6950,16 +7107,15 @@
     var tiers = sortedTiers();
     var duesCents = state.rewardTiers.duesCents || 0;
     var duesTier = tiers.length ? tiers[0] : null;
-    var totals = computeScoutTotals();
     var roster = activeScouts();
+    var earned = tiers.length ? tierEarnedMap() : {};
     var coveredCount = 0;
     var perTierCounts = {};
     tiers.forEach(function (t) { perTierCounts[t.id] = 0; });
     roster.forEach(function (s) {
-      var base = goalBaseOf({ t: totals[s.id] });
-      var et = earnedTier(base, tiers);
+      var et = earnedTierFor(s.id, tiers, earned);
       if (et) perTierCounts[et.id] += 1;
-      if (duesTier && base >= duesTier.thresholdCents) coveredCount += 1;
+      if (duesTier && (earned[duesTier.id] || {})[s.id]) coveredCount += 1;
     });
     return {
       tiers: tiers, duesCents: duesCents, duesTier: duesTier,
@@ -6978,15 +7134,95 @@
   // Derived, never stored: if a sale is corrected later, coverage follows it, and this can
   // never disagree with the standings. Nothing writes to state.collected — the collect grids
   // stay a record of what FAMILIES paid, which is what keeps the two from double-counting.
+  // ---------------------------------------------------------------------------
+  // TIER DEADLINES — owner ruling, 2026-07-27.
+  //
+  // "A hard deadline, where they either have to hit goal target by the date or pay the
+  // difference to hit the tier."
+  //
+  // So a tier with a `dueBy` is measured on sales dated ON OR BEFORE that date, always — a
+  // sale on the 2nd cannot satisfy a deadline of the 1st, and saying so up front is kinder
+  // than moving the line later. Once the date has passed the tier is CLOSED: whoever did not
+  // reach it is billed the fee it would have covered, unless they make up the difference.
+  //
+  // `madeUp` is that second path, recorded per tier: a scout who pays the gap counts as
+  // having reached the tier from then on. The money arrives as an ordinary family payment in
+  // the ledger, so it is auditable — the only thing stored here is the pack's decision that
+  // the tier was satisfied. (Total-waived therefore includes fees bought by a makeup payment
+  // as well as by fundraising; the ledger entry names which.)
+  //
+  // ONE map, read by coverage, the waivers, the badges and the deadline report, so those four
+  // can never disagree about who earned what.
+  // ---------------------------------------------------------------------------
+  function tierEarnedMap() {
+    var out = {};
+    var byDate = {};
+    var roster = activeScouts();
+    sortedTiers().forEach(function (t) {
+      var key = t.dueBy || '';
+      if (!byDate[key]) byDate[key] = computeScoutTotals(key || null);
+      var totals = byDate[key];
+      var set = out[t.id] = {};
+      arrOf(t.madeUp).forEach(function (sid) { set[sid] = 'madeUp'; });
+      roster.forEach(function (s) {
+        if (goalBaseOf({ t: totals[s.id] }) >= t.thresholdCents) set[s.id] = 'sold';
+      });
+    });
+    return out;
+  }
+  // The highest tier this scout has reached, per the map. Replaces earnedTier() everywhere a
+  // DEADLINE could apply; earnedTier stays as the pure threshold rule underneath.
+  function earnedTierFor(scoutId, tiers, map) {
+    var earned = null;
+    for (var i = 0; i < tiers.length; i++) if ((map[tiers[i].id] || {})[scoutId]) earned = tiers[i];
+    return earned;
+  }
+  function tierIsClosed(t) { return !!t.dueBy && todayISO() > t.dueBy; }
+  // The deadline in words: a date in a box does not say whether it has passed, and that is the
+  // only thing anybody wants to know about it.
+  function tierDeadlineText(t) {
+    if (!t.dueBy) return 'No deadline — reach it any time this season.';
+    var days = daysUntil(t.dueBy);
+    if (days < 0) return 'Closed ' + fmtDate(t.dueBy) + ' — sales after that date do not count toward it.';
+    if (days === 0) return 'Closes today. Only sales dated today or earlier count.';
+    return 'Closes ' + fmtDate(t.dueBy) + ' — ' + days + ' day' + (days === 1 ? '' : 's') +
+      ' left. Only sales dated on or before it count.';
+  }
+  // What a tier picks up per scout: the SCOUT share of every line it covers that can actually
+  // raise a charge. This is what a missed deadline puts back onto a family.
+  function tierCoverCentsPerScout(t) {
+    var keys = {};
+    arrOf(t.covers).forEach(function (k) { keys[k] = true; });
+    var cents = 0;
+    allBudgetLines().forEach(function (r) {
+      if (keys[r.key] && lineRaisesCharges(r.line)) cents += r.line.scoutRateCents || 0;
+    });
+    return cents;
+  }
+  // Who missed a tier, by how much, and what it costs them. `makeup` is the gap capped at the
+  // fee: paying more to reach a tier than the tier saves you is nobody's rule.
+  function tierMissedRows(t, map) {
+    if (!t.dueBy) return [];
+    var totals = computeScoutTotals(t.dueBy);
+    var cover = tierCoverCentsPerScout(t);
+    var earned = map || tierEarnedMap();
+    return activeScouts().filter(function (s) { return !(earned[t.id] || {})[s.id]; })
+      .map(function (s) {
+        var base = goalBaseOf({ t: totals[s.id] });
+        var short = Math.max(0, (t.thresholdCents || 0) - base);
+        return { scout: s, base: base, short: short, cover: cover, makeup: Math.min(short, cover) };
+      })
+      .sort(function (a, b) { return a.short - b.short || a.scout.name.localeCompare(b.scout.name); });
+  }
   function packCoverage() {
     var tiers = sortedTiers();
     var out = {};
     if (!tiers.length) return out;
-    var totals = computeScoutTotals();
+    var earned = tierEarnedMap();
     activeScouts().forEach(function (s) {
-      var base = goalBaseOf({ t: totals[s.id] });
       tiers.forEach(function (t) {
-        if (base < t.thresholdCents) return; // every tier reached, not just the highest
+        // Every tier reached, not just the highest — and reached per the tier's own deadline.
+        if (!(earned[t.id] || {})[s.id]) return;
         arrOf(t.covers).forEach(function (k) {
           if (!out[k]) out[k] = {};
           out[k][s.id] = true;
@@ -7002,30 +7238,52 @@
     return sortedTiers().some(function (t) { return arrOf(t.covers).length > 0; });
   }
   // ---------------------------------------------------------------------------
-  // TIERS AS A PLANNING ASSUMPTION — owner ask, 2026-07-27.
+  // WHICH TIER THE PACK PLANS ON — owner ask, 2026-07-27 (revised the same day).
   //
   // packCoverage() is deliberately about what has ACTUALLY been sold, so in July it covers
   // nobody and the plan expects every family to pay every fee. A pack that intends popcorn to
   // pick those fees up is then planning the wrong year: it budgets income it means to give
   // away, and its sales goal comes out too low by exactly the amount it promised.
   //
-  // `assumeAllEarn` plans the promise instead: every scout is assumed to reach the tiers, so
-  // the fees a tier covers stop counting as family income and popcorn has to raise them. It
-  // is a deliberate switch, OFF by default, because it is an optimistic assumption about ten
-  // families and only the pack can decide to make it.
+  // The first cut of this was one switch meaning "assume every scout earns every tier", which
+  // in practice meant assuming everyone reached the TOP one. That is not a plan, it is a
+  // fantasy: Pack 569's top tier is $350 a scout covering $3,614 of fees, and the check said
+  // "short by $2,021.50" — correctly, and uselessly.
   //
-  // It moves the goal the SAFE way — up, never down. And it is checkable, which is the point
-  // of tierAssumption(): if every scout reaches the top covering tier, that is a known
-  // quantity of sales, and the commission on it either covers what the pack promised or does
-  // not. A pack should find that out in July, not in February.
+  // So the pack names ONE tier as the one it plans on: the level it genuinely expects every
+  // scout to reach. Coverage stacks, so planning on tier 2 plans on tiers 1 AND 2. Everything
+  // above it is a STRETCH — real rewards, honoured the moment a scout earns them, funded by the
+  // extra sales that earned them, and deliberately NOT in the budget. A pack should promise
+  // those from a position of "if you get there we can afford it", which is exactly what the
+  // per-tier margin check answers.
+  //
+  // `planOnTierId` is '' by default, so no pack record's goal moves until somebody chooses.
+  // Choosing moves the goal the SAFE way — up, never down.
   // ---------------------------------------------------------------------------
-  function assumeAllEarnTiers() {
-    return state.rewardTiers.assumeAllEarn === true && tierCoverageConfigured();
+  function plannedTier() {
+    var id = state.rewardTiers.planOnTierId;
+    if (!id) return null;
+    return sortedTiers().filter(function (t) { return t.id === id; })[0] || null;
   }
-  // Every collect key any tier points at. Coverage stacks, so one set is enough.
-  function tierCoveredKeys() {
-    var out = {};
+  // Tiers the plan counts on: the chosen one and everything below it, because coverage stacks.
+  function plannedTiers() {
+    var pt = plannedTier();
+    if (!pt) return [];
+    var out = [];
     sortedTiers().forEach(function (t) {
+      if (t.thresholdCents <= pt.thresholdCents) out.push(t);
+    });
+    return out;
+  }
+  function tierIsStretch(t) {
+    var pt = plannedTier();
+    return !!pt && t.thresholdCents > pt.thresholdCents;
+  }
+  // Every collect key the PLANNED tiers point at. A stretch tier's covers are not here — that
+  // is the whole distinction.
+  function plannedCoverKeys() {
+    var out = {};
+    plannedTiers().forEach(function (t) {
       arrOf(t.covers).forEach(function (k) { out[k] = true; });
     });
     return out;
@@ -7036,14 +7294,8 @@
   function tierScoutShareForLine(r) {
     return (r.line.scoutRateCents || 0) * lineRoster(r.line).length;
   }
-  // The promise, priced, and whether the sales that earn it pay for it. Null until a tier
-  // actually covers something.
-  function tierAssumption() {
-    var tiers = sortedTiers().filter(function (t) { return arrOf(t.covers).length > 0; });
-    if (!tiers.length) return null;
-    var top = tiers[tiers.length - 1];              // sortedTiers is ascending; coverage stacks
-    var roster = activeScouts().length;
-    var keys = tierCoveredKeys();
+  // What a set of collect keys costs the pack across the roster, itemised.
+  function coverCostForKeys(keys) {
     var picked = 0, lines = [];
     allBudgetLines().forEach(function (r) {
       if (!keys[r.key] || !lineRaisesCharges(r.line)) return;
@@ -7051,15 +7303,44 @@
       if (cents > 0) lines.push({ name: r.line.name || ('Untitled ' + r.kind), cents: cents });
       picked += cents;
     });
-    var sales = (top.thresholdCents || 0) * roster;
-    var pct = parseFloat(state.commissionPct);
-    var commission = (isFinite(pct) && pct > 0) ? Math.round(sales * pct / 100) : null;
+    return { picked: picked, lines: lines };
+  }
+  // The plan's promise, priced, and whether the sales that earn it pay for it. Null until some
+  // tier covers something.
+  function tierAssumption() {
+    var covering = sortedTiers().filter(function (t) { return arrOf(t.covers).length > 0; });
+    if (!covering.length) return null;
+    var pt = plannedTier();
+    var roster = activeScouts().length;
+    var cost = coverCostForKeys(pt ? plannedCoverKeys() : {});
+    var sales = pt ? (pt.thresholdCents || 0) * roster : 0;
+    var pct = commissionRates().goal;
+    var commission = (pt && pct != null && pct > 0) ? Math.round(sales * pct / 100) : null;
     return {
-      top: top, roster: roster, sales: sales, commission: commission,
-      picked: picked, lines: lines,
+      planned: pt, roster: roster, sales: sales, commission: commission, pct: pct,
+      picked: cost.picked, lines: cost.lines,
       // Positive = the commission on those sales more than pays for the rewards it earns.
-      net: commission == null ? null : commission - picked,
-      on: assumeAllEarnTiers()
+      net: commission == null ? null : commission - cost.picked,
+      on: !!pt,
+      // Everything above the planned tier, each with its own margin: reaching it means selling
+      // the gap up from the tier below, and the commission on that gap is what has to cover
+      // the extra fees it picks up. One scout at a time, because that is how it happens.
+      stretch: sortedTiers().filter(tierIsStretch).map(function (t, i, arr) {
+        var below = null;
+        sortedTiers().forEach(function (o) {
+          if (o.thresholdCents < t.thresholdCents && (!below || o.thresholdCents > below.thresholdCents)) below = o;
+        });
+        var gap = Math.max(0, (t.thresholdCents || 0) - (below ? below.thresholdCents || 0 : 0));
+        var extra = coverCostForKeys((function () {
+          var k = {}; arrOf(t.covers).forEach(function (x) { k[x] = true; }); return k;
+        })());
+        var perScout = roster > 0 ? Math.round(extra.picked / roster) : extra.picked;
+        var earns = (pct != null && pct > 0) ? Math.round(gap * pct / 100) : null;
+        return {
+          tier: t, gap: gap, earns: earns, costPerScout: perScout,
+          net: earns == null ? null : earns - perScout
+        };
+      })
     };
   }
   // Standings badges for one row: earned-tier name (navy) + gold "dues covered" marker.
@@ -7070,7 +7351,7 @@
   // coveredCents comes from packCoverageByScout(); pass {} to show tier names only.
   function tierBadgesFor(r, tiers, coveredCents) {
     if (!tiers.length || r.archived) return '';
-    var et = earnedTier(goalBaseOf(r), tiers);
+    var et = earnedTierFor(r.id, tiers, tierEarnedMap());
     if (!et) return '';
     var html = ' <span class="pill navy">' + esc(et.name || 'Tier') + '</span>';
     var cov = (coveredCents || {})[r.id] || 0;
@@ -7091,6 +7372,7 @@
   // and editable, but not competing with the standings you came to look at.
   function seasonSetupCard(opts) {
     var packT = computePackTotals();
+    var goalFs = fundingSummary();
     var collapsible = !!(opts && opts.collapsible);
     var open = collapsible ? !!ui.seasonSetupOpen : true;
     var h = '<div class="card">';
@@ -7100,7 +7382,9 @@
         (open ? 'Hide' : 'Commission &amp; goals') + '</button></div>';
       if (!open) {
         h += '<p class="small muted" style="margin:6px 0 0">Commission <strong>' +
-          esc(state.commissionPct || '—') + '%</strong> · Trail’s End goal <span class="money">' + fmt(packT.teGoal) +
+          esc(state.commissionPct || '—') + '%</strong>' +
+          (packT.ratesSplit ? ' <span class="muted">(online ' + esc(state.commissionPctOnline) + '%)</span>' : '') +
+          ' · Trail’s End goal <span class="money">' + fmt(packT.teGoal) +
           '</span> · Cash goal <span class="money">' + fmt(packT.cashGoal) + '</span></p></div>';
         return h;
       }
@@ -7110,6 +7394,11 @@
     return h +
       '<div class="row">' +
       '<label class="fld">Commission rate (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="commission" value="' + esc(state.commissionPct) + '" placeholder="e.g. 33"></label>' +
+      // Trail's End pays online at its own rate, which may be better or worse than the
+      // storefront one — Pack 569's is WORSE (35% storefront, 30% online), which is exactly why
+      // nothing here assumes a direction. Blank means "the same as the rate on the left", what
+      // every pack record meant before this field existed, so leaving it empty changes nothing.
+      '<label class="fld">Online rate (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="commission-online" value="' + esc(state.commissionPctOnline) + '" placeholder="same"></label>' +
       (state.goalIsDerived
         ? '<label class="fld">Trail’s End goal ($)<input class="money-in" value="' + dollars(packT.teGoal) + '" disabled aria-label="Trail\u2019s End goal, from the plan"></label>'
         : '<label class="fld">Trail’s End goal ($)<input class="money-in" inputmode="decimal" data-ch="goal" value="' + dollars(state.goalCents) + '" placeholder="e.g. 5000"></label>') +
@@ -7118,7 +7407,18 @@
       '</div>' +
       // The question this field kept raising: is it commission, or what we ring up?
       '<p class="small muted" style="margin:6px 0 0">The Trail’s End goal is <strong>what the pack sells</strong>, not what it keeps — ' +
-      'sell ' + fmt(packT.teGoal) + ' and ' + esc(state.commissionPct || '—') + '% commission covers the plan. ' +
+      'sell ' + fmt(packT.teGoal) + ' and ' + esc(goalFs.pctOk ? String(goalFs.pct) : '—') + '% commission covers the plan. ' +
+      // Which rate that is, and what beating it looks like. Worked out at the LOWER of the two
+      // so a mix of channels can only come in ahead — never short.
+      (goalFs.ratesSplit && goalFs.pctOk
+        ? 'That is your <strong>lower</strong> rate — ' +
+          (goalFs.goalIsOnline
+            ? 'online, at ' + esc(String(goalFs.onlinePct)) + '%. Every dollar rung up at a storefront or on a wagon earns ' +
+              esc(String(goalFs.basePct)) + '%, so it gets the pack there sooner.'
+            : 'storefront and wagon, at ' + esc(String(goalFs.basePct)) + '%. Online earns ' +
+              esc(String(goalFs.onlinePct)) + '%, so it gets there sooner.') +
+          ' Planning at the lower rate is what stops a season of the cheaper kind of sale leaving the pack short. '
+        : '') +
       'It is the <strong>minimum</strong>: it is worked out as exactly what the budget needs, with nothing spare. ' +
       'A stretch goal is whatever you want to aim past it for' +
       (packT.stretch ? '' : ' — leave it blank if you don’t have one') + '.' +
@@ -7243,7 +7543,11 @@
       '<label class="att-mini">paid by<select data-ch="line-funded" data-id="' + l.id + '" aria-label="Whose money is it">' +
         '<option value="pack"' + (mode === 'pack' ? ' selected' : '') + '>Pack pays</option>' +
         '<option value="families"' + (mode === 'families' ? ' selected' : '') + '>Families pay the pack</option>' +
-        '<option value="direct"' + (mode === 'direct' ? ' selected' : '') + '>Families pay Council direct</option>' +
+        // The third option NAMES the payee once there is one, because "paid directly" covers
+        // the council and a vendor equally and a fixed "Council" label hid half of that: a pack
+        // paying a campground or the Scout Shop could not see itself in the list.
+        '<option value="direct"' + (mode === 'direct' ? ' selected' : '') + '>Families pay ' +
+          esc(l.paidDirectTo || 'the council or a vendor') + ' direct</option>' +
         '</select></label>';
     // Who it is for — only where there is an event to hang it on. A line with no event (dues,
     // registration) is the whole roster by definition, and a den meeting already names its den.
@@ -7305,8 +7609,8 @@
     } else if (mode === 'families') {
       h += '<span class="brow-break"></span>' +
         '<span class="small muted brow-note">The pack fronts it and is paid back by families, so it raises a charge ' +
-        'against each family\u2019s account. If families pay the council or the Scout Shop themselves instead, ' +
-        'choose <em>Families pay Council direct</em> above.</span>';
+        'against each family\u2019s account. If families instead pay somebody else themselves \u2014 the council for a camp, ' +
+        'a campground, the Scout Shop for uniforms \u2014 pick the third option above and name them.</span>';
     }
     if (collectKey && lineRaisesCharges(l)) h += '<span class="brow-break"></span>' + lineChargeSummary(l);
     return h + '</div>';
@@ -7436,10 +7740,22 @@
     // Before this it either sat in the budget and overstated what the pack spends, or was
     // left out and understated what Scouting costs.
     if (bud.familyDirect > 0) {
+      // Itemised BY PAYEE, because "paid directly" covers two different conversations: council
+      // fees a leader can look up, and a vendor a family pays at the door. A single total
+      // cannot answer "how much of that is council?", which is the question the committee asks.
+      var fdBy = familyDirectByPayee();
       h += '<p class="small" style="margin:8px 0 0"><span class="pill navy">Paid directly</span> Families pay ' +
-        '<strong class="money">' + fmt(bud.familyDirect) + '</strong> straight to somebody else this year ' +
-        '(council camps, uniforms). That never passes through the pack’s account, so it isn’t in the figures above — ' +
+        '<strong class="money">' + fmt(bud.familyDirect) + '</strong> straight to somebody else this year' +
+        (fdBy.length > 1 ? ':' : ' — ' + esc(fdBy.length ? fdBy[0].payee : 'a council or a vendor') + '.') +
+        ' That never passes through the pack’s account, so it isn’t in the figures above — ' +
         'but it is part of what Scouting costs a family.</p>';
+      if (fdBy.length > 1) {
+        h += '<ul class="small" style="margin:4px 0 0;padding-left:18px;line-height:1.7">' +
+          fdBy.map(function (r) {
+            return '<li>' + esc(r.payee) + ' — <strong class="money">' + fmt(r.cents) + '</strong>' +
+              ' <span class="muted">' + r.names.map(esc).join(', ') + '</span></li>';
+          }).join('') + '</ul>';
+      }
     }
 
     // Phase 4 — the 510-278 worksheet, as the form actually reads: A − B = C, and the two
@@ -7472,7 +7788,13 @@
         '<td class="num money"><strong>' + fmt(fs2.C) + '</strong></td></tr>' +
       '</tbody></table>';
     if (fs2.pctOk) {
-      h += '<p class="small" style="margin:8px 0 0">At <strong>' + fs2.pct + '%</strong> commission that is a pack goal of ' +
+      h += '<p class="small" style="margin:8px 0 0">At <strong>' + fs2.pct + '%</strong> commission' +
+        // Say WHICH rate when there are two, and that it is deliberately the lower one.
+        (fs2.ratesSplit
+          ? ' <span class="muted">(your lower rate — ' + (fs2.goalIsOnline ? 'online' : 'storefront &amp; wagon') +
+            '; the other earns ' + esc(String(fs2.goalIsOnline ? fs2.basePct : fs2.onlinePct)) + '% and gets there sooner)</span>'
+          : '') +
+        ' that is a pack goal of ' +
         '<strong class="money">' + fmt(fs2.salesGoal) + '</strong> through Trail’s End' +
         (fs2.perScoutGoal != null ? ' — <strong class="money">' + fmt(fs2.perScoutGoal) + '</strong> per active scout' : '') + '.</p>';
       h += '<p class="small" style="margin:8px 0 0">' +
@@ -7507,6 +7829,23 @@
           '</ul>' +
           '<button type="button" class="btn small" data-act="direct-prompt-done">Got it — they all go through the pack</button></div>';
       }
+    }
+
+    // On the calendar, not in the budget — the way back from a deleted line.
+    var unb = unbudgetedActivities();
+    if (unb.length) {
+      h += '<div class="card"><h2 class="section display">On the calendar, not in the budget' +
+        ' <span class="pill navy">' + unb.length + '</span></h2>' +
+        '<p class="small muted" style="margin:0 0 10px">These activities are on the calendar with no budget line, so they cost the ' +
+        'plan nothing. That is right for a free hike \u2014 and it is also what a deleted line looks like. Add one back and it keeps ' +
+        'the calendar entry it already has.</p>';
+      unb.forEach(function (ev) {
+        h += '<div class="assign-row"><span class="assign-name">' + esc(ev.name || 'Untitled activity') +
+          ' <span class="small muted">' + (ev.date ? esc(fmtDate(ev.date)) : 'no date yet') + '</span></span>' +
+          '<button type="button" class="btn small" data-act="budget-this-event" data-id="' + esc(ev.id) + '">+ Add a budget line</button>' +
+          '</div>';
+      });
+      h += '</div>';
     }
 
     // Monthly activity plan
@@ -9043,6 +9382,15 @@
       (pack.commission == null ? '—' : fmt(pack.cashKept + pack.commission)) + '</span>' +
       '<span class="l">Total to the pack</span></div>' +
       '</div>' +
+      // Two rates means the commission figure above is a SUM of two calculations, and a
+      // treasurer checking it against a Trail's End statement needs to see both halves.
+      (pack.ratesSplit
+        ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Two rates</span> ' +
+          'Storefront &amp; wagon <strong class="money">' + fmt(pack.otherEligible) + '</strong> at ' +
+          esc(String(pack.pct == null ? '—' : pack.pct)) + '% = <strong class="money">' + fmt(pack.commissionOther || 0) + '</strong>' +
+          ' · online <strong class="money">' + fmt(pack.onlineEligible) + '</strong> at ' +
+          esc(String(pack.onlinePct == null ? '—' : pack.onlinePct)) + '% = <strong class="money">' + fmt(pack.commissionOnline || 0) + '</strong>.</p>'
+        : '') +
       '<p class="small muted" style="margin:8px 0 0">Trail’s End is sales plus donations entered in the app' +
       (pack.viaTE
         ? ', including cash donations — they’re being entered as Heroes &amp; Helpers, so everything here earns commission. ' +
@@ -9378,6 +9726,8 @@
     // Wave 21 — every per-scout "families pay" line is something a tier can cover.
     var coverable = perScoutCharges().filter(function (c) { return lineFamilyFunded(c.item); });
     var coverage = packCoverage();
+    var tierEarned = tierEarnedMap();
+    var planned = plannedTier();
     var configured = tierCoverageConfigured();
 
     var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
@@ -9398,8 +9748,35 @@
           '<input class="money-in" inputmode="decimal" data-ch="tier-threshold" data-id="' + t.id + '" value="' + dollars(t.thresholdCents) + '" placeholder="0.00" aria-label="Reach amount">' +
           '<input class="treward" data-ch="tier-reward" data-id="' + t.id + '" value="' + esc(t.reward) + '" placeholder="Reward (e.g. pack t-shirt)" aria-label="Reward">' +
           '<span class="small muted">' + k + ' scout' + (k === 1 ? '' : 's') + '</span>' +
+          // Where this tier stands relative to the one the pack plans on. Navy = the budget is
+          // counting on it; gold = a stretch, honoured but not budgeted.
+          (planned
+            ? (t.id === planned.id ? ' <span class="pill navy">planned</span>'
+              : (tierIsStretch(t) ? ' <span class="pill">stretch</span>' : ' <span class="pill navy">included</span>'))
+            : '') +
           tinyDangerBtn('del-tier:' + t.id, 'Remove ' + (t.name || 'tier')) +
-          '</div>';
+          '</div>' +
+          // The deadline. Sales dated after it do not count toward this tier, so it is part of
+          // the tier's definition rather than a reminder — hence it sits with the threshold.
+          '<div class="row" style="margin:8px 0 0;align-items:flex-end">' +
+          '<label class="fld">Reach it by<input type="date" data-ch="tier-due" data-id="' + t.id + '" value="' + esc(t.dueBy || '') + '"></label>' +
+          '<span class="small muted" style="flex:1 1 200px">' + esc(tierDeadlineText(t)) + '</span>' +
+          '</div>' +
+          // One tier at a time is "the level we plan on". Ticking another moves it; unticking
+          // plans on none. A tier below the chosen one is included automatically — coverage
+          // stacks — so it says so rather than offering a tick that would change nothing.
+          '<label class="chk-mini" style="margin-top:6px">' +
+          '<input type="checkbox" data-ch="tier-plan-on" data-id="' + t.id + '"' +
+          (planned && t.id === planned.id ? ' checked' : '') + '>Plan on this tier</label>' +
+          '<span class="small muted" style="display:block;margin-top:2px">' +
+          (planned && t.id === planned.id
+            ? 'The budget counts on every scout reaching this level, and on paying for what it covers.'
+            : (planned && !tierIsStretch(t)
+              ? 'Below the planned tier, so the budget already counts on it \u2014 coverage stacks.'
+              : (planned
+                ? 'A stretch beyond the planned tier: honoured when a scout earns it, not budgeted for.'
+                : 'Nothing is planned on yet. Tick the level you expect every scout to reach.'))) +
+          '</span>';
         // What this tier picks up. Wave 21 — a picker, not a checkbox list: with a tier per
         // reward level the same full list repeated on every tier is mostly empty boxes.
         // Chips show only what's chosen, and the select offers what's left — the same shape
@@ -9424,48 +9801,103 @@
             h += '<p class="small muted" style="margin:6px 0 0">Covers no charges — a reward in its own right.</p>';
           }
         }
+        // Who missed it, and the two ways out. Shown once the deadline has passed and only
+        // where the tier actually picks something up — a prize tier has no shortfall to pay.
+        if (tierIsClosed(t) && tierCoverCentsPerScout(t) > 0) {
+          var missed = tierMissedRows(t, tierEarned);
+          h += '<p class="eyebrow" style="margin:10px 0 4px">Missed the ' + esc(fmtDate(t.dueBy)) + ' deadline</p>';
+          if (!missed.length) {
+            h += '<p class="small" style="margin:0">Everybody reached it. Nothing to bill.</p>';
+          } else {
+            missed.forEach(function (m) {
+              h += '<div class="assign-row"><span class="assign-name">' + esc(m.scout.name) +
+                ' <span class="small muted">sold ' + fmt(m.base) + ' of ' + fmt(t.thresholdCents) +
+                ' — short <strong class="money">' + fmt(m.short) + '</strong></span></span>' +
+                '<span class="small">owes <strong class="money">' + fmt(m.cover) + '</strong></span>' +
+                (m.makeup > 0
+                  ? '<button type="button" class="btn small" data-act="tier-makeup:' + esc(t.id) + ':' + esc(m.scout.id) + '">' +
+                    'Paid ' + fmt(m.makeup) + ' to make the tier</button>'
+                  : '') +
+                '</div>';
+            });
+            h += '<p class="small muted" style="margin:6px 0 0">They either pay the fee, or pay the difference to reach the tier — ' +
+              'whichever the family chooses. The difference is capped at the fee, because paying more to reach a tier than the tier ' +
+              'saves you is not a rule anybody means. Recording it puts the money in the ledger as a family payment and covers ' +
+              'the fee from then on.</p>';
+          }
+        }
+        // And who took the second path, with a way back if it was recorded by mistake.
+        var made = arrOf(t.madeUp).map(function (sid) { return getScout(sid); }).filter(Boolean);
+        if (made.length) {
+          h += '<p class="eyebrow" style="margin:10px 0 4px">Paid the difference</p>';
+          made.forEach(function (s) {
+            h += '<div class="assign-row"><span class="assign-name">' + esc(s.name) +
+              ' <span class="small muted">counts as having reached this tier</span></span>' +
+              tinyDangerBtn('tier-unmakeup:' + t.id + ':' + s.id, 'Undo for ' + (s.name || 'this scout')) + '</div>';
+          });
+        }
         h += '</div>';
       });
     } else {
       h += '<div class="empty" style="margin:4px 0 6px">No reward tiers yet. Add one below — for example, reach $600 and the pack covers that scout’s dues.</div>';
     }
 
-    // PLAN ON IT? — owner ask, 2026-07-27. Coverage above is what has actually been sold, so
-    // in July it is nobody. A pack that means popcorn to pick these fees up can say so here,
-    // and then the plan stops counting them as money families will hand over.
-    //
-    // The check underneath is the whole reason this is safe to offer: assuming every scout
-    // reaches the top covering tier is assuming a known quantity of SALES, and the commission
-    // on those sales either pays for what was promised or does not.
+    // WHICH TIER DO YOU PLAN ON? Coverage above is what has actually been sold, so in July it is
+    // nobody. Naming a tier here is the pack saying "we expect everyone to get this far, and we
+    // are budgeting to pay for it" — and everything above that tier is a stretch the budget
+    // deliberately leaves out. The check is the whole reason this is safe to offer: a tier
+    // everybody reaches is a known quantity of SALES, and the commission on them either pays for
+    // what was promised or does not.
     var ta = tierAssumption();
     if (ta) {
-      h += '<hr class="divider"><label class="chk-mini" style="font-size:0.9rem">' +
-        '<input type="checkbox" data-ch="tier-assume-all"' + (ta.on ? ' checked' : '') + '>' +
-        'Plan as if every scout earns their tier</label>' +
-        '<p class="small muted" style="margin:6px 0 0">' +
-        (ta.on
-          ? 'The plan treats <strong class="money">' + fmt(ta.picked) + '</strong> of family fees as the pack\u2019s to raise, ' +
-            'so the Trail\u2019s End goal covers the rewards you are promising. Off, the plan expects families to pay them ' +
-            'and popcorn only has to make up the difference once scouts actually earn coverage.'
-          : 'Off: the plan expects families to pay these fees, and only counts coverage once a scout has really sold enough. ' +
-            'Tick it to budget for the promise instead \u2014 the goal goes UP by what the pack would pick up, never down.') +
-        '</p>';
-      if (ta.picked > 0) {
-        var reachWord = ta.roster === 1 ? 'scout reaches' : 'scouts reach';
-        h += '<p class="small" style="margin:8px 0 0">If all <strong>' + ta.roster + '</strong> ' + reachWord + ' ' +
-          '<strong>' + esc(ta.top.name || 'the top tier') + '</strong> (' + fmt(ta.top.thresholdCents) + '), ' +
-          'that is <strong class="money">' + fmt(ta.sales) + '</strong> sold' +
-          (ta.commission == null
-            ? ' \u2014 set a commission rate to see what it earns.'
-            : ' \u2192 <strong class="money">' + fmt(ta.commission) + '</strong> commission, against <strong class="money">' +
-              fmt(ta.picked) + '</strong> of fees the pack picks up.') + '</p>';
-        if (ta.net != null) {
-          h += '<p class="small" style="margin:4px 0 0">' + (ta.net >= 0
-            ? '<span class="pill navy">clears it</span> The commission those sales earn covers the rewards with <strong class="money">' +
-              fmt(ta.net) + '</strong> to spare.'
-            : '<span class="pill bad">short by ' + fmt(-ta.net) + '</span> The rewards cost more than the sales that earn them \u2014 ' +
-              'raise the tier, or cover less at it.') + '</p>';
+      h += '<hr class="divider"><p class="eyebrow">What the plan counts on</p>';
+      if (!ta.on) {
+        h += '<p class="small muted" style="margin:0">No tier chosen: the plan expects families to pay these fees, and only ' +
+          'counts coverage once a scout has really sold enough. Tick <strong>Plan on this tier</strong> on the level you ' +
+          'expect everyone to reach \u2014 the goal goes UP by what the pack would pick up, never down, and anything above ' +
+          'that tier stays a stretch.</p>';
+      } else {
+        h += '<p class="small" style="margin:0">Planning on <strong>' + esc(ta.planned.name || 'a tier') + '</strong> (' +
+          fmt(ta.planned.thresholdCents) + '): the plan treats <strong class="money">' + fmt(ta.picked) +
+          '</strong> of family fees as the pack\u2019s to raise, so the Trail\u2019s End goal covers what you are promising ' +
+          'at that level.</p>';
+        if (ta.picked > 0) {
+          var reachWord = ta.roster === 1 ? 'scout reaches' : 'scouts reach';
+          h += '<p class="small" style="margin:6px 0 0">If all <strong>' + ta.roster + '</strong> ' + reachWord + ' it, ' +
+            'that is <strong class="money">' + fmt(ta.sales) + '</strong> sold' +
+            (ta.commission == null
+              ? ' \u2014 set a commission rate to see what it earns.'
+              : ' \u2192 <strong class="money">' + fmt(ta.commission) + '</strong> commission at ' +
+                esc(String(ta.pct)) + '%, against <strong class="money">' + fmt(ta.picked) + '</strong> of fees.') + '</p>';
+          if (ta.net != null) {
+            h += '<p class="small" style="margin:4px 0 0">' + (ta.net >= 0
+              ? '<span class="pill navy">clears it</span> The commission those sales earn covers it with <strong class="money">' +
+                fmt(ta.net) + '</strong> to spare.'
+              : '<span class="pill bad">short by ' + fmt(-ta.net) + '</span> At this level the rewards cost more than the sales ' +
+                'that earn them \u2014 plan on a lower tier, raise this one, or cover less at it.') + '</p>';
+          }
         }
+      }
+      // The stretch tiers, each judged at the MARGIN: one scout going from the tier below to this
+      // one sells the gap, and the commission on that gap is what has to cover the extra fees.
+      // This is the question a pack actually has when it writes a big reward on a poster.
+      if (ta.stretch.length) {
+        h += '<p class="eyebrow" style="margin:12px 0 4px">Stretch tiers \u2014 not in the budget</p>';
+        ta.stretch.forEach(function (s) {
+          var verdict = s.net == null ? ''
+            : (s.net >= 0
+              ? ' <span class="pill navy">pays for itself</span>'
+              : ' <span class="pill bad">costs ' + fmt(-s.net) + ' a scout</span>');
+          h += '<div class="assign-row"><span class="assign-name">' + esc(s.tier.name || 'Tier') +
+            ' <span class="small muted">' + fmt(s.tier.thresholdCents) +
+            (s.gap ? ' \u2014 ' + fmt(s.gap) + ' more a scout' : '') +
+            (s.earns == null ? '' : ', earning ' + fmt(s.earns)) +
+            (s.costPerScout ? ' against ' + fmt(s.costPerScout) + ' of cover' : ', covering nothing') +
+            '</span></span>' + verdict + '</div>';
+        });
+        h += '<p class="small muted" style="margin:6px 0 0">Honoured the moment a scout earns one \u2014 they are just not ' +
+          'budgeted for, because nobody should plan a year on the best case. Each line asks whether the extra sales that ' +
+          'earn it pay for it, one scout at a time.</p>';
       }
     }
 
@@ -10251,6 +10683,48 @@
         '<div class="card"><p class="eyebrow">' + esc(o.title) + '</p>' +
         '<textarea class="export-box" id="exportBox" readonly>' + esc(o.text) + '</textarea>' +
         '<p class="small muted" style="margin:8px 0 0">If Download doesn’t work in this browser, use Copy and paste into a file or note.</p>' +
+        '</div></div></div>';
+    }
+    // Removing a budget line asks first, and says what goes with it. A pack lost planned
+    // activities to a single mis-tap on a crowded row; "are you sure" is worth the tap.
+    if (o.kind === 'confirm-del-line') {
+      var dl = getBudgetLine(o.lineId);
+      if (!dl) return '';
+      var f = budgetLineDeleteFacts(dl);
+      var goes = [], stays = [];
+      if (f.planned) goes.push('<strong class="money">' + fmt(f.planned) + '</strong> of planned cost');
+      if (f.charges) {
+        goes.push('<strong>' + f.charges + '</strong> charge' + (f.charges === 1 ? '' : 's') +
+          ' worth <strong class="money">' + fmt(f.chargeCents) + '</strong> against families' +
+          (f.settled ? ' (' + f.settled + ' already waived or forgiven)' : ''));
+      }
+      if (f.entries) {
+        stays.push('<strong>' + f.entries + '</strong> ledger entr' + (f.entries === 1 ? 'y' : 'ies') +
+          ' worth <strong class="money">' + fmt(f.actual) + '</strong> \u2014 money that really moved stays in the book, ' +
+          'but stops being attached to a plan');
+      }
+      if (f.event) {
+        stays.push('the calendar entry for <strong>' + esc(f.event.name || 'this activity') +
+          '</strong> \u2014 only the money side is removed, and you can budget it again from the calendar or from Money \u00b7 Budget');
+      }
+      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Remove this budget line?"><div class="overlay-inner"><div class="card">' +
+        '<h2 class="section display">Remove \u201c' + esc(dl.name || 'this line') + '\u201d from the budget?</h2>' +
+        (goes.length
+          ? '<p class="small" style="margin:0 0 4px"><strong>This goes:</strong></p><ul class="small" style="margin:0 0 10px;padding-left:18px;line-height:1.7"><li>' +
+            goes.join('</li><li>') + '</li></ul>'
+          : '<p class="small" style="margin:0 0 10px">Nothing is planned or charged on it yet.</p>') +
+        (stays.length
+          ? '<p class="small" style="margin:0 0 4px"><strong>This stays:</strong></p><ul class="small" style="margin:0 0 10px;padding-left:18px;line-height:1.7"><li>' +
+            stays.join('</li><li>') + '</li></ul>'
+          : '') +
+        (f.paidAgainst
+          ? '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>' + f.paidAgainst +
+            '</strong> of those charges belong to a family who has paid something. Removing the line does not refund anyone \u2014 ' +
+            'their payment stays in the ledger and will show as money in hand with nothing to settle.</p></div>'
+          : '') +
+        '<div class="row"><button type="button" class="btn danger" data-act="confirm-del-line:' + esc(dl.id) + '">Remove it</button>' +
+        '<button type="button" class="btn" data-act="close-overlay">Keep it</button></div>' +
+        '<p class="small muted" style="margin:10px 0 0">There is an Undo on the toast afterwards too.</p>' +
         '</div></div></div>';
     }
     if (o.kind === 'import') {
@@ -12651,24 +13125,23 @@
       });
       return;
     }
-    if (act.indexOf('del-activity:') === 0) {
-      // Wave 18(21) — low-stakes: single tap + Undo toast (was two-tap armed).
-      // RSVP + collect-grid cascades are captured before removal and restored on Undo.
+    // A budget line is NOT low-stakes, whatever Wave 18 assumed. The ✕ sits inches from
+    // Options on a crowded row, it was a single tap, and the only way back was a toast that
+    // vanished in six seconds — so a mis-tap in February quietly cost a pack a planned
+    // activity and every charge raised against it. Both deletes now ASK, and say what goes
+    // and what stays. (The undo toast is kept as well: two safety nets, not one.)
+    if (act.indexOf('del-activity:') === 0 || act.indexOf('del-expense:') === 0) {
+      var askId = act.split(':')[1];
+      if (!getBudgetLine(askId)) return;
+      ui.overlay = { kind: 'confirm-del-line', lineId: askId };
+      render(); return;
+    }
+    if (act.indexOf('confirm-del-line:') === 0) {
       var daId = act.split(':')[1];
-      var daIx = -1;
-      state.budget.activities.forEach(function (a, i) { if (a.id === daId) daIx = i; });
-      if (daIx === -1) return;
-      var daGone = state.budget.activities.splice(daIx, 1)[0];
-      // AUDIT FIX — take the line's charges with it. syncCharges deliberately KEEPS a
-      // settled charge (waived, forgiven, or paid against), so without this a deleted line
-      // leaves them behind for good, counted in every Dues total under "Removed line".
-      // Money that actually moved stays in the ledger either way.
-      var daChg = state.charges.filter(function (c) { return c.lineId === daId; });
-      state.charges = state.charges.filter(function (c) { return c.lineId !== daId; });
-      deleteWithUndo(daGone.name || 'activity', function () {
-        state.budget.activities.splice(Math.min(daIx, state.budget.activities.length), 0, daGone);
-        daChg.forEach(function (c) { state.charges.push(c); });
-      });
+      var gone = removeBudgetLine(daId);
+      ui.overlay = null;
+      if (!gone) { render(); return; }
+      deleteWithUndo(gone.label, gone.restore);
       return;
     }
     /* ----- Money · Ledger (Phase 0) ----- */
@@ -12807,23 +13280,7 @@
       showToast('Added the standard Trail’s End lineup — set cases and prices');
       return;
     }
-    if (act.indexOf('del-expense:') === 0) {
-      // Wave 18(21) — low-stakes: single tap + Undo toast (was two-tap armed).
-      // The dues-grid (collected) cascade is captured before removal, restored on Undo.
-      var dxId = act.split(':')[1];
-      var dxIx = -1;
-      state.budget.expenses.forEach(function (x, i) { if (x.id === dxId) dxIx = i; });
-      if (dxIx === -1) return;
-      var dxGone = state.budget.expenses.splice(dxIx, 1)[0];
-      // AUDIT FIX — as with activities: settled charges would otherwise outlive the line.
-      var dxChg = state.charges.filter(function (c) { return c.lineId === dxId; });
-      state.charges = state.charges.filter(function (c) { return c.lineId !== dxId; });
-      deleteWithUndo(dxGone.name || 'expense', function () {
-        state.budget.expenses.splice(Math.min(dxIx, state.budget.expenses.length), 0, dxGone);
-        dxChg.forEach(function (c) { state.charges.push(c); });
-      });
-      return;
-    }
+    // (del-expense: is handled with del-activity: above — both ask first.)
     if (act.indexOf('del-tier:') === 0) {
       // Wave 18(21) — low-stakes: single tap + Undo toast (was two-tap armed).
       var dtId = act.split(':')[1];
@@ -12833,6 +13290,42 @@
       var dtGone = state.rewardTiers.tiers.splice(dtIx, 1)[0];
       deleteWithUndo(dtGone.name || 'reward tier', function () {
         state.rewardTiers.tiers.splice(Math.min(dtIx, state.rewardTiers.tiers.length), 0, dtGone);
+      });
+      return;
+    }
+    // "Pay the difference to hit the tier" (owner ruling, 2026-07-27). Two things happen, and
+    // they are deliberately different KINDS of record: the money goes in the LEDGER as an
+    // ordinary family payment, because it really arrived and has to be reconcilable; the fact
+    // that the tier is now satisfied goes on the TIER, because that is a decision the pack
+    // made, not a transaction. From here the normal waiver machinery covers the fee.
+    if (act.indexOf('tier-makeup:') === 0) {
+      var mkP = act.split(':');
+      var mkT = state.rewardTiers.tiers.find(function (t) { return t.id === mkP[1]; });
+      var mkS = getScout(mkP[2]);
+      if (!mkT || !mkS) return;
+      var mkRow = tierMissedRows(mkT).filter(function (r) { return r.scout.id === mkS.id; })[0];
+      if (!mkRow || mkRow.makeup <= 0) return;
+      if (arrOf(mkT.madeUp).indexOf(mkS.id) === -1) mkT.madeUp = arrOf(mkT.madeUp).concat([mkS.id]);
+      state.ledger.push({
+        id: uid(), date: todayISO(),
+        description: 'Made up the difference to ' + (mkT.name || 'a reward tier') + ' — ' + (mkS.name || 'scout'),
+        amountCents: mkRow.makeup, direction: 'in', lineId: '', method: '', ref: '',
+        source: 'family', donor: '', scoutId: mkS.id, reconciled: false
+      });
+      showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
+        (mkT.name || 'the tier') + '.');
+      commit(); return;
+    }
+    if (act.indexOf('tier-unmakeup:') === 0) {
+      // Undoing only removes the pack's DECISION. The payment stays in the ledger, because it
+      // happened — deleting somebody's money to correct a tick would be the worse bug.
+      var umP = act.split(':');
+      var umT = state.rewardTiers.tiers.find(function (t) { return t.id === umP[1]; });
+      if (!umT) return;
+      arm('unmakeup-' + umP[1] + '-' + umP[2], function () {
+        umT.madeUp = arrOf(umT.madeUp).filter(function (sid) { return sid !== umP[2]; });
+        showToast('Removed — the payment stays in the ledger.');
+        commit();
       });
       return;
     }
@@ -13183,6 +13676,8 @@
     // Wave 11 — new-storefront name draft is transient; sync it without persisting/re-rendering.
     if (ch === 'sf-new-name') { ui.sfDraft.name = el.value; return; }
     if (ch === 'commission') { state.commissionPct = el.value; commit(); return; }
+    // Blank = the same as the main rate, so clearing this is how a pack goes back to one rate.
+    if (ch === 'commission-online') { state.commissionPctOnline = el.value; commit(); return; }
     if (ch === 'goal') { state.goalCents = toCents(el.value); commit(); return; }
     if (ch === 'cash-goal') { state.cashGoalCents = toCents(el.value); commit(); return; }
     if (ch === 'stretch-goal') { state.stretchGoalCents = toCents(el.value); commit(); return; }
@@ -13201,13 +13696,20 @@
     }
     // Wave 8: reward tiers
     if (ch === 'tier-dues') { state.rewardTiers.duesCents = toCents(el.value); commit(); return; }
-    // Plan on the promise, or wait for the sales. Either way it can only move the goal UP.
-    if (ch === 'tier-assume-all') { state.rewardTiers.assumeAllEarn = el.checked; commit(); return; }
-    if (ch === 'tier-name' || ch === 'tier-threshold' || ch === 'tier-reward') {
+    // Which tier the plan counts on. One at a time: choosing a tier replaces the last choice,
+    // and unticking plans on none. Either way it can only move the goal UP.
+    if (ch === 'tier-plan-on') {
+      state.rewardTiers.planOnTierId = el.checked ? (el.dataset.id || '') : '';
+      commit(); return;
+    }
+    if (ch === 'tier-name' || ch === 'tier-threshold' || ch === 'tier-reward' || ch === 'tier-due') {
       var tier = state.rewardTiers.tiers.find(function (t) { return t.id === el.dataset.id; });
       if (!tier) return;
       if (ch === 'tier-name') tier.name = el.value;
       else if (ch === 'tier-reward') tier.reward = el.value;
+      // The deadline changes who has earned the tier, so coverage and waivers re-derive on the
+      // next commit — which is this one. Nothing else has to be told.
+      else if (ch === 'tier-due') tier.dueBy = el.value;
       else tier.thresholdCents = toCents(el.value);
       commit(); return;
     }

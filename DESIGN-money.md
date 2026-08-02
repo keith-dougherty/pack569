@@ -41,6 +41,25 @@ Also removed: five functions and constants written during the phases and never c
 Tests went 137 → 143. The gap they had in common: they asserted that each phase's *new* code
 was right, and never that the *old* code around it had been taught about the new records.
 
+### The same defect from the other side, 2026-07-27
+
+The audit fixed what deleting a budget line does to the *records*. It did not ask whether the
+delete should have been that easy to trigger: the ✕ sat inches from Options on a crowded row,
+took a **single tap**, and offered a six-second Undo toast as the only way back. A pack lost
+planned activities to a mis-tap and had no idea what had gone.
+
+Both budget deletes now open a dialog that says **what goes** (the planned figure, the charges
+and their value) and **what stays** (ledger entries — money that moved does not un-move; the
+calendar entry, which is what makes the line re-addable). The Undo toast is kept as well, and
+removal happens in one function shared by both halves of the budget, because two copies of that
+cascade is exactly how the audit's second defect happened.
+
+The other half of the fix is a way back that does not depend on knowing where to look: the
+Budget lists **activities on the calendar with no budget line**, each with one tap to add it
+back onto the event it already has. A free hike belongs in that list too — which is the point.
+It is a *state*, not an error, so a deleted line is no longer indistinguishable from a plan
+nobody ever made.
+
 ### Multi-year scenario, 2026-07-26
 
 `test/scenario-browser.js` drives the real app through **three program years** and
@@ -114,10 +133,40 @@ is every line as `cost per person × number of people = total`, in fixed categor
 A) Total budgeted program expenses
 B) Income subtotal  (annual dues · prior-year surplus · other parent payments)
 C) Total fundraising need = A − B      →  C ÷ commission% = pack popcorn goal
+                                          (the LOWER of the pack’s two rates — see below)
                                        →  pack goal ÷ scouts = per-scout goal
 ```
 
 There is **no "actual spent" column anywhere on it.**
+
+#### Two commission rates, one goal
+
+*Owner ask, 2026-07-27.* Trail's End does not pay one rate: online direct sales usually earn more
+than storefront and wagon, because there is no product to buy and no shift to staff. So the
+commissionable money is **split by channel** and each half earns its own rate, rounded separately —
+the pack is paid on each, and rounding a blended figure once would be a cent out for no reason.
+Cash donations ride with storefront and wagon: they are handed over in person whatever the online
+rate is.
+
+`commissionPctOnline` blank means **"the same as the main rate"**, which is what every pack record
+meant before the field existed, so nothing moves until a second figure is typed.
+
+The derived **goal** is worked out at the **lower of the two rates**, whichever channel that turns
+out to be.
+
+> *Corrected 2026-07-27, same day.* This first said "the storefront/wagon rate, because online earns
+> more". Pack 569's rates are **35% storefront, 30% online** — the other way round from the usual
+> assumption — and at those rates a goal derived from 35% is short by 5% of every dollar that comes
+> in online. A minimum must never be wrong in that direction.
+
+The lower rate is the only choice that stays right however the two fall: sell everything through the
+better channel and the pack arrives early, which is the right way for a minimum to be wrong. The
+screens name which rate was used and what beating it looks like, so it never reads as an arbitrary
+figure.
+
+Deriving it from an assumed channel mix would be a guess dressed as arithmetic, and deriving it from
+the actual mix would move the goal every time somebody sold something — the circularity §3.2 already
+refuses elsewhere.
 
 **Actuals live in a separate ledger.** Per the [unit budgeting guidelines](https://lhcscouting.org/wp-content/uploads/2021/09/unit-budgeting-guidelines.pdf),
 the treasurer must *"enter all income and expenditures **under the proper budget item** in the
@@ -485,33 +534,91 @@ and it is the entire feature:
 waived = (charge.who === 'scout') && scoutReachedTier(charge.scoutId, line)
 ```
 
-#### Planning on the promise — `assumeAllEarn`
+#### Which tier the pack plans on — `planOnTierId`
 
 *Owner ask, 2026-07-27.* A waiver is a fact about sales that have happened, so in July it covers
 nobody, and the plan expects every family to pay every fee. A pack that intends popcorn to pick
 those fees up is then **planning the wrong year**: it counts income it means to give away, and its
 sales goal comes out low by exactly the amount it promised.
 
-`state.rewardTiers.assumeAllEarn` plans the promise instead. Every scout is assumed to reach the
-tiers, so the **scout share** of every tier-covered line stops being family income and becomes
-something fundraising has to raise. It is **off by default** — an optimistic assumption about ten
-families is the pack's call, not the app's — and it can only ever move the goal **up**, because the
-deduction is floored against what is actually owed (`mine = Math.min(mine, owed)`). A charge already
-waived left `fees` when it was waived and is not taken off a second time.
+> **Revised the same day.** The first cut was one switch — *"plan as if every scout earns their
+> tier"* — which in practice meant assuming everyone reached the **top** one. Pack 569's top tier is
+> $350 a scout covering $3,614 of fees, and the check duly reported **short by $2,021.50**: correct,
+> and useless. Assuming the best case is not a plan.
 
-The reason this is safe to offer is that it is **checkable**. Assuming everyone reaches the top
-covering tier is assuming a known quantity of sales, so the commission on those sales either pays
-for the rewards or it does not:
+So the pack names **one tier as the level it plans on**. Coverage stacks, so planning on tier 2
+plans on tiers 1 and 2; everything above is a **stretch**.
+
+|  | Planned tier and below | Stretch tiers |
+|---|---|---|
+| Honoured when a scout earns it | yes | **yes** |
+| In the budget | yes | **no** |
+| Effect on the goal | raises it by what the pack picks up | none |
+
+`planOnTierId` is `''` by default, so no pack record's goal moves until somebody chooses. Choosing
+moves it **up** only, because the deduction is floored against what is actually owed
+(`mine = Math.min(mine, owed)`), and a charge already waived left `fees` when it was waived and is
+not taken off a second time.
+
+**Both halves are checkable, and they are different questions.** For the planned tier: everybody
+reaching it is a known quantity of sales, so the commission either pays for what was promised or
+does not —
 
 ```
-all 11 scouts reach "Dues covered" ($300) → $3,300 sold → $1,056 commission
-                                          → $1,045 of fees the pack picks up
-                                          → clears it, $11 to spare
+all 13 scouts reach "Pack shirt" ($250) → $3,250 sold → $975 commission at 30%
+                                        → $1,196 of fees the pack picks up
+                                        → short by $221 — plan on a lower tier, raise this one,
+                                          or cover less at it
 ```
 
-Shown next to the toggle, both ways round — *clears it* or *short by* — because a pack promising
-rewards its own thresholds cannot fund should find that out in July, not in February. The worksheet
-prints the fees row **gross** and the deduction beneath it so the column still adds up to B.
+For a stretch tier the question is at the **margin**, because it happens one scout at a time: going
+from the tier below to this one means selling the gap, and the commission on that gap is what has to
+cover the extra fees it picks up —
+
+```
+"Adult Activites" $350 — $50 more a scout, earning $15, against $60 of cover
+                       → costs the pack $45 a scout who gets there
+```
+
+That is the number a pack wants before it writes a big reward on a poster, and it is invisible in any
+whole-pack average. Shown both ways round — *pays for itself* / *costs $X a scout* — because a
+promise the thresholds cannot fund should be found in July, not in February.
+
+The worksheet prints the fees row **gross** and the deduction beneath it so the column still adds up
+to B.
+
+#### A deadline on a tier — `dueBy`
+
+*Owner ruling, 2026-07-27: "a hard deadline, where they either have to hit goal target by the date
+or pay the difference to hit the tier."*
+
+Dues are due on a date. If a tier covers them, the tier has to close on that date too, or the pack
+never knows what it is owed. So a tier may carry a `dueBy`, and then:
+
+- It is measured on **sales dated on or before that date**, always — not only after it passes. A
+  sale on the 2nd cannot satisfy a deadline of the 1st, and saying so up front beats moving the
+  line later. (`computeScoutTotals(asOf)`. A record with **no** date still counts: there is nothing
+  to judge it by, and dropping a scout's sale over a blank field would take money off them for a
+  clerical gap.)
+- Once the date has passed the tier is **closed**. Whoever did not reach it is billed the fee it
+  would have covered — which needs no new mechanics at all, because an unwaived charge is the
+  default state.
+- Or they **pay the difference**: the gap between what they sold and the threshold, **capped at the
+  fee the tier covers**. Paying more to reach a tier than the tier saves you is not a rule anybody
+  means, so the cap is part of the rule rather than a kindness.
+
+Recording a makeup writes **two different kinds of thing**, deliberately: the money goes in the
+**ledger** as an ordinary family payment (it really arrived; it has to reconcile), and the fact that
+the tier is satisfied goes on the **tier** as `madeUp`. From there the normal waiver machinery
+covers the fee. Undoing it removes only the pack's decision — the payment stays, because deleting
+somebody's money to correct a tick would be the worse bug.
+
+One consequence worth stating: *total waived* now includes fees bought by a makeup payment as well
+as by fundraising. The ledger entry names which, so the Scout Account boundary stays measurable.
+
+**Who earned what is computed once**, deadline-aware, and read by coverage, the waivers, the
+standings badges and the deadline report (`tierEarnedMap`). Four screens disagreeing about whether
+a scout made a tier is the failure mode this shape exists to prevent.
 
 **Where this sits relative to the two models Scouting America describes.** The unit budgeting
 guidelines offer a choice:
