@@ -3719,6 +3719,59 @@ test('attendance is evidence, and the app never says a missed meeting costs the 
     'the copy says a missed meeting loses the adventure');
 });
 
+/* ========================================================================
+   The paid-direct prompt asks only what nobody has answered — 2026-08-02
+   ===================================================================== */
+
+test('a line the pack pays, or already has a payee, is never asked about', () => {
+  // The owner's objection: the row's own Paid-by control already says "families pay the pack",
+  // so why is a card asking again? Because on a carried-over line that value is what the
+  // familyPays→fundedBy upgrade wrote, not a decision. fundedSet is that distinction.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const norm = (line) => {
+    const d = preMigrationState();
+    d.budget.expenses = [Object.assign({ id: 'x', name: 'X' }, line)];
+    return ctx.normalizeState(d).budget.expenses[0];
+  };
+  eq(norm({ basis: 'flat', fundedBy: 'pack' }).fundedSet, true,
+    'a pack-paid line has no payee question, so it must not be asked about');
+  eq(norm({ basis: 'per-head', fundedBy: 'families', paidDirectTo: 'Council' }).fundedSet, true,
+    'a line that already names a payee has plainly been answered');
+  eq(norm({ basis: 'per-head', fundedBy: 'families', paidDirectTo: '' }).fundedSet, false,
+    'a families-pay-the-pack line with no payee is the ONE case that is genuinely unanswered');
+  eq(norm({ basis: 'per-head', fundedBy: 'families', paidDirectTo: '', fundedSet: true }).fundedSet, true,
+    'an answer already recorded was thrown away');
+  // freshLine starts unanswered; normalize immediately settles it because it is pack-funded.
+  ok(/fundedSet: false/.test(SCRIPT), 'freshLine does not carry the flag');
+});
+
+test('using the Paid-by control anywhere counts as answering', () => {
+  const fn = /if \(ch\.indexOf\('line-'\) === 0\) \{[\s\S]*?\n      commit\(\); return;\n    \}/.exec(SCRIPT);
+  ok(fn, 'the line change handler was not found');
+  ok(/bl\.fundedSet = true;/.test(fn[0]), 'changing Paid by does not settle the question');
+  ok(/bk === 'direct'\) \{ bl\.paidDirectTo = el\.value\.trim\(\); bl\.fundedSet = true; \}/.test(fn[0]),
+    'typing a payee does not settle the question');
+});
+
+test('the prompt lists only unanswered lines, and Done answers them', () => {
+  const card = /if \(!b\.directPrompted\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(card, 'the paid-direct card was not found');
+  ok(/lineFamilyFunded\(r\.line\) && lineThroughPack\(r\.line\) && !r\.line\.fundedSet/.test(card[0]),
+    'the card still lists lines somebody has already answered');
+  // It has to SAY why it is asking about a row that already reads "families pay the pack",
+  // or it looks like it is ignoring an answer sitting right there on the row.
+  ok(/that is \n?\s*'?what the upgrade wrote, not something anybody chose/.test(card[0]) ||
+    /what the upgrade wrote, not something anybody chose/.test(card[0]),
+    'the card never explains why it is asking about an already-set control');
+  const done = /if \(act === 'direct-prompt-done'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(done, 'the done action was not found');
+  ok(/r\.line\.fundedSet = true;/.test(done[0]), 'Done does not actually answer the listed lines');
+  ok(!/directPrompted = true/.test(done[0]),
+    'Done still mutes the question globally, so a line added later is never asked about');
+  // But the legacy flag is still READ, so a pack that dismissed the old card stays dismissed.
+  ok(/if \(!b\.directPrompted\) \{/.test(SCRIPT), 'the legacy dismissal is no longer honoured');
+});
+
 test('the source is text, with no control characters hiding in it', () => {
   // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
   // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened

@@ -1492,7 +1492,13 @@
       id: uid(), name: '', basis: 'flat',
       scoutRateCents: 0, leaderRateCents: 0, adultRateCents: 0, siblingRateCents: 0, flatCents: 0,
       includeLeaders: false,
-      fundedBy: 'pack', paidDirectTo: '', category: 'other'
+      fundedBy: 'pack', paidDirectTo: '', category: 'other',
+      // Has a person actually answered "who is paid for this?" on this line — as opposed to it
+      // holding whatever the upgrade from the old familyPays boolean assigned? The old model
+      // could not express "families pay the council direct" at all, so on a carried-over line
+      // `paidDirectTo: ''` is a DEFAULT, not a decision, and the app cannot tell the two apart
+      // by looking. This is how it tells them apart. Set by using the Paid-by control anywhere.
+      fundedSet: false
     };
     if (patch) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
     return l;
@@ -2127,6 +2133,10 @@
         l.paidDirectTo = '';
       }
       if (LINE_FUNDERS.indexOf(l.fundedBy) === -1) l.fundedBy = 'pack';
+      // Absent → false, so a carried-over line counts as unanswered and gets asked about once.
+      // A line the PACK pays is never asked (there is no payee question to settle), so treating
+      // it as answered keeps the prompt down to the lines it is actually about.
+      l.fundedSet = l.fundedSet === true || l.fundedBy !== 'families' || !!l.paidDirectTo;
       // Phase 4 — 510-278 categories. Existing lines default to 'other': guessing a
       // category from a free-text name would be wrong often enough to be worse than asking.
       if (LINE_CATEGORY_KEYS.indexOf(l.category) === -1) l.category = 'other';
@@ -9083,21 +9093,64 @@
     // families pay the pack or pay the council is a judgement call per line, and getting it
     // wrong in either direction misstates the books.
     if (!b.directPrompted) {
-      var famLines = allBudgetLines().filter(function (r) { return lineFamilyFunded(r.line) && lineThroughPack(r.line); });
+      // ONLY lines nobody has answered. The owner's question, 2026-08-02: "but don't I already
+      // have that established when I set this?" — pointing at the row's own Paid-by control,
+      // which already says "Families pay the pack". Quite right: if you chose that, you have
+      // answered, and this card was asking again. It could not tell a chosen value from one the
+      // upgrade assigned, because the old familyPays boolean had no way to say "paid direct" and
+      // every carried-over line came out of it reading exactly like a deliberate "through the
+      // pack". `fundedSet` is that distinction, and using the row control sets it.
+      var famLines = allBudgetLines().filter(function (r) {
+        return lineFamilyFunded(r.line) && lineThroughPack(r.line) && !r.line.fundedSet;
+      });
       if (famLines.length) {
-        h += '<div class="card"><h2 class="section display">One question about family-paid lines</h2>' +
-          '<p class="small" style="margin:0 0 8px">These are marked <strong>families pay</strong>. For each one: does the money ' +
-          'go <em>through the pack</em> (you collect it and pay the vendor), or do families pay somebody else <em>directly</em> — ' +
-          'a council camp, or the Scout Shop for uniforms?</p>' +
-          '<p class="small muted" style="margin:0 0 8px">Paid-directly money never enters the pack’s books: no charge, no ledger ' +
-          'entry, no effect on the balance. Set a payee on the line below and it moves out of the pack’s figures. ' +
-          'If the pack collects it, there is nothing to change.</p>' +
-          '<ul class="small" style="margin:0 0 10px;padding-left:18px;line-height:1.7">' +
+        // REWRITTEN 2026-08-02, because the owner read it and said "I am not sure what all of
+        // this is about" — which is a complete failure for a card whose only job is to be
+        // understood. Three things were wrong and all three are fixed here.
+        //
+        // 1. It asked a PER-LINE question and offered one pack-wide answer. The only control
+        //    was "they all go through the pack"; the actual payee control lives inside a
+        //    collapsed options panel on each budget row, which the card neither showed nor
+        //    linked to. Now the same `line-funded` select sits on every row of the list, so
+        //    the question is answered where it is asked.
+        // 2. The figure next to each line was the planned TOTAL with no label — on a card
+        //    about who pays whom, "Belt Loops — $637.00" reads as what one family owes.
+        //    Now it says what it is, and shows the per-head rate where there is one.
+        // 3. Nothing said why the card had appeared or what tapping the button would settle.
+        //
+        // Getting this wrong is not cosmetic: answering "through the pack" for a council camp
+        // families register and pay for themselves puts money in the pack's books that never
+        // touches its account, and the card never comes back to ask again.
+        h += '<div class="card"><h2 class="section display">One question about family-paid lines' +
+          ' <span class="pill navy">' + famLines.length + '</span></h2>' +
+          // Say straight away why it is asking about lines whose Paid-by control already reads
+          // "Families pay the pack". Without this the card looks like it is ignoring an answer
+          // that is right there on the row.
+          '<p class="small" style="margin:0 0 8px">Only these lines, and only once. Their <strong>Paid by</strong> ' +
+          'already says <em>families pay the pack</em> — but on a line carried over from the older budget, that is ' +
+          'what the upgrade wrote, not something anybody chose. The old model had no way to say <em>families pay the ' +
+          'council direct</em>, so every one of them came out looking the same.</p>' +
+          '<p class="small" style="margin:0 0 8px">So, for each: do you collect the money and pay the vendor, or do ' +
+          'families pay somebody else themselves — a council camp they register for, or the Scout Shop for uniforms?</p>' +
+          '<p class="small muted" style="margin:0 0 10px">It matters because <strong>paid-directly money never enters the ' +
+          'pack’s books</strong>: no charge raised, no ledger entry, no effect on the balance or the fundraising goal. ' +
+          'It still counts on the calendar as what the year costs a family.</p>' +
           famLines.map(function (r) {
-            return '<li>' + esc(r.line.name || ('Untitled ' + r.kind)) + ' — <span class="money">' + fmt(linePlanned(r.line)) + '</span></li>';
+            var fl = r.line, rate = lineRateSummary(fl);
+            return '<div class="assign-row"><span class="assign-name">' + esc(fl.name || ('Untitled ' + r.kind)) +
+              ' <span class="small muted">' + (rate ? esc(rate) : '<span class="money">' + fmt(linePlanned(fl)) + '</span> planned') +
+              '</span></span>' +
+              '<select data-ch="line-funded" data-id="' + esc(fl.id) + '" aria-label="Who is paid for ' + esc(fl.name || 'this line') + '">' +
+              '<option value="families" selected>Through the pack</option>' +
+              '<option value="direct">Families pay direct</option>' +
+              '</select></div>';
           }).join('') +
-          '</ul>' +
-          '<button type="button" class="btn small" data-act="direct-prompt-done">Got it — they all go through the pack</button></div>';
+          '<div class="row" style="margin-top:10px">' +
+          '<button type="button" class="btn small" data-act="direct-prompt-done">' +
+          'The rest all go through the pack</button></div>' +
+          '<p class="small muted" style="margin:8px 0 0">Answering a line here, or changing its <strong>Paid by</strong> on ' +
+          'its own row, settles it either way. Pick <strong>pay direct</strong> and the payee is filled in as “Council” — ' +
+          'rename it on the row if it is a campground or the Scout Shop.</p></div>';
       }
     }
 
@@ -14708,7 +14761,19 @@
       showToast('Added a budget line for “' + (btEv.name || 'Activity') + '”.');
       commit(); return;
     }
-    if (act === 'direct-prompt-done') { state.budget.directPrompted = true; commit(); return; }
+    // "The rest all go through the pack" is an ANSWER, not a mute: it settles the lines still
+    // listed, and deliberately does NOT set `directPrompted`. So a family-paid line that turns up
+    // later without anybody touching its Paid-by control — a seeded year, or a line created from
+    // a calendar event — gets asked about on its own, instead of inheriting a silence somebody
+    // agreed to a season earlier. `directPrompted` is still READ, so a pack that dismissed this
+    // before the per-line flag existed never sees the card again.
+    if (act === 'direct-prompt-done') {
+      allBudgetLines().forEach(function (r) {
+        if (lineFamilyFunded(r.line) && lineThroughPack(r.line)) r.line.fundedSet = true;
+      });
+      commit();
+      return;
+    }
     if (act === 'budget-toggle-past') { ui.budgetShowPast = !ui.budgetShowPast; render(); return; }
     if (act === 'line-options') { ui.lineOpen[el.dataset.id] = !ui.lineOpen[el.dataset.id]; render(); return; }
     // Phase 4 — the goal follows the plan, or it doesn't. Switching to manual seeds the box
@@ -15588,7 +15653,11 @@
           // "families pay the pack" means exactly that the pack collects it.
           bl.paidDirectTo = '';
         }
-      } else if (bk === 'direct') bl.paidDirectTo = el.value.trim();
+        // Using this control IS the answer, wherever it was used. So the one-time prompt stops
+        // asking about this line — which is the whole complaint it earned: it was re-asking a
+        // question the row already showed as settled.
+        bl.fundedSet = true;
+      } else if (bk === 'direct') { bl.paidDirectTo = el.value.trim(); bl.fundedSet = true; }
       else return;
       commit(); return;
     }
