@@ -774,8 +774,22 @@
   /* Phase 4 — the 510-278 A/B/C worksheet. */
   .fund-tbl { width: 100%; margin: 4px 0 0; font-size: 0.86rem; }
   .fund-tbl td { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  /* THE LABELS ARE SENTENCES. The global `th, td { white-space: nowrap }` is right for the data
+     grids — they sit in a .tbl-wrap and scroll sideways — but this table has no wrapper, so a
+     long label could not wrap and could not scroll: it pushed the table to 542px inside a 349px
+     card and the entire amount column was clipped off-screen with no scrollbar and no fade cue.
+     The one row that did it is "…of which leaders' places the pack covers ($13.85 a scout on the
+     goal)", so the bug only appeared on packs that cover their leaders. */
+  .fund-tbl td:not(.num) { white-space: normal; }
   .fund-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .fund-tbl .fund-sub { padding-left: 18px; color: var(--ink-soft); }
+  /* Which group a sub-row belongs to. Every indented row used to look alike, but two kinds live
+     here: "…of which" rows that BREAK DOWN A (adding them would double-count) and the rows that
+     SUM TO B. Without a divider between them the table reads as one flat list under A. */
+  .fund-tbl .fund-grp td {
+    padding-top: 9px; border-bottom: none; font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--ink-soft);
+  }
   .fund-tbl .fund-c td { border-bottom: none; border-top: 2px solid var(--line); padding-top: 7px; }
 
   /* ---------- Wave 3: dues collection, advancement, Scout Shop list ---------- */
@@ -3734,18 +3748,76 @@
   // rather than a flag, so it already covers a council and a vendor equally — this is where
   // that pays off: council fees and vendor fees are two different conversations, and a single
   // "paid directly" total cannot answer either. Biggest payee first.
+  // Carries each LINE's own figure, not just the payee subtotal. The card used to show the
+  // breakdown only when there were two or more payees, so a pack whose paid-direct lines all go
+  // to the council — which is most of them — saw a bare total with nothing behind it. That is
+  // exactly the "I don't know where this is coming from" case: $1,040 to Council, four lines,
+  // none of them named anywhere on the page.
   function familyDirectByPayee() {
     var by = {};
     allBudgetLines().forEach(function (r) {
       var l = r.line;
       if (lineThroughPack(l)) return;
       var cents = linePlanned(l);
-      if (!by[l.paidDirectTo]) by[l.paidDirectTo] = { payee: l.paidDirectTo, cents: 0, names: [] };
+      if (!by[l.paidDirectTo]) by[l.paidDirectTo] = { payee: l.paidDirectTo, cents: 0, lines: [] };
       by[l.paidDirectTo].cents += cents;
-      by[l.paidDirectTo].names.push(l.name || ('Untitled ' + r.kind));
+      by[l.paidDirectTo].lines.push({ name: l.name || ('Untitled ' + r.kind), cents: cents, line: l });
     });
-    return Object.keys(by).map(function (k) { return by[k]; })
-      .sort(function (a, b) { return b.cents - a.cents || a.payee.localeCompare(b.payee); });
+    return Object.keys(by).map(function (k) {
+      by[k].lines.sort(function (a, b) { return b.cents - a.cents || a.name.localeCompare(b.name); });
+      return by[k];
+    }).sort(function (a, b) { return b.cents - a.cents || a.payee.localeCompare(b.payee); });
+  }
+  // WHAT ONE FAMILY PAYS DIRECT — owner ask, 2026-08-02.
+  //
+  // The pack-wide total answers "what does the year cost across the pack". A parent asks the
+  // other question: what will *I* be handing the council? There is no single answer, and that
+  // is the point of computing it per family rather than dividing:
+  //
+  //   * a den-limited line only reaches families with a scout in those dens — Webelos Woods
+  //     costs a Lion family nothing;
+  //   * a per-head line is paid once per scout, so a two-scout family pays it twice;
+  //   * a per-family line is one fee however many scouts they bring.
+  //
+  // So this walks the real roster, family by family, and returns each family's own total. The
+  // caller reports the range and the per-den figure; nothing here averages anything, because an
+  // average of $70 and $100 is a number no family will ever pay.
+  function familyDirectPerFamily() {
+    var direct = allBudgetLines().map(function (r) { return r.line; })
+      .filter(function (l) { return !lineThroughPack(l); });
+    if (!direct.length) return [];
+    return activeFamilies().map(function (fam) {
+      var cents = 0;
+      direct.forEach(function (l) {
+        // familiesOf returns { key, members } — the members are the scouts a den limit applies to.
+        var mine = scoutsInDens(fam.members, lineDens(l));
+        if (!mine.length) return;
+        if (linePerFamily(l)) cents += l.scoutRateCents || 0;        // one fee, whoever they bring
+        else if (linePerHead(l)) cents += (l.scoutRateCents || 0) * mine.length;
+        // A flat line is a single figure for the whole pack, not a per-family price, so there
+        // is nothing to attribute to one family — it is left out rather than guessed at.
+      });
+      return { family: fam, scouts: fam.members, cents: cents };
+    }).filter(function (f) { return f.cents > 0; });
+  }
+  // The same figure for a ONE-SCOUT family in each den that has scouts — the shape a leader can
+  // actually put in a newsletter ("Wolves, budget $70"). Dens with nobody in them are left out:
+  // quoting a price for an empty den invites planning around a scout who does not exist.
+  function familyDirectPerDen() {
+    var direct = allBudgetLines().map(function (r) { return r.line; })
+      .filter(function (l) { return !lineThroughPack(l); });
+    if (!direct.length) return [];
+    var seen = {};
+    activeScouts().forEach(function (s) { seen[s.den || ''] = true; });
+    return DENS.concat(['']).filter(function (dn) { return seen[dn]; }).map(function (dn) {
+      var one = [{ id: '_one', den: dn }];
+      var cents = 0;
+      direct.forEach(function (l) {
+        if (!scoutsInDens(one, lineDens(l)).length) return;
+        if (linePerHead(l)) cents += l.scoutRateCents || 0;
+      });
+      return { den: dn || 'no den set', cents: cents };
+    });
   }
   // The rates, in the order they cost the pack money: what it plans first, then what a family
   // is billed. "family adult" rather than "adult", because the two used to be the same field
@@ -9008,19 +9080,54 @@
       // Itemised BY PAYEE, because "paid directly" covers two different conversations: council
       // fees a leader can look up, and a vendor a family pays at the door. A single total
       // cannot answer "how much of that is council?", which is the question the committee asks.
+      //
+      // AND ALWAYS ITEMISED BY LINE. The breakdown used to appear only when there were two or
+      // more payees, which is the wrong condition entirely: a pack whose paid-direct lines all
+      // go to the council — the common case — got a bare total with nothing behind it. The
+      // figure is unarguable and completely unaccountable, which is worse than either.
       var fdBy = familyDirectByPayee();
+      var fdOne = fdBy.length === 1;
       h += '<p class="small" style="margin:8px 0 0"><span class="pill navy">Paid directly</span> Families pay ' +
         '<strong class="money">' + fmt(bud.familyDirect) + '</strong> straight to somebody else this year' +
-        (fdBy.length > 1 ? ':' : ' — ' + esc(fdBy.length ? fdBy[0].payee : 'a council or a vendor') + '.') +
+        // A full stop either way. It used to end in a colon when there were several payees,
+        // which dangled — the list is a separate element that follows the whole paragraph, so
+        // the colon introduced the next sentence rather than the list.
+        (fdOne ? ' — ' + esc(fdBy[0].payee) + '.' : '.') +
         ' That never passes through the pack’s account, so it isn’t in the figures above — ' +
         'but it is part of what Scouting costs a family.</p>';
-      if (fdBy.length > 1) {
-        h += '<ul class="small" style="margin:4px 0 0;padding-left:18px;line-height:1.7">' +
-          fdBy.map(function (r) {
-            return '<li>' + esc(r.payee) + ' — <strong class="money">' + fmt(r.cents) + '</strong>' +
-              ' <span class="muted">' + r.names.map(esc).join(', ') + '</span></li>';
-          }).join('') + '</ul>';
-      }
+      // One payee: a flat list of its lines. Several: payee subtotals, each with its lines under
+      // it. Either way every line that put money in that total is named, with its own figure.
+      h += '<ul class="small" style="margin:4px 0 0;padding-left:18px;line-height:1.7">' +
+        fdBy.map(function (r) {
+          var kids = r.lines.map(function (x) {
+            return '<li>' + esc(x.name) + ' — <span class="money">' + fmt(x.cents) + '</span>' +
+              (lineRateSummary(x.line) ? ' <span class="muted">' + esc(lineRateSummary(x.line)) + '</span>' : '') +
+              '</li>';
+          }).join('');
+          return fdOne ? kids
+            : '<li>' + esc(r.payee) + ' — <strong class="money">' + fmt(r.cents) + '</strong>' +
+              '<ul style="margin:2px 0 0;padding-left:18px">' + kids + '</ul></li>';
+        }).join('') + '</ul>';
+      // And what it costs ONE family, which is the question a parent asks. Never the total
+      // divided by families: a den-limited line reaches only some of them, and a two-scout
+      // family pays every per-head line twice.
+      (function () {
+        var perFam = familyDirectPerFamily(), perDen = familyDirectPerDen();
+        if (!perFam.length) return;
+        var amounts = perFam.map(function (f) { return f.cents; });
+        var lo = Math.min.apply(null, amounts), hi = Math.max.apply(null, amounts);
+        var multi = perFam.filter(function (f) { return f.scouts.length > 1; }).length;
+        h += '<p class="small" style="margin:6px 0 0"><strong>Per family</strong> that is ' +
+          (lo === hi
+            ? '<strong class="money">' + fmt(lo) + '</strong> across the board'
+            : '<strong class="money">' + fmt(lo) + '</strong> to <strong class="money">' + fmt(hi) + '</strong>') +
+          ', because a den-limited event only reaches the dens it is for' +
+          (multi ? ' and a family with two scouts pays each per-scout fee twice' : '') + '. ' +
+          'For one scout: ' +
+          perDen.map(function (d) {
+            return esc(d.den) + ' <span class="money">' + fmt(d.cents) + '</span>';
+          }).join(' · ') + '.</p>';
+      })();
     }
 
     // Phase 4 — the 510-278 worksheet, as the form actually reads: A − B = C, and the two
@@ -9045,6 +9152,9 @@
           (fs2.leaderPerScout ? ' <span class="muted">(' + fmt(fs2.leaderPerScout) + ' a scout on the goal)</span>' : '') +
           '</td><td class="num money">' + fmt(fs2.leaderPlanned) + '</td></tr>'
         : '') +
+      // Everything from here down SUMS TO B. The two "…of which" rows above are inside A and
+      // must not be added to anything — this label is what makes that legible.
+      '<tr class="fund-grp"><td colspan="2">Income</td></tr>' +
       '<tr><td class="fund-sub">Carryover from last year</td><td class="num money">' + fmt(fs2.carryover) + '</td></tr>' +
       // Money the pack has decided popcorn will pick up is NOT in B — that is the whole point
       // of the assumption — but it has to be visible, and the two lines have to TIE. So the
@@ -10211,11 +10321,30 @@
       // to, showing "—" whenever nothing was scheduled. The card lower down already does the
       // job properly — name, date, and a tap through to it — so Home carries one of these
       // now instead of two that never appeared together.
+      // THE TWO TILES MUST MEASURE THE SAME THING. This pair used to be "Funds in" and
+      // "Of goal", which are computed from different bases and read as a contradiction: a pack
+      // with last year's money in the bank and nothing sold yet saw "$3,778.11 Funds in · 0% Of
+      // goal" and quite reasonably asked what that meant. Funds in is carryover PLUS commission
+      // PLUS fees collected PLUS other fundraisers — a Budget-page figure that only makes sense
+      // beside the formula the Budget page prints under it. Next to a sales-goal percentage it
+      // just looks like $3,778 of progress that somehow counts for nought.
+      //
+      // So Home shows what the goal is actually measured against — what the pack has SOLD —
+      // and names the carryover separately, as the thing it is: money already in the bank that
+      // was never part of this year's goal.
+      var soldPct = packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) : null;
       h += '<div class="empty" style="margin:0 0 10px">Nothing needs you right now.</div>' +
         '<div class="row">' +
-        '<div class="stat"><span class="v money">' + fmt(bud0().fundsIn) + '</span><span class="l">Funds in</span></div>' +
-        '<div class="stat"><span class="v">' + (packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) + '%' : '—') + '</span><span class="l">Of goal</span></div>' +
-        '</div>';
+        '<div class="stat"><span class="v money">' + fmt(packT.teEligible) + '</span><span class="l">Sold</span></div>' +
+        '<div class="stat"><span class="v">' + (soldPct == null ? '—' : soldPct + '%') + '</span><span class="l">Of goal</span></div>' +
+        '</div>' +
+        (soldPct == null
+          ? '<p class="small muted" style="margin:8px 0 0">No Trail’s End goal yet — it follows the plan once the budget has costs in it.</p>'
+          : '') +
+        (bud0().startingBalance > 0
+          ? '<p class="small muted" style="margin:8px 0 0"><span class="money">' + fmt(bud0().startingBalance) +
+            '</span> carried over from last year is already in the bank, and was never part of this year’s goal.</p>'
+          : '');
       var later = tasks.filter(function (t) { return t.tier === 'whenever'; })[0];
       if (later) h += '<hr class="divider"><p class="small muted" style="margin:0">Looking ahead: ' + esc(later.title.toLowerCase()) + '.</p>';
     }

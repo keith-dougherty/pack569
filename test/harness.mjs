@@ -3772,6 +3772,140 @@ test('the prompt lists only unanswered lines, and Done answers them', () => {
   ok(/if \(!b\.directPrompted\) \{/.test(SCRIPT), 'the legacy dismissal is no longer honoured');
 });
 
+test('every paid-direct line is named, however many payees there are', () => {
+  // The owner, looking at "Families pay $1,040.00 straight to somebody else this year — Council":
+  // "I don't know where this is coming from." Four lines fed that total and the page named none
+  // of them, because the breakdown rendered only when there were TWO OR MORE payees — and a
+  // pack's paid-direct lines nearly all go to the same council. An unarguable figure with
+  // nothing behind it is worse than either half on its own.
+  const fn = /function familyDirectByPayee\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'familyDirectByPayee() not found');
+  ok(/lines: \[\]/.test(fn[0]) && /cents: cents, line: l/.test(fn[0]),
+    'the payee groups do not carry each line’s own figure');
+  ok(!/names: \[\]/.test(fn[0]), 'the old names-only array is still there');
+  // The card must not gate the breakdown on the payee count any more.
+  const card = /if \(bud\.familyDirect > 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(card, 'the paid-direct card was not found');
+  ok(!/if \(fdBy\.length > 1\) \{/.test(card[0]),
+    'the itemised list is still conditional on there being several payees');
+  ok(/var fdOne = fdBy\.length === 1;/.test(card[0]), 'the single-payee case is not distinguished');
+  // One payee → a flat list of lines. Several → payee subtotals with the lines nested.
+  ok(/return fdOne \? kids/.test(card[0]), 'a single payee does not get a flat list of its lines');
+  ok(/<ul style="margin:2px 0 0;padding-left:18px">' \+ kids/.test(card[0]),
+    'several payees do not nest their lines under the subtotal');
+  ok(!/this year' \+\s*\n?\s*\(fdOne \? ' — ' \+ esc\(fdBy\[0\]\.payee\) \+ '\.' : \(fdBy\.length \? ':' : '\.'\)\)/.test(card[0]),
+    'the dangling colon before the next sentence is back');
+});
+
+test('what one family pays direct is computed per family, never by division', () => {
+  // Owner ask: show the per-family cost too. The total divided by families would be a number no
+  // family ever pays — a den-limited event reaches only some of them, a per-head fee is paid once
+  // per scout, and a per-family fee once however many scouts they bring.
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `${slice('familyKeyOf')}
+     ${slice('familiesOf')}
+     ${slice('activeFamilies')}
+     ${slice('scoutsInDens')}
+     ${slice('linePerHead')}
+     ${slice('linePerFamily')}
+     ${slice('lineThroughPack')}
+     ${slice('familyDirectPerFamily')}
+     ${slice('familyDirectPerDen')}
+     ${slice('DENS')}
+     function activeScouts() { return SCOUTS; }
+     function allBudgetLines() { return LINES.map(function (l) { return { kind: 'activity', line: l }; }); }
+     function lineDens(l) { return l.dens || []; }`, ctx);
+  ctx.SCOUTS = [
+    { id: 'a', den: 'Lion' }, { id: 'b', den: 'Wolf', familyId: 'a' },   // one family, two scouts
+    { id: 'c', den: 'Tiger' }, { id: 'd', den: '' }
+  ];
+  ctx.LINES = [
+    { name: 'Fall camp', basis: 'per-head', scoutRateCents: 3500, paidDirectTo: 'Council', dens: [] },
+    { name: 'Spring camp', basis: 'per-family', scoutRateCents: 3500, paidDirectTo: 'Council', dens: [] },
+    { name: 'Tigermania', basis: 'per-head', scoutRateCents: 2000, paidDirectTo: 'Council', dens: ['Lion', 'Tiger'] },
+    { name: 'Shirts', basis: 'per-head', scoutRateCents: 1000, paidDirectTo: '', dens: [] } // through the pack
+  ];
+  const perFam = vm.runInContext('familyDirectPerFamily()', ctx);
+  eq(perFam.length, 3, 'the two linked scouts must count as ONE family');
+  const byFirstDen = {};
+  perFam.forEach((f) => { byFirstDen[f.scouts[0].den || 'none'] = f.cents; });
+  // Lion+Wolf: fall 35x2 + spring 35 once + tigermania 20 for the Lion only = 125
+  eq(byFirstDen.Lion, 12500, 'a per-head fee is not doubled for a two-scout family, or the per-family fee is');
+  eq(byFirstDen.Tiger, 9000, 'Tiger: 35 + 35 + 20');
+  eq(byFirstDen.none, 7000, 'a scout with no den is in no den-limited event: 35 + 35');
+  // A line the pack collects must never appear in a paid-direct figure.
+  ok(!perFam.some((f) => f.cents % 1000 === 0 && f.cents === 1000), 'a through-the-pack line leaked in');
+  // THE INVARIANT: with every direct line priced per head or per family, the family totals add
+  // up to the pack-wide figure. If they ever diverge, one of the two is lying.
+  const total = perFam.reduce((n, f) => n + f.cents, 0);
+  eq(total, 12500 + 9000 + 7000, 'the per-family figures do not sum to the pack total');
+  // Per den, for a one-scout family.
+  const perDen = vm.runInContext('familyDirectPerDen()', ctx);
+  eq(perDen.map((d) => d.den + ':' + d.cents),
+    ['Lion:9000', 'Tiger:9000', 'Wolf:7000', 'no den set:7000'],
+    'the per-den figures are wrong, or an empty den was quoted a price');
+  // A flat line is a pack-wide figure, not a family price — it must not be attributed.
+  ctx.LINES = [{ name: 'Flat thing', basis: 'flat', flatCents: 50000, paidDirectTo: 'Council', dens: [] }];
+  eq(vm.runInContext('familyDirectPerFamily()', ctx).length, 0,
+    'a flat paid-direct line was split across families, which invents a price nobody was quoted');
+});
+
+test('Home pairs two figures measured against the same thing', () => {
+  // The owner, on a pack with last year's money banked and nothing sold: "$3,778.11 Funds in ·
+  // 0% Of goal — this does not seem correct, that is our carryover, not funds earned or a
+  // percent of our goal." Both halves of the objection were right. Funds in is carryover PLUS
+  // commission PLUS fees collected PLUS other fundraisers — a Budget-page figure that only
+  // reads correctly beside the formula the Budget page prints under it. Beside a sales-goal
+  // percentage it looks like $3,778 of progress that counts for nothing.
+  const card = /\/\* ----- Needs you ----- \*\/[\s\S]*?Looking ahead: /.exec(SCRIPT);
+  ok(card, 'the Needs you card was not found');
+  ok(/<span class="l">Sold<\/span>/.test(card[0]), 'Home does not show what the goal is measured against');
+  ok(/fmt\(packT\.teEligible\)/.test(card[0]), 'the Sold tile is not the Trail’s End eligible figure');
+  ok(!/fmt\(bud0\(\)\.fundsIn\)/.test(card[0]), 'the Funds in tile is back beside a goal percentage');
+  ok(!/<span class="l">Funds in<\/span>/.test(card[0]), 'the Funds in label is back on Home');
+  // Both tiles now come off teEligible/teGoal, so they can never disagree.
+  ok(/var soldPct = packT\.teGoal > 0 \? Math\.min\(100, Math\.round\(packT\.teEligible \/ packT\.teGoal \* 100\)\)/.test(card[0]),
+    'the percentage is derived from something other than the Sold figure');
+  // The carryover is still reported — as what it is, and only when there is one.
+  ok(/bud0\(\)\.startingBalance > 0/.test(card[0]), 'the carryover is shown even when there is none');
+  ok(/carried over from last year is already in the bank, and was never part of this year’s goal/.test(card[0]),
+    'the carryover is not explained as being outside the goal');
+  // No goal yet is a different sentence from 0% of a goal.
+  ok(/No Trail’s End goal yet/.test(card[0]), 'a pack with no goal is shown a bare em dash with no explanation');
+  // The Budget page keeps Funds in — there it sits directly above its own formula.
+  ok(/<span class="l">Funds in<\/span>/.test(SCRIPT), 'the Budget page lost its Funds in stat');
+  ok(/<strong>Funds in<\/strong> = carryover \(/.test(SCRIPT), 'the Funds in formula is gone');
+});
+
+test('the A/B/C worksheet can wrap its labels, and groups its rows', () => {
+  // The owner asked for the breakdown to be explained — because on a phone he could not SEE it.
+  // The global `th, td { white-space: nowrap }` is right for the data grids (they sit in a
+  // .tbl-wrap and scroll sideways), but this table has no wrapper, so the long leaders row
+  // pushed it to 542px inside a 349px card and the whole amount column was clipped off-screen
+  // with no scrollbar and no fade cue. Measured before: 542/349 overflowing, document 569px wide
+  // in a 375px viewport. After: 321/349, document 375px.
+  ok(/th, td \{[^}]*white-space: nowrap;/.test(SCRIPT_CSS),
+    'the global nowrap is gone — if it was removed on purpose this test is the wrong guard');
+  ok(/\.fund-tbl td:not\(\.num\) \{ white-space: normal; \}/.test(SCRIPT_CSS),
+    'the worksheet labels cannot wrap, so a long one clips the amounts off-screen');
+  ok(/\.fund-tbl td\.num \{[^}]*white-space: nowrap;/.test(SCRIPT_CSS),
+    'money is allowed to break across lines');
+  // Two kinds of indented row live here and they must not look alike: "…of which" rows break
+  // A down (adding them double-counts), the rest sum to B.
+  ok(/<tr class="fund-grp"><td colspan="2">Income<\/td><\/tr>/.test(SCRIPT),
+    'nothing separates the rows that sum to B from the ones that break down A');
+  ok(/\.fund-tbl \.fund-grp td \{/.test(SCRIPT_CSS), 'the group label row has no style');
+  // The group header must sit ABOVE the first income row, not anywhere else.
+  const tbl = /<table class="tbl fund-tbl">[\s\S]*?<\/table>/.exec(SCRIPT);
+  ok(tbl, 'the worksheet table was not found');
+  const grpAt = tbl[0].indexOf('fund-grp');
+  const leadersAt = tbl[0].indexOf('leaders\\u2019 places');
+  const carryAt = tbl[0].indexOf('Carryover from last year');
+  ok(grpAt > leadersAt && grpAt < carryAt,
+    'the Income label is not between the last "…of which" row and the first income row');
+});
+
 test('the source is text, with no control characters hiding in it', () => {
   // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
   // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened
