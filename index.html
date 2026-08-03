@@ -1295,6 +1295,9 @@
   .pv-prog { margin-top: 8px; }
   .pv-prog-note { margin: 5px 0 0; font-size: 0.86rem; }
   .pv-prog-note + .pv-prog-note { margin-top: 2px; }
+  /* The preview banner. Tinted, not a plain card: a leader who forgets they are in here will
+     report the pack's money as missing, so it has to read as scaffolding at a glance. */
+  .pv-preview { background: var(--accent-soft); border: 1px solid var(--accent); }
   .pv-foot { margin-top: 4px; }
   /* The normal print sheet hides <main> (only overlays print). Parents have no overlays,
      so let their schedule print instead of a blank page. */
@@ -3396,7 +3399,11 @@
     // parent on another device cannot have one view's month dragged around by the other's.
     parentCalMonth: '',
     parentCalDay: '',
-    parentCostOpen: {}   // { den: true } expanded rows on the parent "What a year costs" card
+    parentCostOpen: {},  // { den: true } expanded rows on the parent "What a year costs" card
+    // An admin looking at the parent view. Like the rest of `ui` it is NOT persisted, which is
+    // the safety property that matters: a reload always lands back in the leader app, so nobody
+    // can be stuck in a view-only mode by a flag written to storage.
+    previewParent: false
   };
 
   // Wave 15 — warn loudly on the FIRST failed save (not every keystroke); keep trying on
@@ -6399,8 +6406,29 @@
   // is built from sync.parentView alone, so nothing in `state` can leak into their screen
   // even if their device still has an old local copy from another mode.
   function parentMode() {
-    return accountsInForce() && sync.myRole === 'parent';
+    return previewingParent() || (accountsInForce() && sync.myRole === 'parent');
   }
+  // Owner ask, 2026-08-02: let an admin look at the parent view without a second account. A
+  // Cubmaster writing a camping page for parents to read has no way to check their own work
+  // otherwise, and "publish it and ask somebody" is not a review.
+  //
+  // Gated on canEdit() as well as the role, so the flag can never strand somebody in a view they
+  // cannot leave: if a pack demotes an admin mid-session the preview simply ends. The
+  // no-accounts case is allowed deliberately — a pack with no accounts layer has no admin to BE,
+  // and everyone holding the file already edits everything, so a preview reveals nothing new.
+  function canPreviewParent() {
+    return canEdit() && (isAdmin() || !accountsInForce());
+  }
+  function previewingParent() { return ui.previewParent === true && canPreviewParent(); }
+  // The document the parent app reads. A real parent gets the PUBLISHED copy; a previewing admin
+  // gets one built from the pack record as it stands right now, which is the thing they are
+  // actually checking — and it works on a pack that has never published at all, or has no cloud
+  // sync to publish to.
+  // ⚠ Built in render(), not here: renderParentApp and everything under it must never touch
+  // `state` (the harness asserts it by source scan), and that invariant is what makes the money,
+  // the dues and the leader roster unreachable from a parent's screen by construction.
+  var parentPreviewDoc = null;
+  function parentDoc() { return previewingParent() ? parentPreviewDoc : sync.parentView; }
   // Join link phase — a not-yet-approved user (leader or parent alike). They see ONLY the
   // waiting screen: no pack record, no parent view, no pack content of any kind.
   function pendingMode() {
@@ -7576,14 +7604,14 @@
   // showStandings:false). Then the parent document simply has no `standings` key, the
   // Standings tab isn't offered, and parentTab() can never resolve to it.
   function parentHasStandings() {
-    var pv = sync.parentView;
+    var pv = parentDoc();
     return !!(pv && Array.isArray(pv.standings));
   }
   // Camping earns its tab only when the pack has actually written something. A pack that never
   // opens the Camping tab publishes no `camping` key, and a parent is not shown an empty page
   // with nothing in it — the same rule the Standings tab has always followed.
   function parentHasCamping() {
-    var pv = sync.parentView;
+    var pv = parentDoc();
     return !!(pv && Array.isArray(pv.camping) && pv.camping.length);
   }
   function parentTabDefs() {
@@ -7601,7 +7629,7 @@
   // The published campouts, or [] — the one place the parent app reads that array, so every
   // caller below agrees on what "trip 2" means.
   function parentTrips() {
-    var pv = sync.parentView;
+    var pv = parentDoc();
     return (pv && Array.isArray(pv.camping)) ? pv.camping : [];
   }
   // Parents get a section strip on exactly ONE tab: Camping, one sub-tab per campout, the same
@@ -7699,10 +7727,16 @@
     var parent = !gate && parentMode();
     if (parent || gate) ui.overlay = null;
     document.body.classList.toggle('parent-mode', parent);
+    // The preview document, built HERE and read through parentDoc() — the parent render block
+    // must never reference `state`, and that is what makes the money and the roster unreachable
+    // from a parent's screen by construction rather than by a conditional. Rebuilt every render,
+    // so an admin who edits a camping page and flips to the preview sees what the pack record now
+    // says; cleared when not previewing, so a stale copy can never be served to a real parent.
+    parentPreviewDoc = previewingParent() ? buildParentView(state) : null;
 
     // Gates show no pack label at all (they may not even be allowed to know the name yet).
     document.getElementById('hdrPack').textContent = gate ? ''
-      : (parent ? ((sync.parentView && sync.parentView.packName) || '') : (state.packName || ''));
+      : (parent ? ((parentDoc() && parentDoc().packName) || '') : (state.packName || ''));
     var tabsEl = document.getElementById('tabs');
     var secEl = document.getElementById('sections');
     var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES);
@@ -7838,7 +7872,7 @@
   // The pack name is used only when the sanitized public view is already readable (it isn't
   // before membership), so these screens say "this Cub Scout pack" the rest of the time.
   function joinPackName() {
-    var pv = sync.parentView;
+    var pv = parentDoc();
     var n = (pv && pv.packName) ? String(pv.packName).trim() : '';
     return n || '';
   }
@@ -7928,8 +7962,12 @@
     // Join link phase — 'pending' no longer lands here at all (renderJoinWaiting does), so
     // the old "waiting for approval, here's the calendar meanwhile" banner is gone: approval
     // now genuinely gates the content instead of decorating it.
-    var pv = sync.parentView;
-    var h = '';
+    var pv = parentDoc();
+    // The way out, first thing on the page and impossible to miss. It has to be here rather than
+    // on a settings card, because while previewing there IS no settings card — the whole leader
+    // app is replaced. Its action is on the PARENT_ACTS allowlist for the same reason: every
+    // other leader action is refused in this mode, and one that is refused would be a trap.
+    var h = previewingParent() ? parentPreviewBanner() : '';
     if (!pv) {
       var loading = sync.mode === 'connecting' || sync.mode === 'local';
       h += '<div class="card"><h2 class="section display">' + (loading ? 'Loading…' : 'Nothing to show yet') + '</h2>' +
@@ -7945,6 +7983,16 @@
       : pTab === 'camping' ? renderParentCamping(pv)
       : renderParentSchedule(pv);
     return h + parentFooter(pv);
+  }
+  // "You are looking at the parent view." Deliberately loud: a leader who forgets they are in
+  // here will report the pack's money as missing. no-print, because what a parent sees printed
+  // should not carry a leader's scaffolding.
+  function parentPreviewBanner() {
+    return '<div class="card no-print pv-preview"><div class="spread">' +
+      '<p style="margin:0"><strong>Parent view preview.</strong> ' +
+      '<span class="small">This is what a family sees — built from the pack record as it stands now.</span></p>' +
+      '<button type="button" class="btn small primary" data-act="parent-preview-off">Back to leader view</button>' +
+      '</div></div>';
   }
   // The parent's camping page. No sub-tab strip in the parent app, so the trips stack — a pack
   // has two or three of these, not twenty. Reuses campFacts/proseText, which is the point: a
@@ -12294,6 +12342,8 @@
     h += renderMembersCard();
     // Join link phase — self-serve parent sign-up link (admins only).
     h += renderJoinCard();
+    // Owner ask, 2026-08-02 — see the family view without a second account.
+    h += renderParentPreviewCard();
 
     // Wave 17 — Share & backup, moved beside the sync card (was on the old Totals tab).
     // The hidden importFile input moves with it; its change handler is document-level.
@@ -12310,6 +12360,25 @@
       '<p class="small muted" style="margin:0 0 4px"><strong>iPhone / iPad (Safari):</strong> Share button → Add to Home Screen.</p>' +
       '<p class="small muted" style="margin:0"><strong>Android (Chrome):</strong> menu ⋮ → Add to Home screen.</p></div>';
     return h;
+  }
+
+  // "Look at the parent view." Renders for nobody who cannot use it, so there is no disabled
+  // button to explain: an editor who is not an admin, and every parent and viewer, simply do not
+  // see this card.
+  // It says what the preview is NOT, because the two are easy to confuse: it reads the pack record
+  // on this device, so it shows what families will see once this device's changes have synced and
+  // published — not necessarily what is on their screens this second.
+  function renderParentPreviewCard() {
+    if (!canPreviewParent()) return '';
+    return '<div class="card no-print"><h2 class="section display">The family view</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">See exactly what a parent sees — the schedule, the ' +
+      'campout pages and the standings, with none of the money, dues or roster. Built from this ' +
+      'device’s copy of the pack record, so it shows what families get once your changes have ' +
+      'published. Nothing is saved or sent by looking.</p>' +
+      '<div class="row"><button type="button" class="btn primary" data-act="parent-preview-on">' +
+      'Switch to the family view</button></div>' +
+      '<p class="small muted" style="margin:8px 0 0">A banner at the top brings you straight back, and so does ' +
+      'reloading the page.</p></div>';
   }
 
   /* ----- Pack · People — the roster that keeps the pack legal ----- */
@@ -16506,8 +16575,11 @@
   // Parent phase — the parent app only ever emits these four actions. Anything else that
   // somehow reaches the handler in that mode is ignored, so no code path can mutate the
   // pack record or read `state` on a parent's device.
+  // 'parent-preview-off' is on this list because it is the only way OUT of the preview: every
+  // other leader action is refused while parentMode() is true, so an exit that was not allowlisted
+  // would leave an admin stuck until they reloaded.
   var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-cal-prev', 'parent-cal-next',
-    'parent-cal-day', 'parent-cost-toggle', 'sign-out-google', 'toast-action'];
+    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -16636,6 +16708,17 @@
       ui.parentCostOpen[pcDen] = !ui.parentCostOpen[pcDen];
       render(); return;
     }
+    // In and out of the parent preview. Entering re-checks canPreviewParent() rather than trusting
+    // that the button was only rendered for an admin — a stale button on a demoted admin's screen
+    // must do nothing. Leaving is unconditional: whatever the role now says, it always works.
+    if (act === 'parent-preview-on') {
+      if (!canPreviewParent()) return;
+      ui.previewParent = true;
+      ui.parentTab = 'schedule';   // start where a parent starts, not on whatever tab was last used
+      ui.resetScroll = true;
+      render(); return;
+    }
+    if (act === 'parent-preview-off') { ui.previewParent = false; ui.resetScroll = true; render(); return; }
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }

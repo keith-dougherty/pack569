@@ -5396,6 +5396,87 @@ test('the ladder shows a rung with no measurable target, rather than a target of
   eq(ctx.parentTierLadder({}), '', 'a pack with no tiers gets an empty card');
 });
 
+/* ========================================================================
+   An admin can look at the parent view — 2026-08-02
+   ===================================================================== */
+
+test('the preview is gated so nobody can be stranded in a view they cannot leave', () => {
+  const fn = /function canPreviewParent\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'canPreviewParent() not found');
+  // canEdit() as WELL as the role: if a pack demotes an admin mid-session the preview must end
+  // on its own, not leave them holding a flag with no button to clear it.
+  ok(/return canEdit\(\) && \(isAdmin\(\) \|\| !accountsInForce\(\)\);/.test(fn[0]),
+    'the preview is not gated on both the role and edit rights');
+  // previewingParent() re-checks the gate rather than trusting the flag, so a stale ui flag on a
+  // demoted admin's screen resolves to false.
+  ok(/function previewingParent\(\) \{ return ui\.previewParent === true && canPreviewParent\(\); \}/.test(SCRIPT),
+    'the preview flag is trusted without re-checking who is holding it');
+  // NOT persisted: a reload is always an escape hatch. `ui` is never written to storage, and the
+  // flag lives there for exactly that reason.
+  ok(/previewParent: false/.test(SCRIPT), 'the preview flag has no declared default');
+  ok(!/previewParent/.test(/function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)?.[0] || ''),
+    'the preview flag reached the persisted pack record, so a reload could not clear it');
+  // The way out is on the allowlist. Every other leader action is refused while parentMode() is
+  // true, so an exit that was not allowlisted would be a trap.
+  ok(/var PARENT_ACTS = \[[^\]]*'parent-preview-off'/.test(SCRIPT),
+    'the exit action is not allowlisted, so the preview cannot be left');
+  // Entering re-checks; leaving is unconditional.
+  const on = /if \(act === 'parent-preview-on'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(on && /if \(!canPreviewParent\(\)\) return;/.test(on[0]),
+    'entering the preview does not re-check who is asking');
+  const off = /if \(act === 'parent-preview-off'\) \{[^}]*\}/.exec(SCRIPT);
+  ok(off && !/canPreviewParent/.test(off[0]), 'leaving the preview is conditional');
+});
+
+test('the preview reads the pack record without letting it into the parent block', () => {
+  // The invariant that makes the money, dues and roster unreachable from a parent's screen is
+  // structural: `state` never appears in the parent render block (asserted separately above). The
+  // preview needs a document built FROM state, so it is built in render() and read through
+  // parentDoc() — the one place that may know about both.
+  ok(/parentPreviewDoc = previewingParent\(\) \? buildParentView\(state\) : null;/.test(SCRIPT),
+    'the preview document is not built in render(), or not from the pack record');
+  ok(/function parentDoc\(\) \{ return previewingParent\(\) \? parentPreviewDoc : sync\.parentView; \}/.test(SCRIPT),
+    'parentDoc() no longer chooses between the preview and the published copy');
+  // Cleared when not previewing, so a stale build can never be served to a real parent — the
+  // `: null` branch is inside the assignment asserted above. It also starts empty:
+  ok(/var parentPreviewDoc = null;/.test(SCRIPT), 'the preview document does not start empty');
+  // That it is REACHED on every render is not something a source scan can show, and two attempts
+  // to assert it textually were both wrong (a harmless one-line `if` sits between the parent-mode
+  // decision and the assignment). Verified in a browser instead: entering and leaving the preview
+  // repeatedly serves a freshly built document each time, and a reload clears it.
+  // EVERY reader goes through parentDoc(). A reader left on sync.parentView would make the tabs
+  // and the content disagree — a preview whose Standings tab is offered from the published copy
+  // and filled from the live one.
+  const start = SCRIPT.indexOf('function parentHasStandings(');
+  const block = SCRIPT.slice(start, SCRIPT.indexOf('function renderStorefrontList('));
+  ok(!/sync\.parentView/.test(codeOnly(block)),
+    'a parent-app reader still reads the published copy directly, so the preview is inconsistent');
+  // Deliberately NOT a count of parentDoc() calls: the meaningful property is that no reader
+  // bypasses it, which the assertion above proves directly. A count is just a number to update.
+  ok(/var pv = parentDoc\(\);/.test(block), 'the parent app no longer takes its document from parentDoc()');
+});
+
+test('the preview announces itself, and the leader entry point hides from everyone else', () => {
+  const banner = /function parentPreviewBanner\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(banner, 'parentPreviewBanner() not found');
+  ok(/Parent view preview\./.test(banner[0]), 'the banner does not say what it is');
+  ok(/data-act="parent-preview-off"/.test(banner[0]), 'the banner has no way back');
+  // no-print: a parent's printed schedule should not carry a leader's scaffolding.
+  ok(/class="card no-print pv-preview"/.test(banner[0]), 'the banner prints, or is not tinted');
+  ok(/\.pv-preview \{ background: var\(--accent-soft\); border: 1px solid var\(--accent\); \}/.test(SCRIPT_CSS),
+    'the banner is styled as an ordinary card, so it reads as part of the parent view');
+  // Rendered first, before any content — a leader who forgets they are in here will report the
+  // pack's money as missing.
+  const app = /function renderParentApp\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/var h = previewingParent\(\) \? parentPreviewBanner\(\) : '';/.test(app[0]),
+    'the banner is not the first thing on the page');
+  // The entry card renders for nobody who cannot use it, so there is no disabled control to explain.
+  const card = /function renderParentPreviewCard\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(card && /if \(!canPreviewParent\(\)\) return '';/.test(card[0]),
+    'the entry card renders for people who cannot use it');
+  ok(/renderParentPreviewCard\(\);/.test(SCRIPT), 'the entry card is never rendered');
+});
+
 test('the source is text, with no control characters hiding in it', () => {
   // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
   // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened
