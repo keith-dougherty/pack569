@@ -5070,36 +5070,72 @@ test('the parent standings board names its columns', () => {
 });
 
 /* ========================================================================
-   The parent camping page has contents — 2026-08-02
+   The parent camping page: one campout per sub-tab — 2026-08-02
    ===================================================================== */
 
 test('camping anchors are unique across trips that share section names', () => {
   const ctx = sandbox(['campAnchor']);
-  eq(ctx.campAnchor(0), 'pc-t0', 'a trip anchor');
   eq(ctx.campAnchor(2, 5), 'pc-t2-s5', 'a section anchor');
   // Every trip carries the SAME six section titles, so a slug of the title would collide on
-  // every one of them and every link would jump to the first trip.
+  // every one of them and every link would jump to the wrong place. The trip index stays in the
+  // id even though one trip renders at a time, so a copied link says which campout it came from.
   const ids = new Set();
-  for (let t = 0; t < 3; t++) { ids.add(ctx.campAnchor(t)); for (let s = 0; s < 6; s++) ids.add(ctx.campAnchor(t, s)); }
-  eq(ids.size, 21, 'anchor collision across trips');
+  for (let t = 0; t < 3; t++) for (let s = 0; s < 6; s++) ids.add(ctx.campAnchor(t, s));
+  eq(ids.size, 18, 'anchor collision across trips');
 });
 
-test('the camping contents list every trip and section, and stay away when there is nothing to index', () => {
-  const ctx = sandbox(['esc', 'campAnchor', 'campContentsStrip']);
-  const trip = (name, secs) => ({ name: name, sections: secs.map((t) => ({ title: t, body: 'x' })) });
+test('the shown campout lists its own sections, and short trips get no index', () => {
+  const ctx = sandbox(['esc', 'campAnchor', 'campSectionNav']);
+  const trip = (secs) => ({ name: 'Fort Yargo', sections: secs.map((t) => ({ title: t, body: 'x' })) });
   const six = ['What to expect', 'What to pack', 'Getting there', 'Meals', 'Safety', 'Cost'];
-  const html = ctx.campContentsStrip([trip('Fort Yargo', six), trip('Rainey Mountain', six)]);
-  eq((html.match(/class="camp-toc-trip"/g) || []).length, 2, 'one link per trip');
-  eq((html.match(/<a href="#pc-t1-s/g) || []).length, 6, 'one link per section of the second trip');
-  ok(/href="#pc-t0"/.test(html) && /href="#pc-t1-s4"/.test(html), 'the hrefs match campAnchor');
+  const html = ctx.campSectionNav(trip(six), 1);
+  eq((html.match(/<a href="#pc-t1-s/g) || []).length, 6, 'one link per section');
+  ok(/href="#pc-t1-s4"/.test(html), 'the hrefs carry the shown trip’s index');
   ok(/<nav class="camp-toc" aria-label="On this page">/.test(html), 'the contents are not a landmark');
+  // The sub-tab strip already got you to this trip; only the sections are left to index, so
+  // the trip's own name has no link here.
+  ok(html.indexOf('camp-toc-trip') === -1, 'the trip links to itself');
   // A page you can already see does not need an index of itself.
-  eq(ctx.campContentsStrip([trip('Fort Yargo', ['What to pack', 'Meals'])]), '',
-    'a single short trip still gets a contents card');
-  eq(ctx.campContentsStrip([]), '', 'an empty camping page gets a contents card');
-  // Five jumps is the floor, so a trip with four sections is the first that earns one.
-  ok(ctx.campContentsStrip([trip('Fort Yargo', ['a', 'b', 'c', 'd'])]) !== '',
-    'the threshold excludes a trip with four sections');
+  eq(ctx.campSectionNav(trip(['What to pack', 'Meals', 'Safety']), 0), '',
+    'a three-section trip still gets an index');
+  eq(ctx.campSectionNav({ name: 'x' }, 0), '', 'a trip with no sections gets an index');
+  ok(ctx.campSectionNav(trip(['a', 'b', 'c', 'd']), 0) !== '',
+    'four sections is the floor and it excluded four');
+});
+
+test('parents get a campout sub-tab strip, and only on Camping', () => {
+  // The leader side has had one sub-tab per campout all along; a parent got all three trips
+  // stacked. Ids are the trip INDEX, because buildParentView publishes no trip id.
+  const defs = /function parentSectionDefs\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(defs, 'parentSectionDefs() not found');
+  ok(/if \(parentTab\(\) !== 'camping'\) return \[\];/.test(defs[0]),
+    'the strip is offered on tabs that have no sections');
+  ok(/parentTrips\(\)\.map\(function \(t, i\) \{ return \{ id: String\(i\), label: tripTabLabel\(t\) \}; \}\)/.test(defs[0]),
+    'the sub-tabs are not one per published trip');
+  // The strip is shared with the leader side, and one row must not leak the other's action.
+  const rend = /var secDefs = gate \? \[\][\s\S]*?secEl\.setAttribute\('aria-label'[^;]*;/.exec(SCRIPT);
+  ok(rend, 'the section-strip block has moved');
+  ok(/var secAct = parent \? 'parent-camp-trip' : 'section';/.test(rend[0]),
+    'a parent’s sub-tab emits the leader action');
+  ok(/\(parent \? '' : ' data-tab="' \+ esc\(wsNow\.id\) \+ '"'\)/.test(rend[0]),
+    'a parent sub-tab carries a workspace id, and wsNow is null for parents');
+  // Without the allowlist entry the handler drops the click and the strip does nothing.
+  ok(/var PARENT_ACTS = \[[^\]]*'parent-camp-trip'/.test(SCRIPT),
+    'parent-camp-trip is not in PARENT_ACTS, so the sub-tabs are inert');
+  // Trust nothing off the DOM: an index out of range must not select a trip that isn't there.
+  const handler = /if \(act === 'parent-camp-trip'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(handler, "the parent-camp-trip handler is missing");
+  ok(/if \(pcWant >= 0 && pcWant < parentTrips\(\)\.length\)/.test(handler[0]),
+    'the handler takes the clicked index without checking it');
+});
+
+test('the parent camping page renders one campout, not all of them', () => {
+  const fn = /function renderParentCamping\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderParentCamping() not found');
+  ok(/var ti = parentCampTrip\(\);/.test(fn[0]) && /var t = trips\[ti\] \|\| trips\[0\];/.test(fn[0]),
+    'the page does not select a single trip');
+  // The give-away for a regression to the stacked page.
+  ok(fn[0].indexOf('trips.forEach') === -1, 'the page still iterates every trip');
 });
 
 test('a camping jump clears the sticky topbar', () => {
@@ -5108,10 +5144,155 @@ test('a camping jump clears the sticky topbar', () => {
   const m = /\.camp-anchor \{ scroll-margin-top: (\d+)px; \}/.exec(SCRIPT_CSS);
   ok(m, 'the camping anchors have no scroll margin');
   ok(+m[1] >= 141, `scroll-margin-top ${m[1]}px is under the 122px topbar plus card padding`);
-  // The heading has to BE the anchor, or the margin lands on nothing.
-  ok(/class="section display camp-anchor" id="' \+ campAnchor\(ti\)/.test(SCRIPT) &&
-     /class="section display camp-anchor" id="' \+ campAnchor\(ti, si\)/.test(SCRIPT),
-    'a camping heading is anchored without the class that gives it clearance');
+  // The heading has to BE the anchor, or the margin lands on nothing. Only section headings are
+  // anchored now: the trip's own name is the top of its sub-tab, so nothing jumps to it.
+  ok(/class="section display camp-anchor" id="' \+ campAnchor\(ti, si\)/.test(SCRIPT),
+    'a camping section heading is anchored without the class that gives it clearance');
+});
+
+/* ========================================================================
+   What else the parent view publishes — 2026-08-02
+   ===================================================================== */
+
+const BPV = () => {
+  const m = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(m, 'buildParentView() not found');
+  return m[0];
+};
+// Absence assertions ("this key is NEVER published") have to read CODE, not prose. The comments
+// in buildParentView name the very things they forbid — "⚠ tier.madeUp NEVER publishes" — so a
+// naive scan of the source finds `madeUp` and fails on the warning that exists to prevent it.
+// Whole-line comments only: a trailing one is left alone, which errs towards a false FAILURE
+// rather than a false pass.
+const codeOnly = (src) => src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+
+test('an activity crosses over with its time, its end time and its address', () => {
+  // All three are editable, all three are shown to leaders, all three go into the .ics export —
+  // and the app NAGS a leader when an upcoming activity is missing a time or a place. It then
+  // published neither, so a family got a title and a date and had to text somebody.
+  const src = BPV();
+  ok(/var aRange = fmtTimeRange\(e\.time, e\.endTime\);/.test(src),
+    'an activity publishes no time, or only its start');
+  ok(/if \(aRange\) av\.times = \[aRange\];/.test(src), 'the time range never reaches the document');
+  ok(/if \(e\.location\) av\.where = String\(e\.location\);/.test(src), 'the location is still dropped');
+  // The nudge that chases leaders for exactly these two fields must keep matching them, or the
+  // app goes back to asking for something it throws away.
+  ok(/\(!a\.time \|\| !a\.location\)/.test(SCRIPT), 'the vague-activity nudge no longer checks time and place');
+  // A meeting's note IS its "Where" and has always published; its internal note must not.
+  ok(/kind: 'meeting'[^}]*detail: String\(e\.note \|\| ''\)/.test(src), 'a meeting stopped publishing its Where');
+  // A meeting has no end-time INPUT, so fmtTimeRange degrades to exactly what fmtClock returned —
+  // this is not a behaviour change today. It is pinned because the .ics importer writes endTime
+  // straight onto an event, and a meeting that arrives from BAND carrying one should show the
+  // range rather than silently dropping half of it.
+  ok(/var mRange = fmtTimeRange\(e\.time, e\.endTime\);/.test(src),
+    'a meeting imported with an end time would publish only its start');
+  ok(codeOnly(src).indexOf('noteInternal') === -1,
+    'the leaders-only note is reachable from the published view');
+  // An ACTIVITY's free-text note is not a location and is not published — only e.location is.
+  ok(!/av\.\w+ = String\(e\.note/.test(src), 'an activity now publishes its note');
+});
+
+test('a storefront publishes who is on each shift, and never a penny of it', () => {
+  const src = BPV();
+  ok(/var shifts = blocksInDayOrder\(sf\)\.map/.test(src),
+    'the shifts publish in stored order rather than the order the day happens');
+  ok(/return \{ when: fmtTimeRange\(b\.start, b\.end\), who: shiftWho\(b\) \};/.test(src),
+    'a published shift no longer carries who is on it');
+  ok(/if \(shifts\.length\) ev\.shifts = shifts;/.test(src), 'the shifts never reach the document');
+  // The whole reason shift money was withheld in the first place. Anchored on `b.` so the tier
+  // ladder's own salesCents key (a sell-through target, not a block's takings) is not a match.
+  const code = codeOnly(src);
+  ok(!/b\.salesCents|b\.donationsCents|blockShares\(/.test(code),
+    'a block’s money is reachable from the published view');
+  // First names only, and alphabetical like every other list of scouts in the app.
+  const who = /function shiftWho\(b\) \{[\s\S]*?\n      \}/.exec(src);
+  ok(who, 'shiftWho() not found');
+  ok(/pubName\[a\.scoutId\]/.test(who[0]), 'shift names come from somewhere other than the public-name map');
+  ok(/\.sort\(function \(x, y\) \{ return String\(x\)\.localeCompare\(String\(y\)\); \}\)/.test(who[0]),
+    'shift names are not sorted, so a rename reshuffles a shift');
+});
+
+test('one public-name map, so no two surfaces call the same child different things', () => {
+  const src = BPV();
+  // Built over the WHOLE roster before anything names a child.
+  ok(/var shown = shortNames\(all\.map\(function \(s\) \{ return s\.name; \}\)\);/.test(src),
+    'the public-name map is not built from the full roster');
+  ok(/name: pubName\[r\.id\] \|\| ''/.test(src), 'the standings board names children from its own pass');
+  // A SECOND shortNames() pass over a subset is exactly how the two boards drifted apart: the
+  // derby list keeps one, but only as the fallback for a racer who is not a roster scout at all
+  // (a sibling in the open class), and pubRacer() prefers the shared map.
+  ok(/function pubRacer\(raw, fallback\)/.test(src), 'pubRacer() not found');
+  ok(/racerName: pubRacer\(aw\.racerName, derbyNames\[winners\.length \+ i\]\)/.test(src),
+    'a design-award racer is not reconciled against the roster');
+  ok(/scoutName: pubRacer\(w\.scoutName, derbyNames\[i\]\)/.test(src),
+    'a derby winner is not reconciled against the roster');
+  eq((codeOnly(src).match(/shortNames\(/g) || []).length, 2,
+    'an unexpected number of shortNames() passes — every extra one can name a child differently');
+});
+
+test('the derby date is a calendar fact, not a standings one', () => {
+  const src = BPV();
+  const gate = src.indexOf('if (!withStandings) return out;');
+  const dbyRow = src.indexOf("kind: 'derby'");
+  ok(dbyRow > -1, 'no derby row is published');
+  ok(dbyRow < gate, 'the derby date sits behind the standings gate, so a calendar-only pack loses it');
+  // Deduped on the DATE alone — a rule a leader can predict. Fuzzy title matching would drop a
+  // real event, or double a row, depending on how they spelled it.
+  ok(/!events\.some\(function \(e\) \{ return e\.date === dbyDate; \}\)/.test(src),
+    'a pack with its own derby event gets a second row beside it');
+  ok(/if \(dbyDate && inYear\(dbyDate\)/.test(src), 'a derby outside the program year still publishes');
+  // The winners stay behind the gate: they are a board of children's names.
+  ok(src.indexOf('winners: winners.map') > gate, 'the derby winners escaped the standings gate');
+});
+
+test('the reward ladder publishes what a scout must SELL, and never who paid instead', () => {
+  const src = BPV();
+  ok(/salesCents: salesForCommission\(t\.thresholdCents\)/.test(src),
+    'the ladder publishes the raw threshold, which is commission — nobody sells commission');
+  const tcode = codeOnly(src);
+  ok(!/thresholdCents: /.test(tcode), 'the commission threshold is published as-is');
+  // madeUp names the families who paid the difference instead of selling it.
+  ok(tcode.indexOf('madeUp') === -1, 'tier.madeUp is reachable from the published view');
+  ok(!/t\.covers/.test(tcode), 'the tier’s internal collect keys are published');
+  const gate = src.indexOf('if (!withStandings) return out;');
+  ok(src.indexOf('var tiers = sortedTiers()') > gate,
+    'the ladder publishes in calendar-only mode, where there is no tab to show it on');
+});
+
+test('a parent sees which shifts are open, and an old document still shows its windows', () => {
+  const ctx = sandbox(['esc', 'parentShiftLines']);
+  const html = ctx.parentShiftLines({ shifts: [
+    { when: '10:00 AM–12:00 PM', who: ['Ada', 'Bowie G.'] },
+    { when: '12:00 PM–2:00 PM', who: [] }
+  ] });
+  eq((html.match(/class="sf-shift[ "]/g) || []).length, 2, 'one line per shift');
+  ok(/Ada, Bowie G\./.test(html), 'the names of a staffed shift');
+  ok(/class="sf-shift sf-open"/.test(html) && />Open</.test(html),
+    'an open shift is not marked, so a parent cannot see what needs covering');
+  // A document published before this shipped has `times` instead. Those render above as chips,
+  // so this adds nothing rather than blanking the storefront.
+  eq(ctx.parentShiftLines({ times: ['10:00 AM–12:00 PM'] }), '', 'an old document breaks');
+  eq(ctx.parentShiftLines({}), '', 'a storefront with no shifts breaks');
+});
+
+test('the ladder shows a rung with no measurable target, rather than a target of nothing', () => {
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentTierLadder']);
+  const rows = (html) => (html.match(/<tr>/g) || []).length;
+  const full = ctx.parentTierLadder({ tiers: [
+    { name: 'Dues covered', reward: 'The pack pays your dues', note: '', dueBy: '2026-10-15', salesCents: 17500 },
+    { name: 'Camp week', reward: 'A week of camp', note: 'Sign up by the November meeting.', dueBy: '', salesCents: 87500 }
+  ] });
+  ok(/\$175\.00 sold/.test(full), 'the sell-through target');
+  ok(/any time/.test(full), 'a tier with no deadline should say so, not show a blank');
+  ok(/Sign up by the November meeting\./.test(full), 'the tier note is dropped');
+  eq(rows(full), 3, 'a header row and one row per tier');
+  // salesForCommission returns null when the pack has typed no rate at all.
+  const noRate = ctx.parentTierLadder({ tiers: [
+    { name: 'Pack tee', reward: 'Pack t-shirt', note: '', dueBy: '', salesCents: null }
+  ] });
+  ok(/Pack t-shirt/.test(noRate), 'an unmeasurable rung is dropped entirely, reward and all');
+  ok(!/\$0\.00/.test(noRate), 'an unmeasurable rung shows a target of zero');
+  eq(ctx.parentTierLadder({}), '', 'a pack with no tiers gets an empty card');
 });
 
 test('the source is text, with no control characters hiding in it', () => {

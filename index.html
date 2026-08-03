@@ -3371,8 +3371,13 @@
     budgetShowPast: false,  // Budget — reveal the already-gone months that carry no lines
     forgiveFor: null,   // Phase 3b — charge id showing the inline "why" form
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
-    parentTab: 'schedule',    // 'schedule' | 'standings'
-    parentEarlierOpen: false  // "Earlier this year" disclosure on the parent Schedule tab
+    parentTab: 'schedule',    // 'schedule' | 'camping' | 'standings'
+    parentEarlierOpen: false, // "Earlier this year" disclosure on the parent Schedule tab
+    // Which campout the parent Camping tab is showing, as an INDEX into the published
+    // camping array — the published trips carry no ids (buildParentView rebuilds each one
+    // field by field, and a leader's local trip id is not a parent's business). Like the
+    // rest of `ui` this is never persisted, so every visit opens on the first trip.
+    parentCampTrip: 0
   };
 
   // Wave 15 — warn loudly on the FIRST failed save (not every keystroke); keep trying on
@@ -6848,13 +6853,37 @@
       var winStart = py + '-09-01', winEnd = (py + 1) + '-08-31';
       function inYear(d) { return typeof d === 'string' && d >= winStart && d <= winEnd; }
 
+      // ONE public-name map, built over the WHOLE roster before anything here names a child, so
+      // every surface that shows a scout agrees on what to call them. Two surfaces calling the
+      // same child different things ("Bowie" on the shift list, "Bowie G." on the standings) is
+      // worse than an extra initial — the initial exists precisely so a parent can pick their
+      // own child out, and it can only do that if it is the same everywhere.
+      var pubName = {};
+      (function () {
+        var all = state.scouts;
+        var shown = shortNames(all.map(function (s) { return s.name; }));
+        all.forEach(function (s, i) { pubName[s.id] = shown[i]; });
+      })();
+      // First names only, alphabetical — the same order the leader's shift list uses, so a
+      // rename never reshuffles a shift on either side.
+      function shiftWho(b) {
+        return ((b && b.assignments) || []).map(function (a) { return pubName[a.scoutId]; })
+          .filter(Boolean)
+          .sort(function (x, y) { return String(x).localeCompare(String(y)); });
+      }
+
       var events = [];
       state.storefronts.forEach(function (sf) {
         if (!inYear(sf.date)) return;
-        var times = (sf.blocks || []).map(function (b) { return fmtTimeRange(b.start, b.end); })
-          .filter(function (t) { return !!t; });
+        // 2026-08-02 — the shift WINDOWS were published without who was on them, so the two
+        // questions every family actually asks about popcorn ("which shift are we on", "do you
+        // still need someone Saturday") could only be answered by a group text. First names
+        // only, from the shared map above; never the money on a block.
+        var shifts = blocksInDayOrder(sf).map(function (b) {
+          return { when: fmtTimeRange(b.start, b.end), who: shiftWho(b) };
+        }).filter(function (s) { return !!s.when; });
         var ev = { kind: 'storefront', date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
-        if (times.length) ev.times = times;   // shift windows only — never the money on a block
+        if (shifts.length) ev.shifts = shifts;
         events.push(ev);
       });
       // Phase 2 — one pass over events[]. Parents get the calendar and nothing else: no
@@ -6862,9 +6891,12 @@
       state.events.forEach(function (e) {
         if (!inYear(e.date)) return;         // undated planning rows never surface
         if (eventIsMeeting(e)) {
+          // A meeting's `note` IS its "Where" — that is what the field is labelled in the editor
+          // and it has always published. Meetings have no end-time input at all, so
+          // fmtTimeRange degrades to the start time exactly as fmtClock did.
           var mv = { kind: 'meeting', date: e.date, title: eventLabel(e).replace(' · ', ' — '), detail: String(e.note || '') };
-          var clock = fmtClock(e.time);
-          if (clock) mv.times = [clock];
+          var mRange = fmtTimeRange(e.time, e.endTime);
+          if (mRange) mv.times = [mRange];
           events.push(mv);
           return;
         }
@@ -6873,8 +6905,30 @@
         // It goes in the existing detail string rather than a new field, so the published
         // shape is unchanged.
         var aDens = denListLabel(eventDens(e));
-        events.push({ kind: 'activity', date: e.date, title: eventLabel(e), detail: aDens ? aDens + ' only' : '' });
+        // 2026-08-02 — an activity used to cross over as a title and a date, nothing else. Its
+        // start time, end time and location are all editable, all shown to leaders in three
+        // places, and all exported to (and imported from) .ics — and the app NAGS a leader when
+        // an upcoming activity is missing a time or a place (see the 'activities' nudge). Then
+        // it published neither, so a family got "Blue and Gold Banquet, Sat Feb 21" and had to
+        // text somebody for the hour and the address.
+        var av = { kind: 'activity', date: e.date, title: eventLabel(e), detail: aDens ? aDens + ' only' : '' };
+        var aRange = fmtTimeRange(e.time, e.endTime);
+        if (aRange) av.times = [aRange];
+        if (e.location) av.where = String(e.location);
+        events.push(av);
       });
+      // The derby's NAME AND DATE, and nothing else, on the schedule where a parent looks for
+      // "when is the derby". Deliberately outside the standings gate below: the winners are a
+      // popcorn-money-adjacent board, but the date is a plain calendar fact, and a pack running
+      // a calendar-only view lost it entirely.
+      // Skipped when the pack already has a calendar entry that day — a leader who made a real
+      // event for the derby should not see the app add a second row beside it. Matched on the
+      // DATE alone, never on a fuzzy title: an exact rule a leader can predict.
+      var dby = state.derby || {};
+      var dbyDate = String(dby.date || '');
+      if (dbyDate && inYear(dbyDate) && !events.some(function (e) { return e.date === dbyDate; })) {
+        events.push({ kind: 'derby', date: dbyDate, title: String(dby.name || 'Pinewood Derby'), detail: '' });
+      }
       events.sort(function (a, b) {
         return String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title));
       });
@@ -6915,10 +6969,14 @@
       // apart, so a parent can still find their own child on the board. Names arriving
       // from a Trail's End import are full names, which is exactly why this happens here,
       // at the point of publication, rather than being left to whoever typed the roster.
-      var publicNames = shortNames(ranked.map(function (r) { return r.name; }));
-      var standings = ranked.map(function (r, i) {
+      // 2026-08-02 — from the shared `pubName` map rather than a second shortNames() pass over
+      // this list alone, so the board and the shift lists cannot disagree about a child's name.
+      // Consequence worth knowing: collisions now resolve across the WHOLE roster, so a scout
+      // who shares a first name with somebody archived-and-inactive gains an initial they did
+      // not have before. That is the safer direction — one more initial, one fewer ambiguity.
+      var standings = ranked.map(function (r) {
           return {
-            name: publicNames[i],
+            name: pubName[r.id] || '',
             den: String(r.den || ''),               // the rank only — never s.denLabel or s.note
             combinedCents: r.t.combined,
             goalPct: (pack.target && !r.archived) ? Math.round(goalBaseOf(r) / pack.target * 100) : null
@@ -6954,22 +7012,56 @@
         winners.map(function (w) { return w.scoutName; })
           .concat(rawAwards.map(function (aw) { return aw.racerName; }))
       );
+      // …but a roster scout is named from the SHARED map, so the derby board and the standings
+      // board never render the same child differently. The derby records a racer as free text —
+      // a sibling or a parent can race the open class — so there is no id to key on; match the
+      // full name (normalized the way shortNames normalizes it) and let anyone who isn't on the
+      // roster keep shortNames' own reading of their name.
+      var pubByFullName = {};
+      state.scouts.forEach(function (s) {
+        pubByFullName[String(s.name || '').trim().toLowerCase().replace(/\s+/g, ' ')] = pubName[s.id];
+      });
+      function pubRacer(raw, fallback) {
+        var k = String(raw == null ? '' : raw).trim().toLowerCase().replace(/\s+/g, ' ');
+        return pubByFullName[k] || fallback;
+      }
       var awards = rawAwards.map(function (aw, i) {
-        return { award: String(aw.award || ''), racerName: derbyNames[winners.length + i] };
+        return { award: String(aw.award || ''), racerName: pubRacer(aw.racerName, derbyNames[winners.length + i]) };
       });
       var derby = null;
       if (state.derby.name || state.derby.date || winners.length || awards.length) {
         derby = {
           name: String(state.derby.name || ''),
           date: String(state.derby.date || ''),
-          winners: winners.map(function (w, i) { return { place: w.place, scoutName: derbyNames[i] }; }),
+          winners: winners.map(function (w, i) { return { place: w.place, scoutName: pubRacer(w.scoutName, derbyNames[i]) }; }),
           awards: awards
         };
       }
 
+      // The reward ladder. Pack-wide information with no private half to it, and the single most
+      // effective thing a pack can put in front of a family — "sell this much and the pack covers
+      // your dues" — that a parent could not see at all.
+      // ⚠ thresholdCents is the COMMISSION a scout earned the pack, not what they sold (owner
+      // ruling, see scoutCommissionOf). Publishing that number raw would be a lie to a parent:
+      // nobody sells commission. salesForCommission() converts it at the goal rate, and returns
+      // null when the pack has typed no rate at all — then the tier is still listed for its
+      // reward text, with no target beside it, rather than showing a target of zero.
+      // ⚠ tier.madeUp NEVER publishes. It names the families who paid the difference instead of
+      // selling it, and that is nobody else's business.
+      var tiers = sortedTiers().map(function (t) {
+        return {
+          name: String(t.name || ''),
+          reward: String(t.reward || ''),
+          note: String(t.note || ''),
+          dueBy: String(t.dueBy || ''),
+          salesCents: salesForCommission(t.thresholdCents)
+        };
+      }).filter(function (t) { return t.name || t.reward; });
+
       out.standings = standings;
       out.goals = goals;
       out.derby = derby;
+      if (tiers.length) out.tiers = tiers;
       if (cashOutsideGoal) out.cashOutsideGoal = true;
       return out;
     } finally {
@@ -7430,6 +7522,27 @@
     if (ui.parentTab === 'camping' && parentHasCamping()) return 'camping';
     return 'schedule';
   }
+  // The published campouts, or [] — the one place the parent app reads that array, so every
+  // caller below agrees on what "trip 2" means.
+  function parentTrips() {
+    var pv = sync.parentView;
+    return (pv && Array.isArray(pv.camping)) ? pv.camping : [];
+  }
+  // Parents get a section strip on exactly ONE tab: Camping, one sub-tab per campout, the same
+  // shape the leader side has. Everywhere else it is empty and the strip hides itself, so a
+  // parent's nav stays the single row it has always been.
+  // Ids are the trip's INDEX as a string, not a trip id: the published document has no ids.
+  function parentSectionDefs() {
+    if (parentTab() !== 'camping') return [];
+    return parentTrips().map(function (t, i) { return { id: String(i), label: tripTabLabel(t) }; });
+  }
+  // The shown campout, validated. A stale index — the pack deleted a trip since this device
+  // last rendered — falls back to the first rather than rendering an empty page.
+  function parentCampTrip() {
+    var n = parentTrips().length;
+    var want = ui.parentCampTrip;
+    return (typeof want === 'number' && want >= 0 && want < n) ? want : 0;
+  }
 
   // Identify the focused control so focus survives a full re-render. Two kinds
   // (Wave 18(6) extended this beyond inputs): data-ch inputs (value + caret also
@@ -7531,20 +7644,25 @@
     }).join('');
     // Wave 21 — the section strip, rendered only when the workspace actually offers a
     // choice (so Home, and any future single-section workspace, shows no second row at
-    // all). Gates and the parent app never get one: their nav is the strip above.
+    // all). Gates never get one.
+    // 2026-08-02 — the parent app gets one too, on Camping only: one sub-tab per campout,
+    // mirroring the leader side. Three deepened trips stacked into one page was five thousand
+    // pixels of prose, and the fix a leader already has is the fix a parent should have.
     var wsNow = (gate || parent) ? null : curWorkspace();
-    var secDefs = sectionsOf(wsNow);
-    var secCur = wsNow ? curSection() : '';
+    var secDefs = gate ? [] : (parent ? parentSectionDefs() : sectionsOf(wsNow));
+    var secCur = parent ? String(parentCampTrip()) : (wsNow ? curSection() : '');
+    var secAct = parent ? 'parent-camp-trip' : 'section';
     secEl.innerHTML = secDefs.length < 2 ? '' : secDefs.map(function (s) {
       var on = secCur === s.id;
       // aria-current="page" stays the WORKSPACE's marker — two elements claiming "page" in
       // one document is ambiguous — so the section uses "true" and the two <nav>s carry
       // distinct labels. Deliberately NOT role="tablist": that owes a real tabpanel
       // relationship, roving tabindex and arrow keys, against a DOM rebuilt every keystroke.
-      return '<button type="button" class="snav" data-act="section" data-tab="' + esc(wsNow.id) +
-        '" data-section="' + esc(s.id) + '"' + (on ? ' aria-current="true"' : '') + '>' + esc(s.label) + '</button>';
+      return '<button type="button" class="snav" data-act="' + secAct + '"' +
+        (parent ? '' : ' data-tab="' + esc(wsNow.id) + '"') +
+        ' data-section="' + esc(s.id) + '"' + (on ? ' aria-current="true"' : '') + '>' + esc(s.label) + '</button>';
     }).join('');
-    secEl.setAttribute('aria-label', wsNow ? ('Sections in ' + wsNow.label) : 'Sections');
+    secEl.setAttribute('aria-label', parent ? 'Campouts' : (wsNow ? ('Sections in ' + wsNow.label) : 'Sections'));
     document.getElementById('subnav').hidden = !secEl.innerHTML;
     navStripPass(tabsEl);
     navStripPass(secEl);
@@ -7761,59 +7879,53 @@
       return '<div class="card"><h2 class="section display">Camping</h2>' +
         '<p class="small muted" style="margin:0">Nothing posted yet.</p></div>';
     }
-    var h = campContentsStrip(trips);
-    trips.forEach(function (t, ti) {
-      h += '<div class="card"><h2 class="section display camp-anchor" id="' + campAnchor(ti) + '">' +
-        esc(String(t.name || 'Campout')) + '</h2>' +
-        campFacts({
-          where: String(t.where || ''), address: String(t.address || ''), when: String(t.when || ''),
-          arrive: String(t.arrive || ''), depart: String(t.depart || ''),
-          cost: String(t.cost || ''), url: String(t.url || '')
-        });
-      if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + proseText(t.intro) + '</div>';
-      h += '</div>';
-      (Array.isArray(t.sections) ? t.sections : []).forEach(function (s, si) {
-        h += '<div class="card"><h2 class="section display camp-anchor" id="' + campAnchor(ti, si) + '">' +
-          esc(String(s.title || 'Details')) + '</h2>' +
-          '<div class="camp-body">' + proseText(s.body) + '</div></div>';
+    // One campout at a time, chosen by the sub-tab strip — the leader side's shape. The strip
+    // only appears from two trips up, so with one trip this is simply the page.
+    var ti = parentCampTrip();
+    var t = trips[ti] || trips[0];
+    var h = campSectionNav(t, ti);
+    h += '<div class="card"><h2 class="section display">' + esc(String(t.name || 'Campout')) + '</h2>' +
+      campFacts({
+        where: String(t.where || ''), address: String(t.address || ''), when: String(t.when || ''),
+        arrive: String(t.arrive || ''), depart: String(t.depart || ''),
+        cost: String(t.cost || ''), url: String(t.url || '')
       });
+    if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + proseText(t.intro) + '</div>';
+    h += '</div>';
+    (Array.isArray(t.sections) ? t.sections : []).forEach(function (s, si) {
+      h += '<div class="card"><h2 class="section display camp-anchor" id="' + campAnchor(ti, si) + '">' +
+        esc(String(s.title || 'Details')) + '</h2>' +
+        '<div class="camp-body">' + proseText(s.body) + '</div></div>';
     });
     return h;
   }
-  // Stable, collision-free ids for the camping headings. Index-based on purpose: a trip has no
-  // id in the published document, and slugging the title would collide the moment two trips
-  // share a section name — which they do, because the sections are the same six questions.
+  // Stable, collision-free ids for the camping section headings. Index-based on purpose: a trip
+  // has no id in the published document, and slugging the title would collide the moment two
+  // trips share a section name — which they do, because the sections are the same six questions.
+  // The trip index stays in the id even though only one trip renders at a time, so a link a
+  // parent copies out of the address bar still says which campout it came from.
   function campAnchor(tripIdx, sectionIdx) {
-    return 'pc-t' + tripIdx + (sectionIdx == null ? '' : '-s' + sectionIdx);
+    return 'pc-t' + tripIdx + '-s' + sectionIdx;
   }
-  // Contents for the camping page. The parent app has no sub-tab strip, so three deepened trips
-  // stack into five thousand pixels of prose with no way to reach the one paragraph you opened
-  // the page for. Plain <a href="#id"> links, so they work with no JS and land in browser
-  // history; the headings carry scroll-margin-top because the topbar is sticky and would
-  // otherwise cover whatever you jumped to.
-  // Skipped when there is nothing to navigate: one trip with a couple of sections is already
-  // one screen, and a contents list longer than the thing it indexes is just noise.
-  function campContentsStrip(trips) {
-    var jumps = trips.reduce(function (n, t) {
-      return n + 1 + (Array.isArray(t.sections) ? t.sections.length : 0);
-    }, 0);
-    if (jumps < 5) return '';
-    var h = '<div class="card"><nav class="camp-toc" aria-label="On this page">' +
-      '<p class="eyebrow" style="margin:0 0 8px">On this page</p>';
-    trips.forEach(function (t, ti) {
-      h += '<a class="camp-toc-trip" href="#' + campAnchor(ti) + '">' +
-        esc(String(t.name || 'Campout')) + '</a>';
-      var secs = Array.isArray(t.sections) ? t.sections : [];
-      if (secs.length) {
-        h += '<div class="camp-toc-secs">' + secs.map(function (s, si) {
-          return '<a href="#' + campAnchor(ti, si) + '">' + esc(String(s.title || 'Details')) + '</a>';
-        }).join('') + '</div>';
-      }
-    });
-    return h + '</nav></div>';
+  // The sections of the shown campout, as jump links. The sub-tab strip gets you to the right
+  // trip; this gets you to the right paragraph within it, which on a phone is still several
+  // screens down. Plain <a href="#id">, so it works with no JS and lands in browser history;
+  // the headings carry scroll-margin-top because the topbar is sticky and would otherwise
+  // cover whatever you jumped to.
+  // Below four sections there is nothing worth indexing — the trip is about one screen, and a
+  // contents list as long as the thing it indexes is just another thing to read.
+  function campSectionNav(trip, tripIdx) {
+    var secs = (trip && Array.isArray(trip.sections)) ? trip.sections : [];
+    if (secs.length < 4) return '';
+    return '<div class="card"><nav class="camp-toc" aria-label="On this page">' +
+      '<p class="eyebrow" style="margin:0 0 8px">On this page</p>' +
+      '<div class="camp-toc-secs">' + secs.map(function (s, si) {
+        return '<a href="#' + campAnchor(tripIdx, si) + '">' + esc(String(s.title || 'Details')) + '</a>';
+      }).join('') + '</div></nav></div>';
   }
   function parentEventRow(e) {
-    var kind = e && e.kind === 'storefront' ? 'storefront' : (e && e.kind === 'meeting' ? 'meeting' : 'activity');
+    var raw = e && e.kind;
+    var kind = (raw === 'storefront' || raw === 'meeting' || raw === 'derby') ? raw : 'activity';
     var title = String((e && e.title) || '');
     var badge;
     if (kind === 'storefront') badge = '<span class="ev-badge badge-store">Storefront</span>';
@@ -7822,18 +7934,42 @@
       badge = title.indexOf('Pack') === 0
         ? '<span class="ev-badge badge-pack">Meeting</span>'
         : '<span class="ev-badge badge-den">Meeting</span>';
-    } else badge = '<span class="ev-badge badge-act">Activity</span>';
+    } else if (kind === 'derby') badge = '<span class="ev-badge badge-pack">Derby</span>';
+    else badge = '<span class="ev-badge badge-act">Activity</span>';
     var times = (e && Array.isArray(e.times)) ? e.times : [];
     var h = '<div class="pv-row"><div class="pv-head">' + badge +
       '<span class="pv-title">' + esc(title) + '</span></div>' +
       '<div class="pv-when">' + esc(fmtDate(String((e && e.date) || ''))) + '</div>';
-    if (e && e.detail) h += '<div class="pv-detail">' + esc(String(e.detail)) + '</div>';
     if (times.length) {
       h += '<div class="pv-times">' + times.map(function (t) {
         return '<span class="pv-time">' + esc(String(t)) + '</span>';
       }).join('') + '</div>';
     }
+    // Where it is, then who it is for. A meeting has always carried its location in `detail`
+    // (that field IS the editor's "Where"); an activity now carries a real one in `where`.
+    if (e && e.where) h += '<div class="pv-detail">' + esc(String(e.where)) + '</div>';
+    if (e && e.detail) h += '<div class="pv-detail">' + esc(String(e.detail)) + '</div>';
+    if (kind === 'storefront') h += parentShiftLines(e);
     return h + '</div>';
+  }
+  // A storefront's shifts, with who is on each — the two questions a family actually asks about
+  // popcorn. Same shape as the leaders' list: the time in a fixed column, names beside it, and an
+  // unstaffed shift saying so rather than being left out, because an open shift is the one a
+  // parent might volunteer for.
+  // A document published before this shipped carries `times` instead — a bare list of windows
+  // with no names. Those already render above as time chips, so this simply adds nothing and the
+  // old view degrades to exactly what it was rather than to a blank storefront.
+  function parentShiftLines(e) {
+    var shifts = (e && Array.isArray(e.shifts)) ? e.shifts : [];
+    if (!shifts.length) return '';
+    var h = '<ul class="sf-shifts">';
+    shifts.forEach(function (s) {
+      var who = (s && Array.isArray(s.who)) ? s.who : [];
+      h += '<li class="sf-shift' + (who.length ? '' : ' sf-open') + '">' +
+        '<span class="sf-when">' + esc(String((s && s.when) || '')) + '</span>' +
+        '<span class="sf-who">' + (who.length ? esc(who.join(', ')) : 'Open') + '</span></li>';
+    });
+    return h + '</ul>';
   }
   function renderParentSchedule(pv) {
     var today = todayISO();
@@ -7861,6 +7997,35 @@
       '<div class="bar" role="img" aria-label="' + esc(label) + ' ' + p + ' percent"><div class="bar-fill" style="width:' + p + '%"></div></div>' +
       '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(raised || 0) + '</strong> of ' +
       '<span class="money">' + fmt(goal || 0) + '</span> (' + p + '%)</p>';
+  }
+  // The reward ladder, under the board it explains: the board is the news ("how is my scout
+  // doing"), the ladder is the reference beside it ("and what does that get them"), which is why
+  // it follows rather than leads.
+  // salesCents is what a scout has to SELL (converted from the commission threshold at
+  // publication), and null when the pack has typed no commission rate — then the rung still
+  // shows its reward, with no target beside it, rather than a target of nothing.
+  function parentTierLadder(pv) {
+    var tiers = Array.isArray(pv.tiers) ? pv.tiers : [];
+    if (!tiers.length) return '';
+    var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
+      '<div class="tbl-wrap"><table><thead><tr>' +
+      '<th scope="col">Reach</th><th scope="col">Tier</th>' +
+      '<th scope="col">Reward</th><th scope="col">By</th>' +
+      '</tr></thead><tbody>';
+    tiers.forEach(function (t) {
+      var target = (t && typeof t.salesCents === 'number') ? fmt(t.salesCents) + ' sold' : '—';
+      var reward = String((t && t.reward) || '');
+      var note = String((t && t.note) || '');
+      h += '<tr><td class="money" style="font-weight:650;white-space:nowrap">' + esc(target) + '</td>' +
+        '<td>' + esc(String((t && t.name) || '')) + '</td>' +
+        '<td style="white-space:normal">' + (reward ? esc(reward) : '<span class="muted">—</span>') +
+        (note ? '<br><span class="small muted">' + esc(note) + '</span>' : '') + '</td>' +
+        '<td style="white-space:nowrap">' + (t && t.dueBy ? esc(fmtDate(String(t.dueBy))) : '<span class="muted">any time</span>') +
+        '</td></tr>';
+    });
+    return h + '</tbody></table></div>' +
+      '<p class="small muted" style="margin:10px 0 0">Figures are what a scout needs to <strong>sell</strong> ' +
+      'to reach each tier. Ask a pack leader if you are not sure where your scout stands.</p></div>';
   }
   function renderParentStandings(pv) {
     var h = '';
@@ -7905,6 +8070,7 @@
       }
     }
     h += '</div>';
+    h += parentTierLadder(pv);
     var d = pv.derby;
     var winners = (d && Array.isArray(d.winners)) ? d.winners : [];
     var awards = (d && Array.isArray(d.awards)) ? d.awards : [];
@@ -16090,7 +16256,7 @@
   // Parent phase — the parent app only ever emits these four actions. Anything else that
   // somehow reaches the handler in that mode is ignored, so no code path can mutate the
   // pack record or read `state` on a parent's device.
-  var PARENT_ACTS = ['parent-tab', 'parent-earlier', 'sign-out-google', 'toast-action'];
+  var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -16193,6 +16359,15 @@
       render(); return;
     }
     if (act === 'parent-earlier') { ui.parentEarlierOpen = !ui.parentEarlierOpen; render(); return; }
+    // A campout sub-tab. Validated against the published list rather than trusted, and
+    // parentCampTrip() re-validates on the way out, so a trip the pack deletes between renders
+    // falls back to the first one instead of rendering an empty page.
+    if (act === 'parent-camp-trip') {
+      var pcWant = parseInt(el.dataset.section, 10);
+      if (pcWant >= 0 && pcWant < parentTrips().length) ui.parentCampTrip = pcWant;
+      ui.resetScroll = true;
+      render(); return;
+    }
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }
