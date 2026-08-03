@@ -5005,6 +5005,115 @@ test('the shift list survives a phone, and its times never wrap', () => {
     'the shift list is content-sized again, so its width varies per storefront');
 });
 
+/* ========================================================================
+   The parent standings board says what its two numbers mean — 2026-08-02
+   ===================================================================== */
+
+// The claim the footnote makes, tested on the two functions that decide it. Neither figure was
+// ever wrong; they answer different questions, and only kept cash can make them disagree.
+function goalBaseCtx(viaTE) {
+  const ctx = sandbox(['cashDonOf', 'goalBaseOf']);
+  vm.runInContext('var state = { cashThroughTrailsEnd: ' + (viaTE ? 'true' : 'false') + ' };', ctx);
+  return ctx;
+}
+// storeD/wagonD are cash handed over in person; onD is an online donation, which always counts.
+const donorRow = { t: { sales: 32000, onD: 1000, storeD: 6000, wagonD: 3000 } };
+
+test('cash the pack keeps is the only thing that can split Raised from Of goal', () => {
+  const kept = goalBaseCtx(false);
+  const combined = donorRow.t.sales + donorRow.t.onD + donorRow.t.storeD + donorRow.t.wagonD;
+  eq(kept.goalBaseOf(donorRow), 33000, 'kept cash must stay out of the goal base');
+  ok(kept.goalBaseOf(donorRow) < combined,
+    'with cash kept, the goal base should fall short of what the scout brought in');
+  // Run it through Trail's End and the gap closes — which is why the footnote is conditional.
+  const viaTE = goalBaseCtx(true);
+  eq(viaTE.goalBaseOf(donorRow), combined, 'through Trail’s End the two figures must agree');
+  // A scout with no cash donations never diverges either way.
+  const dry = { t: { sales: 32000, onD: 1000, storeD: 0, wagonD: 0 } };
+  eq(kept.goalBaseOf(dry), 33000, 'a scout with no cash donations diverges');
+});
+
+test('the published view flags the split itself, rather than leaving parents to infer it', () => {
+  const bpv = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(bpv, 'buildParentView() not found');
+  // Derived from the rows actually published, so it is true exactly when somebody's two numbers
+  // disagree — not from a standing guess about the pack's cash setting.
+  ok(/ranked\.some\(function \(r\) \{ return r\.t\.combined !== goalBaseOf\(r\); \}\)/.test(bpv[0]),
+    'the flag is not derived from the rows it describes');
+  ok(/if \(cashOutsideGoal\) out\.cashOutsideGoal = true;/.test(bpv[0]),
+    'the flag never reaches the published document');
+  // Calendar-only mode returns before standings are computed, so it must not carry the flag.
+  ok(bpv[0].indexOf('if (!withStandings) return out;') <
+     bpv[0].indexOf('var cashOutsideGoal'),
+    'a calendar-only view computes a standings-only flag');
+});
+
+test('the parent standings board names its columns', () => {
+  const fn = /function renderParentStandings\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'renderParentStandings() not found');
+  // A real table: four columns of tabular data, and <th scope="col"> is the only way the
+  // headings reach a screen reader. The spans this replaced associated nothing with anything.
+  // The skeleton is asserted as well as the cells, because the <th> strings survive perfectly
+  // well in a file that no longer opens a <table> around them — a source scan cannot prove the
+  // markup is well formed, only that the pieces are still here. (The rendered proof is a browser
+  // check, not this: querySelector('table') on the parent Standings tab.)
+  ok(/<div class="tbl-wrap"><table><thead><tr>/.test(fn[0]), 'the board no longer opens a table');
+  ok(/<\/tbody><\/table><\/div>/.test(fn[0]), 'the board no longer closes its table');
+  ok(/<tr><td class="num">' \+ \(i \+ 1\)/.test(fn[0]), 'the rows are not table rows');
+  for (const col of ['#', 'Scout', 'Raised', 'Of goal']) {
+    ok(new RegExp('<th scope="col"[^>]*>' + col.replace('#', '#') + '</th>').test(fn[0]),
+      `the "${col}" column has no header cell`);
+  }
+  ok(/if \(pv\.cashOutsideGoal\) \{/.test(fn[0]),
+    'the footnote is unconditional, so it appears on packs where the two figures agree');
+  ok(/Raised<\/strong> is everything/.test(fn[0]), 'the footnote no longer explains Raised');
+});
+
+/* ========================================================================
+   The parent camping page has contents — 2026-08-02
+   ===================================================================== */
+
+test('camping anchors are unique across trips that share section names', () => {
+  const ctx = sandbox(['campAnchor']);
+  eq(ctx.campAnchor(0), 'pc-t0', 'a trip anchor');
+  eq(ctx.campAnchor(2, 5), 'pc-t2-s5', 'a section anchor');
+  // Every trip carries the SAME six section titles, so a slug of the title would collide on
+  // every one of them and every link would jump to the first trip.
+  const ids = new Set();
+  for (let t = 0; t < 3; t++) { ids.add(ctx.campAnchor(t)); for (let s = 0; s < 6; s++) ids.add(ctx.campAnchor(t, s)); }
+  eq(ids.size, 21, 'anchor collision across trips');
+});
+
+test('the camping contents list every trip and section, and stay away when there is nothing to index', () => {
+  const ctx = sandbox(['esc', 'campAnchor', 'campContentsStrip']);
+  const trip = (name, secs) => ({ name: name, sections: secs.map((t) => ({ title: t, body: 'x' })) });
+  const six = ['What to expect', 'What to pack', 'Getting there', 'Meals', 'Safety', 'Cost'];
+  const html = ctx.campContentsStrip([trip('Fort Yargo', six), trip('Rainey Mountain', six)]);
+  eq((html.match(/class="camp-toc-trip"/g) || []).length, 2, 'one link per trip');
+  eq((html.match(/<a href="#pc-t1-s/g) || []).length, 6, 'one link per section of the second trip');
+  ok(/href="#pc-t0"/.test(html) && /href="#pc-t1-s4"/.test(html), 'the hrefs match campAnchor');
+  ok(/<nav class="camp-toc" aria-label="On this page">/.test(html), 'the contents are not a landmark');
+  // A page you can already see does not need an index of itself.
+  eq(ctx.campContentsStrip([trip('Fort Yargo', ['What to pack', 'Meals'])]), '',
+    'a single short trip still gets a contents card');
+  eq(ctx.campContentsStrip([]), '', 'an empty camping page gets a contents card');
+  // Five jumps is the floor, so a trip with four sections is the first that earns one.
+  ok(ctx.campContentsStrip([trip('Fort Yargo', ['a', 'b', 'c', 'd'])]) !== '',
+    'the threshold excludes a trip with four sections');
+});
+
+test('a camping jump clears the sticky topbar', () => {
+  // Without this the heading you jumped to lands UNDERNEATH the header, which reads as the link
+  // being broken. Sized for the tall (wrapped-wordmark) bar plus the card's own padding.
+  const m = /\.camp-anchor \{ scroll-margin-top: (\d+)px; \}/.exec(SCRIPT_CSS);
+  ok(m, 'the camping anchors have no scroll margin');
+  ok(+m[1] >= 141, `scroll-margin-top ${m[1]}px is under the 122px topbar plus card padding`);
+  // The heading has to BE the anchor, or the margin lands on nothing.
+  ok(/class="section display camp-anchor" id="' \+ campAnchor\(ti\)/.test(SCRIPT) &&
+     /class="section display camp-anchor" id="' \+ campAnchor\(ti, si\)/.test(SCRIPT),
+    'a camping heading is anchored without the class that gives it clearance');
+});
+
 test('the source is text, with no control characters hiding in it', () => {
   // A single NUL byte makes grep report NOTHING for the whole 900KB file — silently, with a
   // non-zero exit — so every "there are no matches for X" becomes a lie. It has happened

@@ -311,6 +311,24 @@
     .camp-facts dt { margin-top: 8px; }
     .camp-facts dt:first-of-type { margin-top: 0; }
   }
+  /* Contents for the camping page (parent app). Underlined at rest, like every other link in
+     this app: these sit among headings and muted prose, so hover-only underlines would leave
+     them indistinguishable from text until you found them with a mouse — which a touch reader
+     never does. */
+  .camp-toc-trip { display: block; margin-top: 10px; font-weight: 650; color: var(--accent-text); }
+  .camp-toc-trip:first-of-type { margin-top: 0; }
+  .camp-toc-secs { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 4px 0 0 2px; }
+  .camp-toc-secs a { font-size: 0.85rem; color: var(--accent-text); }
+  .camp-toc a { text-underline-offset: 2px; }
+  .camp-toc a:hover { text-decoration-thickness: 2px; }
+  .camp-toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  /* The topbar is sticky, so a jump would otherwise land the heading underneath it. Sized for
+     the TALL bar (122px, when the wordmark wraps to two lines) plus the card's own padding —
+     deliberately not split across a breakpoint, because the wrap point depends on how long the
+     pack has made its name, so no media query can be right for every pack. The cost is a little
+     daylight above the card on a wide screen, which reads as "you landed here" rather than as a
+     mistake; landing a heading under the header does not. */
+  .camp-anchor { scroll-margin-top: 152px; }
 
   /* ---------- Tables ---------- */
   .tbl-wrap { overflow-x: auto; }
@@ -6906,6 +6924,15 @@
             goalPct: (pack.target && !r.archived) ? Math.round(goalBaseOf(r) / pack.target * 100) : null
           };
         });
+      // The two figures on a standings row answer DIFFERENT questions, and a parent reading
+      // them side by side has every right to expect them to reconcile. combinedCents is
+      // everything the scout brought in; goalPct is measured against goalBaseOf, which leaves
+      // out cash donations the pack keeps (they earn no Trail's End commission and are not part
+      // of the Trail's End goal). So a scout with kept cash shows a bigger dollar figure than
+      // their percentage accounts for. Neither number is wrong — the gap just has to be said.
+      // Published as a flag rather than left to the parent app to infer, because the parent app
+      // cannot see `state`: this is true exactly when at least one row's two numbers disagree.
+      var cashOutsideGoal = ranked.some(function (r) { return r.t.combined !== goalBaseOf(r); });
 
       var goals = null;
       if (pack.teGoal > 0 || pack.cashGoal > 0) {
@@ -6943,6 +6970,7 @@
       out.standings = standings;
       out.goals = goals;
       out.derby = derby;
+      if (cashOutsideGoal) out.cashOutsideGoal = true;
       return out;
     } finally {
       state = prev;
@@ -7733,9 +7761,10 @@
       return '<div class="card"><h2 class="section display">Camping</h2>' +
         '<p class="small muted" style="margin:0">Nothing posted yet.</p></div>';
     }
-    var h = '';
-    trips.forEach(function (t) {
-      h += '<div class="card"><h2 class="section display">' + esc(String(t.name || 'Campout')) + '</h2>' +
+    var h = campContentsStrip(trips);
+    trips.forEach(function (t, ti) {
+      h += '<div class="card"><h2 class="section display camp-anchor" id="' + campAnchor(ti) + '">' +
+        esc(String(t.name || 'Campout')) + '</h2>' +
         campFacts({
           where: String(t.where || ''), address: String(t.address || ''), when: String(t.when || ''),
           arrive: String(t.arrive || ''), depart: String(t.depart || ''),
@@ -7743,12 +7772,45 @@
         });
       if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + proseText(t.intro) + '</div>';
       h += '</div>';
-      (Array.isArray(t.sections) ? t.sections : []).forEach(function (s) {
-        h += '<div class="card"><h2 class="section display">' + esc(String(s.title || 'Details')) + '</h2>' +
+      (Array.isArray(t.sections) ? t.sections : []).forEach(function (s, si) {
+        h += '<div class="card"><h2 class="section display camp-anchor" id="' + campAnchor(ti, si) + '">' +
+          esc(String(s.title || 'Details')) + '</h2>' +
           '<div class="camp-body">' + proseText(s.body) + '</div></div>';
       });
     });
     return h;
+  }
+  // Stable, collision-free ids for the camping headings. Index-based on purpose: a trip has no
+  // id in the published document, and slugging the title would collide the moment two trips
+  // share a section name — which they do, because the sections are the same six questions.
+  function campAnchor(tripIdx, sectionIdx) {
+    return 'pc-t' + tripIdx + (sectionIdx == null ? '' : '-s' + sectionIdx);
+  }
+  // Contents for the camping page. The parent app has no sub-tab strip, so three deepened trips
+  // stack into five thousand pixels of prose with no way to reach the one paragraph you opened
+  // the page for. Plain <a href="#id"> links, so they work with no JS and land in browser
+  // history; the headings carry scroll-margin-top because the topbar is sticky and would
+  // otherwise cover whatever you jumped to.
+  // Skipped when there is nothing to navigate: one trip with a couple of sections is already
+  // one screen, and a contents list longer than the thing it indexes is just noise.
+  function campContentsStrip(trips) {
+    var jumps = trips.reduce(function (n, t) {
+      return n + 1 + (Array.isArray(t.sections) ? t.sections.length : 0);
+    }, 0);
+    if (jumps < 5) return '';
+    var h = '<div class="card"><nav class="camp-toc" aria-label="On this page">' +
+      '<p class="eyebrow" style="margin:0 0 8px">On this page</p>';
+    trips.forEach(function (t, ti) {
+      h += '<a class="camp-toc-trip" href="#' + campAnchor(ti) + '">' +
+        esc(String(t.name || 'Campout')) + '</a>';
+      var secs = Array.isArray(t.sections) ? t.sections : [];
+      if (secs.length) {
+        h += '<div class="camp-toc-secs">' + secs.map(function (s, si) {
+          return '<a href="#' + campAnchor(ti, si) + '">' + esc(String(s.title || 'Details')) + '</a>';
+        }).join('') + '</div>';
+      }
+    });
+    return h + '</nav></div>';
   }
   function parentEventRow(e) {
     var kind = e && e.kind === 'storefront' ? 'storefront' : (e && e.kind === 'meeting' ? 'meeting' : 'activity');
@@ -7816,15 +7878,31 @@
     h += '<div class="card"><h2 class="section display">Scout standings</h2>';
     if (!rows.length) h += '<p class="small muted" style="margin:0">No sales recorded yet.</p>';
     else {
+      // A real table, not four spans a row. The board is four columns of tabular data and the
+      // two money columns used to sit side by side with nothing naming either of them — a
+      // parent had to guess which was the total and what the percentage was a percentage OF.
+      // <th scope="col"> is also the only way the columns reach a screen reader at all; the
+      // .pv-stand rows this replaced carried no association between a figure and its meaning.
+      h += '<div class="tbl-wrap"><table><thead><tr>' +
+        '<th scope="col" class="num">#</th><th scope="col">Scout</th>' +
+        '<th scope="col" class="num">Raised</th><th scope="col" class="num">Of goal</th>' +
+        '</tr></thead><tbody>';
       rows.forEach(function (r, i) {
-        var pct = (r && r.goalPct != null) ? (r.goalPct + '%') : '';
-        h += '<div class="pv-stand">' +
-          '<span class="pv-rank">' + (i + 1) + '</span>' +
-          '<span class="pv-name">' + esc(String((r && r.name) || '')) +
-          ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') + '</span>' +
-          '<span class="pv-total money">' + fmt((r && r.combinedCents) || 0) + '</span>' +
-          '<span class="pv-pct">' + esc(pct) + '</span></div>';
+        var pct = (r && r.goalPct != null) ? (r.goalPct + '%') : '—';
+        h += '<tr><td class="num">' + (i + 1) + '</td>' +
+          '<td>' + esc(String((r && r.name) || '')) +
+          ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') + '</td>' +
+          '<td class="num money" style="font-weight:650">' + fmt((r && r.combinedCents) || 0) + '</td>' +
+          '<td class="num">' + esc(pct) + '</td></tr>';
       });
+      h += '</tbody></table></div>';
+      // Only when the two columns actually disagree for somebody — see buildParentView. A pack
+      // that runs its cash through Trail's End never sees this, because there nothing is left out.
+      if (pv.cashOutsideGoal) {
+        h += '<p class="small muted" style="margin:10px 0 0"><strong>Raised</strong> is everything a scout ' +
+          'brought in. <strong>Of goal</strong> counts only what goes through Trail’s End, so cash ' +
+          'donations the pack keeps are not part of it — which is why the two can look out of step.</p>';
+      }
     }
     h += '</div>';
     var d = pv.derby;
