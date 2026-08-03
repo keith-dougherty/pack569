@@ -1281,6 +1281,20 @@
   .pv-name { font-weight: 650; flex: 1 1 130px; min-width: 0; }
   .pv-total { font-weight: 650; }
   .pv-pct { font-size: 0.85rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 3.4em; text-align: right; }
+  /* One scout on the parent standings board. A list, not a table row, because each one carries a
+     progress bar and a bar needs width — see parentStandingRow. */
+  .pv-scout { padding: 11px 2px; border-bottom: 1px solid var(--line-soft); }
+  .pv-scout:last-child { border-bottom: none; }
+  .pv-scout-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .pv-scout-rank {
+    min-width: 1.6em; text-align: right; color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+  .pv-scout-name { font-weight: 650; flex: 1 1 140px; min-width: 0; }
+  .pv-scout-total { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .pv-prog { margin-top: 8px; }
+  .pv-prog-note { margin: 5px 0 0; font-size: 0.86rem; }
+  .pv-prog-note + .pv-prog-note { margin-top: 2px; }
   .pv-foot { margin-top: 4px; }
   /* The normal print sheet hides <main> (only overlays print). Parents have no overlays,
      so let their schedule print instead of a blank page. */
@@ -7002,7 +7016,24 @@
             nextSalesCents: (p && p.next && typeof p.shortSales === 'number') ? p.shortSales : null,
             // What reaching it takes off this family's bill, as a set difference over the charges
             // the next tier ADDS — two tiers pointed at the same fee do not pay it twice.
-            nextUnlocksCents: (p && p.next) ? (p.unlocks || 0) : 0
+            nextUnlocksCents: (p && p.next) ? (p.unlocks || 0) : 0,
+            // The prize in words, which is what actually sells a shift — "Camp week" is a label,
+            // "a week of summer camp, paid" is the reason to knock on a door.
+            nextReward: (p && p.next) ? String(p.next.reward || '') : '',
+            // How full the bar is. Measured from ZERO toward the next rung's threshold, not from
+            // the rung just earned: a scout who has cleared one tier by a dollar would otherwise
+            // see a near-empty bar after a season of work, which is both demotivating and a poor
+            // description of what they have done. A threshold is an absolute target, and "43% of
+            // the way to Camp week" is the plain reading of a bar pointed at one.
+            //
+            // ⚠ The RATIO is computed in commission, and that is deliberate: it is the same ratio
+            // in sales terms, because salesForCommission divides both halves by the same goal
+            // rate. Do not "fix" this by converting each side first — a scout's own sales-to-
+            // commission rate depends on their channel mix (online pays a different rate), so
+            // per-scout conversion would make the bar and the shortfall beside it disagree.
+            nextPct: (p && p.next && p.need > 0)
+              ? Math.max(0, Math.min(100, Math.round(p.base / p.need * 100)))
+              : ((p && p.earned && !p.next) ? 100 : null)
           };
         });
       // ONE goal, owner ask 2026-08-02. Parents used to get two bars — a Trail's End goal and a
@@ -8210,24 +8241,58 @@
     return h + '<p class="small muted" style="margin:8px 0 0">These are what the pack plans for, not a bill — ' +
       'ask a pack leader what your family currently owes.</p></div>';
   }
-  // The "Next tier" cell: the rung ahead, what is still to sell, and what reaching it takes off
-  // this family's bill. Three facts, because on their own each one raises the next question —
-  // "Pack tee" invites "how much more?", and "$175 more" invites "and what is that worth to me?".
-  // A scout at the top of the ladder gets the plain statement instead, not a blank.
-  function parentNextTierCell(r) {
-    if (!r || !r.nextTier) {
-      return r && r.tier
-        ? '<span class="muted">every tier earned</span>'
-        : '<span class="muted">—</span>';
+  // One scout on the board: the money they have brought in, then how close they are to the next
+  // rung and what it is worth. The bar is the point — a figure says where you are, a bar says how
+  // close, and "how close" is what gets a family out on a Saturday.
+  function parentStandingRow(r, i) {
+    var h = '<div class="pv-scout"><div class="pv-scout-head">' +
+      '<span class="pv-scout-rank">' + (i + 1) + '</span>' +
+      '<span class="pv-scout-name">' + esc(String((r && r.name) || '')) +
+      ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') +
+      ((r && r.tier) ? ' <span class="pill good">' + esc(String(r.tier)) + '</span>' : '') + '</span>' +
+      '<span class="pv-scout-total money">' + fmt((r && r.combinedCents) || 0) + '</span></div>';
+    return h + parentTierProgress(r) + '</div>';
+  }
+  // The bar and its caption. Deliberately absent — not a zero-width bar — when there is nothing to
+  // measure: a pack with no tiers, or with no commission rate to convert a threshold into a
+  // sell-through figure. An empty track next to a scout who has done everything asked of them
+  // would be a lie told by geometry.
+  function parentTierProgress(r) {
+    var pct = (r && typeof r.nextPct === 'number') ? r.nextPct : null;
+    if (pct == null) return '';
+    // Top of the ladder: a full bar and a plain statement, which is the reward for finishing.
+    if (!r.nextTier) {
+      return '<div class="pv-prog">' + parentBar(100, 'Every tier earned') +
+        '<p class="pv-prog-note"><strong>Every tier earned.</strong> ' +
+        '<span class="muted">Nothing left to chase — thank you.</span></p></div>';
     }
-    var h = esc(String(r.nextTier));
+    var name = String(r.nextTier);
+    var out = '<div class="pv-prog">' + parentBar(pct, pct + ' percent of the way to ' + name) +
+      '<p class="pv-prog-note">' + pct + '% of the way to <strong>' + esc(name) + '</strong>';
+    // The prize in words, where there is room for it: the tier's NAME is a label, its reward is
+    // the reason to knock on a door.
+    if (r.nextReward) out += ' <span class="muted">— ' + esc(String(r.nextReward)) + '</span>';
+    out += '</p>';
+    // The two figures a family can act on. Both are optional and for different reasons: the
+    // shortfall is null when the pack has typed no rate, and the value is zero for a prize-only
+    // rung (a patch is worth having and costs the family nothing either way).
+    var bits = [];
     if (typeof r.nextSalesCents === 'number' && r.nextSalesCents > 0) {
-      h += '<br><span class="small"><strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell</span>';
+      bits.push('<strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell');
     }
     if ((r.nextUnlocksCents || 0) > 0) {
-      h += '<br><span class="small muted">worth <span class="money">' + fmt(r.nextUnlocksCents) + '</span> off your costs</span>';
+      bits.push('worth <span class="money">' + fmt(r.nextUnlocksCents) + '</span> off your costs');
     }
-    return h;
+    if (bits.length) out += '<p class="pv-prog-note muted">' + bits.join(' · ') + '</p>';
+    return out + '</div>';
+  }
+  // A bar carries no text of its own, so role="img" plus a label is the only way it reaches a
+  // screen reader — and the caption beneath repeats the figure in words for everyone else, because
+  // a bar alone is a shape, not information.
+  function parentBar(pct, label) {
+    var p = Math.max(0, Math.min(100, pct || 0));
+    return '<div class="bar" role="img" aria-label="' + esc(label) + '">' +
+      '<div class="bar-fill" style="width:' + p + '%"></div></div>';
   }
   function renderParentStandings(pv) {
     var h = '';
@@ -8243,28 +8308,15 @@
     h += '<div class="card"><h2 class="section display">Scout standings</h2>';
     if (!rows.length) h += '<p class="small muted" style="margin:0">No sales recorded yet.</p>';
     else {
-      // A real table, not four spans a row. <th scope="col"> is the only way the columns reach a
-      // screen reader at all; the .pv-stand rows this replaced associated no figure with any
-      // meaning.
-      // The last two columns used to be one "Of goal" percentage, which was measured on
-      // goal-eligible money while the money beside it was everything — the two could not be
-      // reconciled and needed a footnote to explain why. Tier progress replaces it: the same
-      // space, answering the question a family was asking of that percentage anyway.
-      h += '<div class="tbl-wrap"><table><thead><tr>' +
-        '<th scope="col" class="num">#</th><th scope="col">Scout</th>' +
-        '<th scope="col" class="num">Raised</th><th scope="col">Earned</th>' +
-        '<th scope="col">Next tier</th>' +
-        '</tr></thead><tbody>';
-      rows.forEach(function (r, i) {
-        h += '<tr><td class="num">' + (i + 1) + '</td>' +
-          '<td>' + esc(String((r && r.name) || '')) +
-          ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') + '</td>' +
-          '<td class="num money" style="font-weight:650">' + fmt((r && r.combinedCents) || 0) + '</td>' +
-          '<td>' + ((r && r.tier) ? '<span class="pill good">' + esc(String(r.tier)) + '</span>'
-                                  : '<span class="muted">—</span>') + '</td>' +
-          '<td style="white-space:normal">' + parentNextTierCell(r) + '</td></tr>';
-      });
-      h += '</tbody></table></div>';
+      // Owner ask, 2026-08-02: a progress BAR per scout, because a number tells a family where
+      // they are and a bar tells them how close.
+      // That is why this is a list and not the table it was an hour ago. The table was right when
+      // the row was four short figures — <th scope="col"> was the only thing associating a number
+      // with its meaning. A bar needs width, and a 10px track inside a fifth column would have
+      // been either unreadably narrow or, on a phone, only reachable by scrolling the table
+      // sideways: a parent should not have to swipe to find out how close their own scout is.
+      // In a list every figure carries its own words instead, so nothing is left to a column head.
+      rows.forEach(function (r, i) { h += parentStandingRow(r, i); });
     }
     h += '</div>';
     h += parentTierLadder(pv);

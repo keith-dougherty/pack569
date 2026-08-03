@@ -5064,51 +5064,64 @@ test('parents see ONE goal, not the pack’s internal cash split', () => {
     'the cash-outside-goal flag survives the column it existed to explain');
 });
 
-test('the standings board shows tier progress where the unreconcilable percentage was', () => {
+test('every scout on the board gets a progress bar, and it is a list so the bar has room', () => {
   const fn = /function renderParentStandings\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'renderParentStandings() not found');
-  // The skeleton is asserted as well as the cells, because the <th> strings survive perfectly
-  // well in a file that no longer opens a <table> around them — a source scan cannot prove the
-  // markup is well formed, only that the pieces are still here. (The rendered proof is a browser
-  // check, not this: querySelector('table') on the parent Standings tab.)
-  ok(/<div class="tbl-wrap"><table><thead><tr>/.test(fn[0]), 'the board no longer opens a table');
-  ok(/<\/tbody><\/table><\/div>/.test(fn[0]), 'the board no longer closes its table');
-  ok(/<tr><td class="num">' \+ \(i \+ 1\)/.test(fn[0]), 'the rows are not table rows');
-  for (const col of ['#', 'Scout', 'Raised', 'Earned', 'Next tier']) {
-    ok(new RegExp('<th scope="col"[^>]*>' + col + '</th>').test(fn[0]),
-      `the "${col}" column has no header cell`);
-  }
-  // Counted, not just spot-checked. Naming the five expected headers cannot notice a SIXTH being
-  // added, and a header with no body cell under it is a malformed table that passes every
-  // by-name assertion — so the two counts are asserted against each other.
-  // codeOnly, because the comment above the table quotes `<th scope="col">` to explain why it is
-  // there, and a raw count therefore finds six headers in a five-column table. Third time this
-  // has come up: a guard that counts or forbids a token must never read prose.
-  const scode = codeOnly(fn[0]);
-  eq((scode.match(/<th scope="col"/g) || []).length, 5, 'the standings header count');
-  eq((scode.match(/'<td|<tr><td/g) || []).length, 5,
-    'the standings body-cell count no longer matches its five headers');
-  // The percentage is GONE, not hidden: it was measured on goal-eligible money while the money
-  // beside it was everything, so the two could not be reconciled at all.
+  // The table this replaced was right when a row was four short figures. A bar needs width, and a
+  // 10px track in a fifth column is either unreadably narrow or — on a phone, inside .tbl-wrap —
+  // only reachable by swiping the table sideways to find your own scout.
+  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i\); \}\);/.test(fn[0]),
+    'the board does not render one list row per scout');
+  ok(!/tbl-wrap|<th scope="col"/.test(codeOnly(fn[0])),
+    'the board is a table again, which puts the bar behind a sideways scroll on a phone');
+  // The percentage that needed a footnote is GONE, not hidden: it was measured on goal-eligible
+  // money while the money beside it was everything, so the two could not be reconciled at all.
   ok(!/goalPct/.test(fn[0]), 'the of-goal percentage is still on the row');
-  ok(/parentNextTierCell\(r\)/.test(fn[0]), 'the row does not render the next-tier cell');
 });
 
-test('the next-tier cell answers the question each figure raises', () => {
-  const ctx = sandbox(['esc', 'fmt', 'parentNextTierCell']);
-  const cell = ctx.parentNextTierCell({ tier: 'Dues covered', nextTier: 'Pack tee',
-    nextSalesCents: 17500, nextUnlocksCents: 3500 });
-  ok(/Pack tee/.test(cell), 'the rung ahead');
-  ok(/\$175\.00<\/strong> more to sell/.test(cell), 'what is still to sell');
-  ok(/\$35\.00<\/span> off your costs/.test(cell), 'what reaching it is worth to this family');
-  // A scout at the top of the ladder gets a statement, not a blank cell.
-  ok(/every tier earned/.test(ctx.parentNextTierCell({ tier: 'Camp week', nextTier: '' })),
-    'a scout who has earned everything gets an empty cell');
-  // No tiers at all, or a pack with no commission rate: no invented numbers.
-  ok(/—/.test(ctx.parentNextTierCell({ tier: '', nextTier: '' })), 'a scout with no tier at all');
-  const noRate = ctx.parentNextTierCell({ tier: '', nextTier: 'Dues covered', nextSalesCents: null, nextUnlocksCents: 0 });
-  ok(/Dues covered/.test(noRate) && !/more to sell/.test(noRate),
-    'an unmeasurable shortfall invents a figure');
+test('the bar is measured from zero, in commission, and never invents a figure', () => {
+  const src = codeOnly(BPV());
+  // ⚠ From ZERO toward the next threshold, not from the rung just earned. A scout who cleared a
+  // tier by a dollar would otherwise show a near-empty bar after a season of work.
+  ok(/Math\.round\(p\.base \/ p\.need \* 100\)/.test(src),
+    'the bar is measured against something other than the next threshold');
+  ok(/Math\.max\(0, Math\.min\(100, Math\.round/.test(src), 'the percentage is not clamped to 0-100');
+  // A finished ladder is 100%, and a pack with nothing to measure publishes null — so the renderer
+  // can leave the bar out rather than draw an empty one.
+  ok(/\(\(p && p\.earned && !p\.next\) \? 100 : null\)/.test(src),
+    'a scout at the top of the ladder, or a pack with no measurable tiers, is mishandled');
+  // The ratio is deliberately taken in commission: salesForCommission divides both halves by the
+  // same goal rate, so it is the same ratio in sales terms. Converting per scout would break it,
+  // because a scout's own rate depends on their channel mix (online pays differently).
+  ok(!/salesForCommission\(p\.base\)|salesForCommission\(p\.need\)/.test(src),
+    'the bar converts each side to sales per scout, so it disagrees with the shortfall beside it');
+});
+
+test('the progress bar carries its figure in words, and is absent when there is nothing to measure', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentTierProgress']);
+  const mid = ctx.parentTierProgress({ tier: 'Pack tee', nextTier: 'Camp week', nextPct: 43,
+    nextReward: 'A week of summer camp, paid', nextSalesCents: 50167, nextUnlocksCents: 3500 });
+  ok(/<div class="bar-fill" style="width:43%">/.test(mid), 'the fill does not follow the percentage');
+  ok(/43% of the way to <strong>Camp week<\/strong>/.test(mid), 'the caption repeats the figure in words');
+  ok(/A week of summer camp, paid/.test(mid), 'the prize in words is dropped — the tier name is only a label');
+  ok(/\$501\.67<\/strong> more to sell/.test(mid), 'what is still to sell');
+  ok(/\$35\.00<\/span> off your costs/.test(mid), 'what reaching it is worth to this family');
+  // A bar carries no text of its own: role="img" plus a label is the only way it reaches a screen
+  // reader, and the caption beneath serves everyone else.
+  ok(/role="img" aria-label="43 percent of the way to Camp week"/.test(mid),
+    'the bar has no accessible label, so it is invisible to a screen reader');
+  // Top of the ladder: full bar, plain statement.
+  const done = ctx.parentTierProgress({ tier: 'Camp week', nextTier: '', nextPct: 100 });
+  ok(/width:100%/.test(done) && /Every tier earned/.test(done), 'a finished ladder');
+  // ⚠ ABSENT, not zero-width. An empty track beside a scout who has done everything asked of them
+  // would be a lie told by geometry — this is the case where the pack has no tiers, or no rate.
+  eq(ctx.parentTierProgress({ tier: '', nextTier: '', nextPct: null }), '',
+    'a pack with nothing to measure still draws an empty bar');
+  eq(ctx.parentTierProgress({}), '', 'a scout with no progress data still draws a bar');
+  // No rate typed: the rung and the bar still show, the invented shortfall does not.
+  const noRate = ctx.parentTierProgress({ tier: '', nextTier: 'Dues covered', nextPct: 12,
+    nextReward: '', nextSalesCents: null, nextUnlocksCents: 0 });
+  ok(/Dues covered/.test(noRate) && !/more to sell/.test(noRate), 'an unmeasurable shortfall invents a figure');
   ok(!/\$0\.00/.test(noRate), 'a prize-only rung claims it is worth nothing off your costs');
 });
 
