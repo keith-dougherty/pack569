@@ -38,6 +38,18 @@ function eq(actual, expected, what) {
 }
 function ok(cond, msg) { if (!cond) throw new Error(msg); }
 
+const BPV = () => {
+  const m = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(m, 'buildParentView() not found');
+  return m[0];
+};
+// Absence assertions ("this key is NEVER published") have to read CODE, not prose. The comments
+// in buildParentView name the very things they forbid — "⚠ tier.madeUp NEVER publishes" — so a
+// naive scan of the source finds `madeUp` and fails on the warning that exists to prevent it.
+// Whole-line comments only: a trailing one is left alone, which errs towards a false FAILURE
+// rather than a false pass.
+const codeOnly = (src) => src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+
 /* ---------------- slicing ---------------- */
 // Declarations inside the IIFE are indented exactly two spaces, so a declaration ends at the
 // first line that is `  }` / `  };` / `  ];` at that same indent. Good enough, and it fails
@@ -5033,26 +5045,28 @@ test('cash the pack keeps is the only thing that can split Raised from Of goal',
   eq(kept.goalBaseOf(dry), 33000, 'a scout with no cash donations diverges');
 });
 
-test('the published view flags the split itself, rather than leaving parents to infer it', () => {
-  const bpv = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(bpv, 'buildParentView() not found');
-  // Derived from the rows actually published, so it is true exactly when somebody's two numbers
-  // disagree — not from a standing guess about the pack's cash setting.
-  ok(/ranked\.some\(function \(r\) \{ return r\.t\.combined !== goalBaseOf\(r\); \}\)/.test(bpv[0]),
-    'the flag is not derived from the rows it describes');
-  ok(/if \(cashOutsideGoal\) out\.cashOutsideGoal = true;/.test(bpv[0]),
-    'the flag never reaches the published document');
-  // Calendar-only mode returns before standings are computed, so it must not carry the flag.
-  ok(bpv[0].indexOf('if (!withStandings) return out;') <
-     bpv[0].indexOf('var cashOutsideGoal'),
-    'a calendar-only view computes a standings-only flag');
+test('parents see ONE goal, not the pack’s internal cash split', () => {
+  // Owner ask, 2026-08-02. Whether a dollar of cash runs through Trail's End or the pack keeps it
+  // decides which of the two old bars it landed in, without any family having done anything
+  // differently — so a family watched money move between bars for reasons that were not about them.
+  const src = codeOnly(BPV());
+  ok(/goalCents: goalCents,\s*raisedCents: pack\.combined,/.test(src),
+    'the goal is not published as one combined figure');
+  ok(!/teGoalCents|cashGoalCents|tePct|cashPct/.test(src),
+    'the two-bar split is still published');
+  // The identity that makes the single figure safe: teEligible carries cash only when the toggle
+  // is ON and cashKept only when it is OFF, so sales + every donation is the whole of it with
+  // nothing counted twice. pack.combined IS that sum — asserted here so a future edit cannot
+  // quietly swap it for teEligible + cashKept and lose the guarantee.
+  ok(/combined: sales \+ don,/.test(SCRIPT), 'pack.combined is no longer sales plus every donation');
+  // The flag that explained the old two-number row goes with the column it explained.
+  ok(!/cashOutsideGoal/.test(codeOnly(SCRIPT)),
+    'the cash-outside-goal flag survives the column it existed to explain');
 });
 
-test('the parent standings board names its columns', () => {
+test('the standings board shows tier progress where the unreconcilable percentage was', () => {
   const fn = /function renderParentStandings\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'renderParentStandings() not found');
-  // A real table: four columns of tabular data, and <th scope="col"> is the only way the
-  // headings reach a screen reader. The spans this replaced associated nothing with anything.
   // The skeleton is asserted as well as the cells, because the <th> strings survive perfectly
   // well in a file that no longer opens a <table> around them — a source scan cannot prove the
   // markup is well formed, only that the pieces are still here. (The rendered proof is a browser
@@ -5060,13 +5074,99 @@ test('the parent standings board names its columns', () => {
   ok(/<div class="tbl-wrap"><table><thead><tr>/.test(fn[0]), 'the board no longer opens a table');
   ok(/<\/tbody><\/table><\/div>/.test(fn[0]), 'the board no longer closes its table');
   ok(/<tr><td class="num">' \+ \(i \+ 1\)/.test(fn[0]), 'the rows are not table rows');
-  for (const col of ['#', 'Scout', 'Raised', 'Of goal']) {
-    ok(new RegExp('<th scope="col"[^>]*>' + col.replace('#', '#') + '</th>').test(fn[0]),
+  for (const col of ['#', 'Scout', 'Raised', 'Earned', 'Next tier']) {
+    ok(new RegExp('<th scope="col"[^>]*>' + col + '</th>').test(fn[0]),
       `the "${col}" column has no header cell`);
   }
-  ok(/if \(pv\.cashOutsideGoal\) \{/.test(fn[0]),
-    'the footnote is unconditional, so it appears on packs where the two figures agree');
-  ok(/Raised<\/strong> is everything/.test(fn[0]), 'the footnote no longer explains Raised');
+  // Counted, not just spot-checked. Naming the five expected headers cannot notice a SIXTH being
+  // added, and a header with no body cell under it is a malformed table that passes every
+  // by-name assertion — so the two counts are asserted against each other.
+  // codeOnly, because the comment above the table quotes `<th scope="col">` to explain why it is
+  // there, and a raw count therefore finds six headers in a five-column table. Third time this
+  // has come up: a guard that counts or forbids a token must never read prose.
+  const scode = codeOnly(fn[0]);
+  eq((scode.match(/<th scope="col"/g) || []).length, 5, 'the standings header count');
+  eq((scode.match(/'<td|<tr><td/g) || []).length, 5,
+    'the standings body-cell count no longer matches its five headers');
+  // The percentage is GONE, not hidden: it was measured on goal-eligible money while the money
+  // beside it was everything, so the two could not be reconciled at all.
+  ok(!/goalPct/.test(fn[0]), 'the of-goal percentage is still on the row');
+  ok(/parentNextTierCell\(r\)/.test(fn[0]), 'the row does not render the next-tier cell');
+});
+
+test('the next-tier cell answers the question each figure raises', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentNextTierCell']);
+  const cell = ctx.parentNextTierCell({ tier: 'Dues covered', nextTier: 'Pack tee',
+    nextSalesCents: 17500, nextUnlocksCents: 3500 });
+  ok(/Pack tee/.test(cell), 'the rung ahead');
+  ok(/\$175\.00<\/strong> more to sell/.test(cell), 'what is still to sell');
+  ok(/\$35\.00<\/span> off your costs/.test(cell), 'what reaching it is worth to this family');
+  // A scout at the top of the ladder gets a statement, not a blank cell.
+  ok(/every tier earned/.test(ctx.parentNextTierCell({ tier: 'Camp week', nextTier: '' })),
+    'a scout who has earned everything gets an empty cell');
+  // No tiers at all, or a pack with no commission rate: no invented numbers.
+  ok(/—/.test(ctx.parentNextTierCell({ tier: '', nextTier: '' })), 'a scout with no tier at all');
+  const noRate = ctx.parentNextTierCell({ tier: '', nextTier: 'Dues covered', nextSalesCents: null, nextUnlocksCents: 0 });
+  ok(/Dues covered/.test(noRate) && !/more to sell/.test(noRate),
+    'an unmeasurable shortfall invents a figure');
+  ok(!/\$0\.00/.test(noRate), 'a prize-only rung claims it is worth nothing off your costs');
+});
+
+test('the published standings carry the tier progress, from the shared tier map', () => {
+  const src = codeOnly(BPV());
+  ok(/tierProgressRows\(\)\.forEach\(function \(p\) \{ progById\[p\.scout\.id\] = p; \}\)/.test(src),
+    'per-scout tier progress is not taken from tierProgressRows');
+  // Sales, never the commission shortfall — the same rule the ladder follows.
+  ok(/nextSalesCents: \(p && p\.next && typeof p\.shortSales === 'number'\) \? p\.shortSales : null/.test(src),
+    'the shortfall is published as commission, or invented when there is no rate');
+  ok(!/short: p\.short|shortCents/.test(src), 'the raw commission shortfall is published');
+  // tierProgressRows walks ACTIVE scouts; the board also carries archived-but-credited ones, who
+  // must simply show no tier rather than crashing or borrowing somebody else's.
+  ok(/var p = progById\[r\.id\];/.test(src) && /\(p && p\.earned\)/.test(src),
+    'a scout with no progress row is not handled');
+});
+
+test('a family can see what the year costs, and what a tier takes off it', () => {
+  const src = codeOnly(BPV());
+  ok(/var familyCost = familyYearCost\(\)\.map/.test(src), 'the year cost is not published');
+  ok(/if \(familyCost\.length\) out\.familyCost = familyCost;/.test(src),
+    'the year cost never reaches the document');
+  // The PLAN, per den — not any family's balance. None of these may be consulted.
+  ok(!/scoutOwesCents|state\.charges|state\.collected|chargesFor/.test(src),
+    'a family’s actual balance is reachable from the published view');
+  // The money half of each reward, so the ladder and the bill can be read against each other.
+  ok(/coversCents: tierCoverCentsPerScout\(t\)/.test(src), 'a tier does not publish what it waives');
+  const fn = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'parentFamilyCost() not found');
+  // ⚠ The deepest rung's own cover, NOT the sum of every rung: two tiers can point at the same
+  // fee, and coversCents is already the whole amount that rung waives, so adding them would
+  // promise a family the same dues twice.
+  ok(/reduce\(function \(m, t\) \{ return Math\.max\(m, \(t && t\.coversCents\) \|\| 0\); \}, 0\)/.test(fn[0]),
+    'the tier covers are summed, which double-counts two tiers pointed at one fee');
+  ok(/Math\.max\(0, expected - bestCover\)/.test(fn[0]), 'the after-tier figure can go negative');
+});
+
+test('the parent calendar is a real month grid, driven only by the published events', () => {
+  const fn = /function parentCalendar\(pv, today\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'parentCalendar() not found');
+  ok(/Array\.isArray\(pv\.events\)/.test(fn[0]), 'the grid reads something other than the published events');
+  // Nothing in the parent app may reach `state` — that is the whole shape of the parent phase.
+  ok(!/state\./.test(codeOnly(fn[0])), 'the parent calendar reads the leaders’ pack record');
+  // Its own month, so a leader who is also a parent cannot have one view drag the other's month.
+  ok(/ui\.parentCalMonth/.test(fn[0]) && !/ui\.calMonth/.test(fn[0]),
+    'the parent grid shares ui.calMonth with the leader calendar');
+  // A hollow storefront dot means an open shift on both sides now that parents can see coverage.
+  ok(/return covered \? 'dot-store' : 'dot-store-open';/.test(fn[0]),
+    'a storefront dot does not distinguish a fully staffed day');
+  ok(/shifts\.every\(function \(s\) \{/.test(fn[0]), 'coverage is not computed from every shift');
+  // Same tab-stop diet as the leader grid, and every focusable cell carries its own date.
+  ok(/var focusable = iso === today \|\| !!dayEvs;/.test(fn[0]), 'every day in the month is a tab stop');
+  ok(/aria-label="' \+ esc\(fmtDate\(iso\)\)/.test(fn[0]), 'a focusable day has no accessible date');
+  // Without the allowlist entries the strip renders and does nothing.
+  for (const act of ['parent-cal-prev', 'parent-cal-next', 'parent-cal-day', 'parent-cost-toggle']) {
+    ok(new RegExp("var PARENT_ACTS = \\[[^\\]]*'" + act + "'").test(SCRIPT),
+      `${act} is not in PARENT_ACTS, so the control is inert`);
+  }
 });
 
 /* ========================================================================
@@ -5153,18 +5253,6 @@ test('a camping jump clears the sticky topbar', () => {
 /* ========================================================================
    What else the parent view publishes — 2026-08-02
    ===================================================================== */
-
-const BPV = () => {
-  const m = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(m, 'buildParentView() not found');
-  return m[0];
-};
-// Absence assertions ("this key is NEVER published") have to read CODE, not prose. The comments
-// in buildParentView name the very things they forbid — "⚠ tier.madeUp NEVER publishes" — so a
-// naive scan of the source finds `madeUp` and fails on the warning that exists to prevent it.
-// Whole-line comments only: a trailing one is left alone, which errs towards a false FAILURE
-// rather than a false pass.
-const codeOnly = (src) => src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
 
 test('an activity crosses over with its time, its end time and its address', () => {
   // All three are editable, all three are shown to leaders, all three go into the .ics export —

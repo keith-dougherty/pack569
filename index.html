@@ -3377,7 +3377,12 @@
     // camping array — the published trips carry no ids (buildParentView rebuilds each one
     // field by field, and a leader's local trip id is not a parent's business). Like the
     // rest of `ui` this is never persisted, so every visit opens on the first trip.
-    parentCampTrip: 0
+    parentCampTrip: 0,
+    // The parent Schedule tab's month grid. Separate from ui.calMonth so a leader who is also a
+    // parent on another device cannot have one view's month dragged around by the other's.
+    parentCalMonth: '',
+    parentCalDay: '',
+    parentCostOpen: {}   // { den: true } expanded rows on the parent "What a year costs" card
   };
 
   // Wave 15 — warn loudly on the FIRST failed save (not every keystroke); keep trying on
@@ -6974,33 +6979,47 @@
       // Consequence worth knowing: collisions now resolve across the WHOLE roster, so a scout
       // who shares a first name with somebody archived-and-inactive gains an initial they did
       // not have before. That is the safer direction — one more initial, one fewer ambiguity.
+      // Per-scout tier progress, keyed by id. tierProgressRows() walks active scouts only, so an
+      // archived-but-credited scout on the board simply has no entry and shows no tier — which is
+      // right: they are not chasing one.
+      var progById = {};
+      tierProgressRows().forEach(function (p) { progById[p.scout.id] = p; });
       var standings = ranked.map(function (r) {
+          var p = progById[r.id];
           return {
             name: pubName[r.id] || '',
             den: String(r.den || ''),               // the rank only — never s.denLabel or s.note
             combinedCents: r.t.combined,
-            goalPct: (pack.target && !r.archived) ? Math.round(goalBaseOf(r) / pack.target * 100) : null
+            // Owner ask, 2026-08-02: the board shows progress toward the REWARD TIERS, not a
+            // percentage of the pack goal. The pack's own progress is the bar above it, and the
+            // percentage was the figure a parent could not reconcile against the money beside it
+            // (it was measured on goal-eligible money while the money was everything) — replacing
+            // it with the tier a scout has earned answers the question they were actually asking.
+            tier: (p && p.earned) ? String(p.earned.name || '') : '',
+            nextTier: (p && p.next) ? String(p.next.name || '') : '',
+            // What they still have to SELL, never the commission shortfall. Null when the pack has
+            // typed no rate — nobody sells commission, and inventing a figure would be worse.
+            nextSalesCents: (p && p.next && typeof p.shortSales === 'number') ? p.shortSales : null,
+            // What reaching it takes off this family's bill, as a set difference over the charges
+            // the next tier ADDS — two tiers pointed at the same fee do not pay it twice.
+            nextUnlocksCents: (p && p.next) ? (p.unlocks || 0) : 0
           };
         });
-      // The two figures on a standings row answer DIFFERENT questions, and a parent reading
-      // them side by side has every right to expect them to reconcile. combinedCents is
-      // everything the scout brought in; goalPct is measured against goalBaseOf, which leaves
-      // out cash donations the pack keeps (they earn no Trail's End commission and are not part
-      // of the Trail's End goal). So a scout with kept cash shows a bigger dollar figure than
-      // their percentage accounts for. Neither number is wrong — the gap just has to be said.
-      // Published as a flag rather than left to the parent app to infer, because the parent app
-      // cannot see `state`: this is true exactly when at least one row's two numbers disagree.
-      var cashOutsideGoal = ranked.some(function (r) { return r.t.combined !== goalBaseOf(r); });
-
+      // ONE goal, owner ask 2026-08-02. Parents used to get two bars — a Trail's End goal and a
+      // cash-donations goal — which is the pack's own internal split: cash either runs through
+      // Trail's End and earns commission or the pack keeps all of it, and that decision changes
+      // which bar a dollar lands in without changing anything a family did. A family just wants
+      // to know how the pack is doing against what it needs.
+      // The two halves are disjoint by construction — teEligible carries cash only when the
+      // Trail's End toggle is on, and cashKept only when it is off — so their sum is exactly
+      // pack.combined (sales + every donation), with nothing double-counted either way.
       var goals = null;
-      if (pack.teGoal > 0 || pack.cashGoal > 0) {
+      var goalCents = (pack.teGoal || 0) + (pack.cashGoal || 0);
+      if (goalCents > 0) {
         goals = {
-          teGoalCents: pack.teGoal,
-          teRaisedCents: pack.teEligible,
-          tePct: pack.teGoal > 0 ? Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100)) : 0,
-          cashGoalCents: pack.cashGoal,
-          cashRaisedCents: pack.cashKept,
-          cashPct: pack.cashGoal > 0 ? Math.min(100, Math.round(pack.cashKept / pack.cashGoal * 100)) : 0
+          goalCents: goalCents,
+          raisedCents: pack.combined,
+          pct: Math.min(100, Math.round(pack.combined / goalCents * 100))
         };
       }
 
@@ -7054,15 +7073,41 @@
           reward: String(t.reward || ''),
           note: String(t.note || ''),
           dueBy: String(t.dueBy || ''),
-          salesCents: salesForCommission(t.thresholdCents)
+          salesCents: salesForCommission(t.thresholdCents),
+          // What this rung takes off ONE family's bill — the money half of the reward, beside the
+          // words. Zero for a prize-only tier (a patch, a t-shirt), which is not a defect: those
+          // are worth having and cost the family nothing either way.
+          coversCents: tierCoverCentsPerScout(t)
         };
       }).filter(function (t) { return t.name || t.reward; });
+
+      // Owner ask, 2026-08-02: what a year actually costs a family, published as the pack plans
+      // it. This is the joining-meeting question, and it is the figure the reward tiers above are
+      // competing with — a family cannot judge "sell $175 and the pack covers your dues" without
+      // knowing what the year costs in the first place.
+      // ⚠ This is the PLAN, per den, for one scout and the adult who brings them. It is not any
+      // family's balance: no charge, no payment and no per-family total is consulted here, so
+      // nothing a parent sees is another family's business — or even their own account.
+      var familyCost = familyYearCost().map(function (r) {
+        return {
+          den: String(r.den || ''),
+          scoutCents: r.scout, adultCents: r.adult, siblingCents: r.sibling,
+          expectedCents: r.expected,
+          lines: (r.lines || []).map(function (x) {
+            return {
+              name: String(x.name || ''), scoutCents: x.scout, adultCents: x.adult,
+              siblingCents: x.sibling, direct: !!x.direct,
+              payee: String(x.payee || ''), perFamily: !!x.perFamily
+            };
+          })
+        };
+      });
 
       out.standings = standings;
       out.goals = goals;
       out.derby = derby;
       if (tiers.length) out.tiers = tiers;
-      if (cashOutsideGoal) out.cashOutsideGoal = true;
+      if (familyCost.length) out.familyCost = familyCost;
       return out;
     } finally {
       state = prev;
@@ -7971,12 +8016,91 @@
     });
     return h + '</ul>';
   }
+  // The month grid, built from the PUBLISHED events — the leader calendar's shape, without any of
+  // its editing. A list answers "what is next"; a grid answers "what does October look like", and
+  // that is the question a parent with a work rota is actually asking.
+  // A storefront's dot is hollow when any of its shifts is unstaffed, exactly as the leader grid
+  // marks it — parents can now see coverage, so the same signal means the same thing on both sides.
+  function parentCalendar(pv, today) {
+    var evs = Array.isArray(pv.events) ? pv.events : [];
+    var mk = ui.parentCalMonth || monthKey(today);
+    var byDay = {};
+    evs.forEach(function (e) {
+      var d = String((e && e.date) || '');
+      if (monthKey(d) !== mk) return;
+      var day = +d.slice(8, 10);
+      if (!day) return;
+      (byDay[day] = byDay[day] || []).push(e);
+    });
+    var p = mk.split('-'), year = +p[0], mon = +p[1] - 1;
+    var firstDow = new Date(year, mon, 1).getDay();
+    var daysInMonth = new Date(year, mon + 1, 0).getDate();
+    var dows = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+    function dotFor(e) {
+      var k = e && e.kind;
+      if (k === 'storefront') {
+        var shifts = Array.isArray(e.shifts) ? e.shifts : [];
+        var covered = shifts.length && shifts.every(function (s) {
+          return s && Array.isArray(s.who) && s.who.length > 0;
+        });
+        return covered ? 'dot-store' : 'dot-store-open';
+      }
+      if (k === 'meeting') return String(e.title || '').indexOf('Pack') === 0 ? 'dot-pack' : 'dot-mtg';
+      if (k === 'derby') return 'dot-pack';
+      return 'dot-act';
+    }
+    var h = '<div class="card"><div class="cal-head">' +
+      '<button type="button" class="cal-nav" data-act="parent-cal-prev" aria-label="Previous month">‹</button>' +
+      '<span class="cal-title">' + esc(monthLabel(mk)) + '</span>' +
+      '<button type="button" class="cal-nav" data-act="parent-cal-next" aria-label="Next month">›</button></div>' +
+      '<div class="cal-grid">';
+    dows.forEach(function (d) { h += '<div class="cal-dow">' + d + '</div>'; });
+    for (var i = 0; i < firstDow; i++) h += '<div class="cal-cell cal-pad"></div>';
+    for (var day = 1; day <= daysInMonth; day++) {
+      var iso = mk + '-' + pad2(day);
+      var dayEvs = byDay[day];
+      var cls = 'cal-cell';
+      if (iso === today) cls += ' today';
+      if (dayEvs) cls += ' has';
+      if (iso === ui.parentCalDay) cls += ' sel';
+      var mark = '';
+      if (dayEvs) {
+        mark = '<span class="cal-marks">' +
+          dayEvs.slice(0, 3).map(function (e) { return '<span class="cal-dot2 ' + dotFor(e) + '"></span>'; }).join('') +
+          (dayEvs.length > 3 ? '<span class="cal-more">+</span>' : '') + '</span>';
+      }
+      // Same tab-stop diet as the leader grid: only today and days with something on are
+      // focusable, and the rest stay clickable through the delegated handler.
+      var focusable = iso === today || !!dayEvs;
+      h += '<div class="' + cls + '" data-act="parent-cal-day" data-date="' + iso + '"' +
+        (focusable ? ' role="button" tabindex="0" aria-label="' + esc(fmtDate(iso)) +
+          (dayEvs ? ', ' + dayEvs.length + ' event' + (dayEvs.length === 1 ? '' : 's') : '') + '"' : '') +
+        '>' + day + mark + '</div>';
+    }
+    h += '</div>';
+    h += '<div class="row small" style="gap:12px;margin-top:10px;color:var(--ink-soft)">' +
+      '<span><span class="cal-dot2 dot-store"></span> Storefront (full)</span>' +
+      '<span><span class="cal-dot2 dot-store-open"></span> open shift</span>' +
+      '<span><span class="cal-dot2 dot-mtg"></span> Den meeting</span>' +
+      '<span><span class="cal-dot2 dot-pack"></span> Pack</span>' +
+      '<span><span class="cal-dot2 dot-act"></span> Activity</span></div>';
+    // The tapped day, in full, right under the grid it was tapped on.
+    if (ui.parentCalDay && monthKey(ui.parentCalDay) === mk) {
+      var sel = byDay[+ui.parentCalDay.slice(8, 10)];
+      h += '<hr class="divider"><h3 class="section display" style="font-size:1rem;margin:0 0 4px">' +
+        esc(fmtDate(ui.parentCalDay)) + '</h3>';
+      if (!sel) h += '<p class="small muted" style="margin:0">Nothing on this day.</p>';
+      else sel.forEach(function (e) { h += parentEventRow(e); });
+    }
+    return h + '</div>';
+  }
   function renderParentSchedule(pv) {
     var today = todayISO();
     var evs = Array.isArray(pv.events) ? pv.events : [];
     var upcoming = evs.filter(function (e) { return String((e && e.date) || '') >= today; });
     var earlier = evs.filter(function (e) { return String((e && e.date) || '') < today; });
-    var h = '<div class="card"><h2 class="section display">What’s coming up</h2>';
+    var h = parentCalendar(pv, today);
+    h += '<div class="card"><h2 class="section display">What’s coming up</h2>';
     if (!upcoming.length) h += '<p class="small muted" style="margin:0">Nothing scheduled yet — check back soon.</p>';
     else upcoming.forEach(function (e) { h += parentEventRow(e); });
     h += '</div>';
@@ -8016,9 +8140,14 @@
       var target = (t && typeof t.salesCents === 'number') ? fmt(t.salesCents) + ' sold' : '—';
       var reward = String((t && t.reward) || '');
       var note = String((t && t.note) || '');
+      var covers = (t && t.coversCents) || 0;
       h += '<tr><td class="money" style="font-weight:650;white-space:nowrap">' + esc(target) + '</td>' +
         '<td>' + esc(String((t && t.name) || '')) + '</td>' +
         '<td style="white-space:normal">' + (reward ? esc(reward) : '<span class="muted">—</span>') +
+        // The money half of the reward, beside the words. A prize-only rung has none, and saying
+        // so would be noise — a patch is worth having and costs the family nothing either way.
+        (covers > 0 ? '<br><span class="small"><strong class="money">' + fmt(covers) +
+          '</strong> off your costs</span>' : '') +
         (note ? '<br><span class="small muted">' + esc(note) + '</span>' : '') + '</td>' +
         '<td style="white-space:nowrap">' + (t && t.dueBy ? esc(fmtDate(String(t.dueBy))) : '<span class="muted">any time</span>') +
         '</td></tr>';
@@ -8027,50 +8156,119 @@
       '<p class="small muted" style="margin:10px 0 0">Figures are what a scout needs to <strong>sell</strong> ' +
       'to reach each tier. Ask a pack leader if you are not sure where your scout stands.</p></div>';
   }
+  // Owner ask, 2026-08-02: what a year costs a family, and what the tiers take off it. The
+  // joining-meeting question, and the only frame in which "sell $175" means anything — a target
+  // with no bill beside it is just a number.
+  // Per den, because den-limited events are most of what makes two families' years differ. This is
+  // the PLAN for one scout and the adult who brings them, gross, earning nothing: the most a
+  // family can be asked for. It is not anybody's balance.
+  function parentFamilyCost(pv) {
+    var dens = Array.isArray(pv.familyCost) ? pv.familyCost : [];
+    if (!dens.length) return '';
+    var tiers = Array.isArray(pv.tiers) ? pv.tiers : [];
+    // The best case the ladder offers a single scout: the deepest rung's own cover, not the sum of
+    // every rung. Two tiers can be pointed at the same fee, and coversCents is already the whole
+    // amount that rung waives — adding them would promise a family the same dues twice.
+    var bestCover = tiers.reduce(function (m, t) { return Math.max(m, (t && t.coversCents) || 0); }, 0);
+    var h = '<div class="card"><h2 class="section display">What a year costs a family</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">Out of pocket for <strong>one scout and the adult who ' +
+      'brings them</strong>, across the whole year, if the scout earns <strong>no reward tier at all</strong>. ' +
+      'It counts everything families pay, whether the pack collects it or a council does. Siblings are extra ' +
+      'and listed separately, because nothing requires one to come.</p>';
+    dens.forEach(function (d) {
+      var open = !!ui.parentCostOpen[d.den || ''];
+      var label = String(d.den || '') || 'No den set';
+      var expected = d.expectedCents || 0;
+      var after = Math.max(0, expected - bestCover);
+      h += '<div class="list-row' + (open ? ' open' : '') + '" data-act="parent-cost-toggle" data-name="' +
+        esc(String(d.den || '')) + '" role="button" tabindex="0" aria-expanded="' + open + '"' +
+        ' aria-label="' + esc(label + ', ' + fmt(expected) + ' for a scout and one adult') + '">' +
+        '<div style="min-width:0"><div class="lr-name">' + esc(label) + ' <strong class="money">' +
+        fmt(expected) + '</strong></div>' +
+        '<div class="small muted">scout ' + fmt(d.scoutCents || 0) +
+        ((d.adultCents || 0) ? ' + one adult ' + fmt(d.adultCents) : '') +
+        ((d.siblingCents || 0) ? ' · a sibling adds ' + fmt(d.siblingCents) : '') + '</div>' +
+        // The whole point of showing a family the bill: what the ladder does to it.
+        (bestCover > 0
+          ? '<div class="small" style="margin-top:3px">Reaching the top tier brings this down to <strong class="money">' +
+            fmt(after) + '</strong></div>'
+          : '') +
+        '</div><span class="mo-chev" aria-hidden="true">' + (open ? '▾' : '›') + '</span></div>';
+      if (!open) return;
+      h += '<ul class="small" style="margin:2px 0 8px;padding-left:18px;line-height:1.7">' +
+        (d.lines || []).map(function (x) {
+          return '<li>' + esc(String(x.name || '')) + ' — <span class="money">' +
+            fmt((x.scoutCents || 0) + (x.adultCents || 0)) + '</span>' +
+            ((x.adultCents || 0) ? ' <span class="muted">(scout ' + fmt(x.scoutCents || 0) +
+              ' + adult ' + fmt(x.adultCents) + ')</span>' : '') +
+            (x.perFamily ? ' <span class="muted">one fee per family</span>' : '') +
+            ((x.siblingCents || 0) ? ' <span class="muted">· sibling ' + fmt(x.siblingCents) + '</span>' : '') +
+            (x.direct ? ' <span class="pill navy">' + esc(String(x.payee || 'paid direct')) + '</span>' : '') +
+            '</li>';
+        }).join('') + '</ul>';
+    });
+    return h + '<p class="small muted" style="margin:8px 0 0">These are what the pack plans for, not a bill — ' +
+      'ask a pack leader what your family currently owes.</p></div>';
+  }
+  // The "Next tier" cell: the rung ahead, what is still to sell, and what reaching it takes off
+  // this family's bill. Three facts, because on their own each one raises the next question —
+  // "Pack tee" invites "how much more?", and "$175 more" invites "and what is that worth to me?".
+  // A scout at the top of the ladder gets the plain statement instead, not a blank.
+  function parentNextTierCell(r) {
+    if (!r || !r.nextTier) {
+      return r && r.tier
+        ? '<span class="muted">every tier earned</span>'
+        : '<span class="muted">—</span>';
+    }
+    var h = esc(String(r.nextTier));
+    if (typeof r.nextSalesCents === 'number' && r.nextSalesCents > 0) {
+      h += '<br><span class="small"><strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell</span>';
+    }
+    if ((r.nextUnlocksCents || 0) > 0) {
+      h += '<br><span class="small muted">worth <span class="money">' + fmt(r.nextUnlocksCents) + '</span> off your costs</span>';
+    }
+    return h;
+  }
   function renderParentStandings(pv) {
     var h = '';
     var g = pv.goals;
-    if (g && ((g.teGoalCents || 0) > 0 || (g.cashGoalCents || 0) > 0)) {
-      h += '<div class="card"><h2 class="section display">Pack goals</h2>';
-      if ((g.teGoalCents || 0) > 0) h += parentGoalBar('Trail’s End goal', g.teRaisedCents, g.teGoalCents, g.tePct);
-      if ((g.cashGoalCents || 0) > 0) {
-        if ((g.teGoalCents || 0) > 0) h += '<hr class="divider">';
-        h += parentGoalBar('Cash donations goal', g.cashRaisedCents, g.cashGoalCents, g.cashPct);
-      }
-      h += '</div>';
+    // ONE bar. Whether a dollar of cash runs through Trail's End or the pack keeps it is an
+    // internal decision that moved money between two bars without any family having done
+    // anything differently.
+    if (g && (g.goalCents || 0) > 0) {
+      h += '<div class="card"><h2 class="section display">Pack goal</h2>' +
+        parentGoalBar('Raised so far', g.raisedCents, g.goalCents, g.pct) + '</div>';
     }
     var rows = Array.isArray(pv.standings) ? pv.standings : [];
     h += '<div class="card"><h2 class="section display">Scout standings</h2>';
     if (!rows.length) h += '<p class="small muted" style="margin:0">No sales recorded yet.</p>';
     else {
-      // A real table, not four spans a row. The board is four columns of tabular data and the
-      // two money columns used to sit side by side with nothing naming either of them — a
-      // parent had to guess which was the total and what the percentage was a percentage OF.
-      // <th scope="col"> is also the only way the columns reach a screen reader at all; the
-      // .pv-stand rows this replaced carried no association between a figure and its meaning.
+      // A real table, not four spans a row. <th scope="col"> is the only way the columns reach a
+      // screen reader at all; the .pv-stand rows this replaced associated no figure with any
+      // meaning.
+      // The last two columns used to be one "Of goal" percentage, which was measured on
+      // goal-eligible money while the money beside it was everything — the two could not be
+      // reconciled and needed a footnote to explain why. Tier progress replaces it: the same
+      // space, answering the question a family was asking of that percentage anyway.
       h += '<div class="tbl-wrap"><table><thead><tr>' +
         '<th scope="col" class="num">#</th><th scope="col">Scout</th>' +
-        '<th scope="col" class="num">Raised</th><th scope="col" class="num">Of goal</th>' +
+        '<th scope="col" class="num">Raised</th><th scope="col">Earned</th>' +
+        '<th scope="col">Next tier</th>' +
         '</tr></thead><tbody>';
       rows.forEach(function (r, i) {
-        var pct = (r && r.goalPct != null) ? (r.goalPct + '%') : '—';
         h += '<tr><td class="num">' + (i + 1) + '</td>' +
           '<td>' + esc(String((r && r.name) || '')) +
           ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') + '</td>' +
           '<td class="num money" style="font-weight:650">' + fmt((r && r.combinedCents) || 0) + '</td>' +
-          '<td class="num">' + esc(pct) + '</td></tr>';
+          '<td>' + ((r && r.tier) ? '<span class="pill good">' + esc(String(r.tier)) + '</span>'
+                                  : '<span class="muted">—</span>') + '</td>' +
+          '<td style="white-space:normal">' + parentNextTierCell(r) + '</td></tr>';
       });
       h += '</tbody></table></div>';
-      // Only when the two columns actually disagree for somebody — see buildParentView. A pack
-      // that runs its cash through Trail's End never sees this, because there nothing is left out.
-      if (pv.cashOutsideGoal) {
-        h += '<p class="small muted" style="margin:10px 0 0"><strong>Raised</strong> is everything a scout ' +
-          'brought in. <strong>Of goal</strong> counts only what goes through Trail’s End, so cash ' +
-          'donations the pack keeps are not part of it — which is why the two can look out of step.</p>';
-      }
     }
     h += '</div>';
     h += parentTierLadder(pv);
+    h += parentFamilyCost(pv);
     var d = pv.derby;
     var winners = (d && Array.isArray(d.winners)) ? d.winners : [];
     var awards = (d && Array.isArray(d.awards)) ? d.awards : [];
@@ -16256,7 +16454,8 @@
   // Parent phase — the parent app only ever emits these four actions. Anything else that
   // somehow reaches the handler in that mode is ignored, so no code path can mutate the
   // pack record or read `state` on a parent's device.
-  var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'sign-out-google', 'toast-action'];
+  var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-cal-prev', 'parent-cal-next',
+    'parent-cal-day', 'parent-cost-toggle', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -16366,6 +16565,23 @@
       var pcWant = parseInt(el.dataset.section, 10);
       if (pcWant >= 0 && pcWant < parentTrips().length) ui.parentCampTrip = pcWant;
       ui.resetScroll = true;
+      render(); return;
+    }
+    // The parent month grid. Deliberately does NOT clear the selected day on a month change: the
+    // detail block hides itself when the day is not in the shown month, so stepping away and back
+    // finds it still open, which is what a leader's calendar does too.
+    if (act === 'parent-cal-prev' || act === 'parent-cal-next') {
+      ui.parentCalMonth = shiftMonth(ui.parentCalMonth || monthKey(todayISO()), act === 'parent-cal-next' ? 1 : -1);
+      render(); return;
+    }
+    if (act === 'parent-cal-day') {
+      var pcd = el.dataset.date || '';
+      ui.parentCalDay = (ui.parentCalDay === pcd) ? '' : pcd;   // tapping the open day closes it
+      render(); return;
+    }
+    if (act === 'parent-cost-toggle') {
+      var pcDen = el.dataset.name || '';
+      ui.parentCostOpen[pcDen] = !ui.parentCostOpen[pcDen];
       render(); return;
     }
     // ---- Accounts ----
