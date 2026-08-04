@@ -4551,10 +4551,14 @@
   //   covered   what the whole reward ladder takes off `expected` (see allTierCoverKeys)
   function familyYearCostForDen(den) {
     var one = [{ id: '_one', den: den || '' }];
-    var out = { den: den || '', scout: 0, adult: 0, sibling: 0, throughPack: 0, direct: 0, covered: 0, lines: [] };
+    var out = { den: den || '', scout: 0, adult: 0, sibling: 0, throughPack: 0, direct: 0, covered: 0, steps: [], lines: [] };
     // Den-aware, unlike the pack-wide tierCoverCentsPerScout: a tier pointed at a Webelos-only
     // event is worth nothing to a Lion, and this figure is quoted per den.
     var covKeys = allTierCoverKeys();
+    // What THIS den pays for each coverable share, so the rung-by-rung walk below can price a
+    // tier's covers against the bill this family actually has. A key missing from here is an
+    // event this den does not attend, and it is worth nothing to them however many tiers name it.
+    var mine = {};
     allBudgetLines().forEach(function (r) {
       var l = r.line;
       if (!lineFamilyFunded(l)) return;                      // the pack pays it: costs a family nothing
@@ -4570,6 +4574,8 @@
       out.scout += sc; out.adult += ad; out.sibling += sb;
       // Scout and adult only, because `expected` is scout + adult: a covered SIBLING share
       // cannot come off a figure that never included one.
+      mine[coverKeyOf(r.key, 'scout')] = sc;
+      if (ad) mine[coverKeyOf(r.key, 'adult')] = ad;
       if (covKeys[coverKeyOf(r.key, 'scout')]) out.covered += sc;
       if (ad && covKeys[coverKeyOf(r.key, 'adult')]) out.covered += ad;
       // The two halves split the EXPECTED cost — scout plus the one adult — because that is the
@@ -4583,6 +4589,27 @@
     });
     // What a family with one scout actually pays: the scout and the adult who brings them.
     out.expected = out.scout + out.adult;
+    // THE LADDER, PRICED FOR THIS DEN — owner ask, 2026-08-04: "what does my year drop to".
+    //
+    // A rung's own figure is a margin, not a total, and the reward ladder card is pack-wide so
+    // it cannot say what any of it is worth to a Tiger. Walking the rungs HERE fixes both: keys
+    // accumulate (coverage stacks), a key already seen adds nothing (two rungs can name one fee),
+    // and every rate comes from `mine` — this den's own bill — so a tier that buys Webelos Woods
+    // moves a Webelos family's figure and nobody else's.
+    var seenKeys = {};
+    var run = 0;
+    sortedTiers().forEach(function (t) {
+      arrOf(t.covers).forEach(function (k) {
+        if (seenKeys[k]) return;
+        seenKeys[k] = true;
+        run += mine[k] || 0;
+      });
+      if (!t.name && !t.reward) return;                     // the ladder card hides these too
+      out.steps.push({
+        name: String(t.name || ''), salesCents: salesForCommission(t.thresholdCents),
+        coveredCents: run, afterCents: Math.max(0, out.expected - run)
+      });
+    });
     out.lines.sort(function (a, b) {
       return (b.scout + b.adult) - (a.scout + a.adult) || a.name.localeCompare(b.name);
     });
@@ -7157,11 +7184,10 @@
           reward: String(t.reward || ''),
           note: String(t.note || ''),
           dueBy: String(t.dueBy || ''),
-          salesCents: salesForCommission(t.thresholdCents),
-          // What this rung takes off ONE family's bill — the money half of the reward, beside the
-          // words. Zero for a prize-only tier (a patch, a t-shirt), which is not a defect: those
-          // are worth having and cost the family nothing either way.
-          coversCents: tierCoverCentsPerScout(t)
+          salesCents: salesForCommission(t.thresholdCents)
+          // ⚠ What a rung is WORTH is published per den, on familyCost[].steps — not here. This
+          // list has no den in it, and a tier can cover a den-limited event, so one figure here
+          // would be wrong for every den that does not attend it.
         };
       }).filter(function (t) { return t.name || t.reward; });
 
@@ -7181,6 +7207,15 @@
           // once and den-aware. Published rather than derived in the parent app, because only
           // this side can see which lines a den actually attends.
           coveredCents: r.covered,
+          // The same thing rung by rung: what this den's year drops to at each tier. It is the
+          // only place a parent gets a money figure for the ladder, deliberately — the ladder
+          // card itself has no den, so any figure printed there is wrong for somebody.
+          steps: (r.steps || []).map(function (x) {
+            return {
+              name: String(x.name || ''), salesCents: x.salesCents,
+              coveredCents: x.coveredCents, afterCents: x.afterCents
+            };
+          }),
           lines: (r.lines || []).map(function (x) {
             return {
               name: String(x.name || ''), scoutCents: x.scout, adultCents: x.adult,
@@ -8241,30 +8276,29 @@
     if (!tiers.length) return '';
     var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
       '<div class="tbl-wrap"><table><thead><tr>' +
-      '<th scope="col">Reach</th><th scope="col">Tier</th>' +
-      '<th scope="col">Reward</th><th scope="col">By</th>' +
+      '<th scope="col">Sell</th><th scope="col">Tier</th>' +
+      '<th scope="col">What it gets you</th><th scope="col">By</th>' +
       '</tr></thead><tbody>';
     tiers.forEach(function (t) {
-      var target = (t && typeof t.salesCents === 'number') ? fmt(t.salesCents) + ' sold' : '—';
+      var target = (t && typeof t.salesCents === 'number') ? fmt(t.salesCents) : '—';
       var reward = String((t && t.reward) || '');
       var note = String((t && t.note) || '');
-      var covers = (t && t.coversCents) || 0;
       h += '<tr><td class="money" style="font-weight:650;white-space:nowrap">' + esc(target) + '</td>' +
         '<td>' + esc(String((t && t.name) || '')) + '</td>' +
         '<td style="white-space:normal">' + (reward ? esc(reward) : '<span class="muted">—</span>') +
-        // The money half of the reward, beside the words. A prize-only rung has none, and saying
-        // so would be noise — a patch is worth having and costs the family nothing either way.
-        // "adds", because the rungs stack: this is what THIS one puts on top of the ones below,
-        // which is the same figure the leaders' side calls the tier's own cover.
-        (covers > 0 ? '<br><span class="small">adds <strong class="money">' + fmt(covers) +
-          '</strong> off your costs</span>' : '') +
+        // ⚠ NO MONEY FIGURE HERE, deliberately (2026-08-04). This card has no den, and a tier can
+        // cover a den-limited event — Tigermania is worth $20 to a Tiger and nothing to a Wolf —
+        // so any figure printed in this column is wrong for somebody. The money lives per den in
+        // "What a year costs a family", where it is exact and sits next to the bill it reduces.
         (note ? '<br><span class="small muted">' + esc(note) + '</span>' : '') + '</td>' +
         '<td style="white-space:nowrap">' + (t && t.dueBy ? esc(fmtDate(String(t.dueBy))) : '<span class="muted">any time</span>') +
         '</td></tr>';
     });
     return h + '</tbody></table></div>' +
       '<p class="small muted" style="margin:10px 0 0">Figures are what a scout needs to <strong>sell</strong> ' +
-      'to reach each tier. Ask a pack leader if you are not sure where your scout stands.</p></div>';
+      'to reach each tier, and each rung keeps everything the ones below it cover. What that is worth ' +
+      'in money is under your den in <strong>What a year costs a family</strong>. Ask a pack leader if ' +
+      'you are not sure where your scout stands.</p></div>';
   }
   // Owner ask, 2026-08-02: what a year costs a family, and what the tiers take off it. The
   // joining-meeting question, and the only frame in which "sell $175" means anything — a target
@@ -8316,6 +8350,24 @@
             (x.direct ? ' <span class="pill navy">' + esc(String(x.payee || 'paid direct')) + '</span>' : '') +
             '</li>';
         }).join('') + '</ul>';
+      // The ladder, priced for this den. A parent reading the reward tiers card learns what they
+      // GET; this is the same rungs answering what they PAY, which is the question underneath it.
+      var steps = Array.isArray(d.steps) ? d.steps.filter(function (x) { return x && x.coveredCents > 0; }) : [];
+      if (!steps.length) return;
+      h += '<p class="eyebrow" style="margin:2px 0 4px">What each reward tier drops it to</p>' +
+        '<div class="tbl-wrap"><table><caption class="visually-hidden">Reward tiers and what a ' +
+        esc(label) + ' family still pays</caption><thead><tr>' +
+        '<th scope="col">Sell</th><th scope="col">Tier</th><th scope="col">Your year drops to</th>' +
+        '</tr></thead><tbody>' +
+        steps.map(function (x) {
+          return '<tr><td class="money" style="white-space:nowrap">' +
+            (typeof x.salesCents === 'number' ? esc(fmt(x.salesCents)) : '<span class="muted">—</span>') +
+            '</td><td style="white-space:normal">' + esc(String(x.name || '')) + '</td>' +
+            '<td class="money" style="font-weight:650;white-space:nowrap">' + fmt(x.afterCents || 0) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' +
+        '<p class="small muted" style="margin:6px 0 10px">Each rung includes the ones below it, so ' +
+        'reaching a higher tier keeps everything the earlier ones cover. Figures are what a scout ' +
+        'needs to <strong>sell</strong>.</p>';
     });
     return h + '<p class="small muted" style="margin:8px 0 0">These are what the pack plans for, not a bill — ' +
       'ask a pack leader what your family currently owes.</p></div>';

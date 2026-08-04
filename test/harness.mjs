@@ -4774,7 +4774,8 @@ test('a year of Scouting, priced for a family that earns no tier', () => {
      ${slice('DENS')}
      function activeScouts() { return SCOUTS; }
      function allBudgetLines() { return LINES.map(function (l) { return { kind: 'activity', line: l, key: l.name }; }); }
-     function lineDens(l) { return l.dens || []; }`, ctx);
+     function lineDens(l) { return l.dens || []; }
+     function salesForCommission(c) { return c * 3; }`, ctx);
   ctx.SCOUTS = [{ id: 'a', den: 'Wolf' }, { id: 'b', den: 'Lion' }, { id: 'c', den: '' }];
   ctx.LINES = [
     { name: 'Registration', basis: 'per-head', scoutRateCents: 8500, fundedBy: 'families', paidDirectTo: '', dens: [] },
@@ -4819,9 +4820,9 @@ test('a year of Scouting, priced for a family that earns no tier', () => {
   // WHAT THE LADDER TAKES OFF IT. Three rungs that stack, two of them pointed at the same
   // banquet — the union, valued once, den-aware, scout and adult only.
   ctx.state.rewardTiers.tiers = [
-    { id: 'a', thresholdCents: 15000, covers: ['Registration'] },
-    { id: 'b', thresholdCents: 33000, covers: ['Blue & Gold', 'Tigermania'] },
-    { id: 'c', thresholdCents: 41500, covers: ['Blue & Gold', 'Blue & Gold#adult'] }
+    { id: 'a', name: 'a', thresholdCents: 15000, covers: ['Registration'] },
+    { id: 'b', name: 'b', thresholdCents: 33000, covers: ['Blue & Gold', 'Tigermania'] },
+    { id: 'c', name: 'c', thresholdCents: 41500, covers: ['Blue & Gold', 'Blue & Gold#adult'] }
   ];
   const wolf2 = vm.runInContext("familyYearCostForDen('Wolf')", ctx);
   // 85 registration + 42 banquet + 56 the banquet's adult. NOT Tigermania — no Wolf attends it,
@@ -4830,6 +4831,22 @@ test('a year of Scouting, priced for a family that earns no tier', () => {
   eq(wolf2.expected - wolf2.covered, 6500, 'what a Wolf family still pays with every tier earned');
   const lion2 = vm.runInContext("familyYearCostForDen('Lion')", ctx);
   eq(lion2.covered - wolf2.covered, 2000, 'a Lion, who does attend Tigermania, is covered for it');
+
+  // RUNG BY RUNG, for this den. Wolf year = 24800; rung a covers registration (8500) → 16300 left;
+  // rung b adds the banquet (4200) and Tigermania, which a Wolf does not attend → 12100; rung c
+  // names the banquet AGAIN (nothing new) and its adult share (5600) → 6500.
+  eq(wolf2.steps.map((s) => s.afterCents), [16300, 12100, 6500], 'what a Wolf year drops to at each rung');
+  eq(wolf2.steps.map((s) => s.coveredCents), [8500, 12700, 18300], 'cover accumulates down the rungs');
+  eq(wolf2.steps.map((s) => s.name), ['a', 'b', 'c'], 'the rungs are listed lowest threshold first');
+  eq(wolf2.steps[0].salesCents, 45000, 'the sell figure is the threshold converted, not the threshold');
+  // The Lion attends Tigermania, so the SAME rung is worth 2000 more to them.
+  eq(lion2.steps.map((s) => s.afterCents), [18300, 12100, 6500], 'a Lion’s rungs price their own year');
+  // A rung with no name is not listed — the ladder card hides it too — but its covers still
+  // ACCUMULATE, or every rung above it would be quoted a year that is too high.
+  ctx.state.rewardTiers.tiers.splice(1, 0, { id: 'x', thresholdCents: 20000, covers: ['Spring camp'] });
+  const named = vm.runInContext("familyYearCostForDen('Wolf')", ctx);
+  eq(named.steps.map((s) => s.name), ['a', 'b', 'c'], 'an unnamed rung was listed');
+  eq(named.steps.map((s) => s.afterCents), [16300, 8600, 3000], 'an unnamed rung’s covers were dropped');
   // A covered SIBLING share must not come off a figure that never counted a sibling.
   ctx.state.rewardTiers.tiers = [{ id: 'a', thresholdCents: 15000, covers: ['Blue & Gold#sibling'] }];
   eq(vm.runInContext("familyYearCostForDen('Wolf')", ctx).covered, 0,
@@ -5176,8 +5193,13 @@ test('a family can see what the year costs, and what a tier takes off it', () =>
   // The PLAN, per den — not any family's balance. None of these may be consulted.
   ok(!/scoutOwesCents|state\.charges|state\.collected|chargesFor/.test(src),
     'a family’s actual balance is reachable from the published view');
-  // The money half of each reward, so the ladder and the bill can be read against each other.
-  ok(/coversCents: tierCoverCentsPerScout\(t\)/.test(src), 'a tier does not publish what it waives');
+  // ⚠ The ladder must NOT publish or print a money figure: it has no den, and a tier can cover a
+  // den-limited event (Tigermania is $20 to a Tiger, nothing to a Wolf). The worth is per den, on
+  // familyCost[].steps, next to the bill it reduces.
+  ok(!/coversCents/.test(src), 'the den-less ladder publishes a money figure again');
+  const lad2 = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(lad2 && !/coversCents|off your costs/.test(lad2[0]), 'the ladder prints a den-blind money figure');
+  ok(/steps: \(r\.steps \|\| \[\]\)\.map/.test(src), 'the per-den ladder steps are not published');
   // What the whole ladder takes off the figure, published per den.
   ok(/coveredCents: r\.covered/.test(src), 'the year cost never says what the tiers cover');
   const fn = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
@@ -5192,9 +5214,10 @@ test('a family can see what the year costs, and what a tier takes off it', () =>
   ok(/Math\.max\(0, expected - cover\)/.test(fn[0]), 'the after-tier figure can go negative');
   // A payload written before the field existed must show no claim at all, not a stale one.
   ok(/\(cover > 0/.test(fn[0]), 'an old payload still prints an after-tier figure');
-  // The ladder's own column stays per-rung, and has to SAY so now that the two differ.
-  const lad = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(lad && /adds <strong class="money">/.test(lad[0]), 'a rung claims its own figure is the whole ladder');
+  // The den-exact rung table: the only money figure a parent gets for the ladder.
+  ok(/Your year drops to/.test(fn[0]), 'the den row does not say what each tier drops the year to');
+  ok(/d\.steps/.test(fn[0]) && /x\.afterCents/.test(fn[0]), 'the rung table is not driven by the published steps');
+  ok(/coveredCents > 0/.test(fn[0]), 'a rung that covers this den nothing still gets a row');
 });
 
 test('a rung named on two tiers is handed back once, not twice', () => {
@@ -5457,7 +5480,10 @@ test('the ladder shows a rung with no measurable target, rather than a target of
     { name: 'Dues covered', reward: 'The pack pays your dues', note: '', dueBy: '2026-10-15', salesCents: 17500 },
     { name: 'Camp week', reward: 'A week of camp', note: 'Sign up by the November meeting.', dueBy: '', salesCents: 87500 }
   ] });
-  ok(/\$175\.00 sold/.test(full), 'the sell-through target');
+  // The word "sold" left the cell when the column header became "Sell" — saying it twice is
+  // noise, and the footnote under the table says it once more for anyone who scrolled past.
+  ok(/>\$175\.00</.test(full), 'the sell-through target');
+  ok(/<th scope="col">Sell<\/th>/.test(full), 'the column does not say what the figure is');
   ok(/any time/.test(full), 'a tier with no deadline should say so, not show a blank');
   ok(/Sign up by the November meeting\./.test(full), 'the tier note is dropped');
   eq(rows(full), 3, 'a header row and one row per tier');
