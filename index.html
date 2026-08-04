@@ -4503,6 +4503,23 @@
       return { family: fam, scouts: fam.members, cents: cents };
     }).filter(function (f) { return f.cents > 0; });
   }
+  // WHAT THE REWARD LADDER TAKES OFF A FAMILY'S YEAR — every tier's covers, unioned.
+  //
+  // Coverage STACKS: packCoverage() credits a scout every tier they have reached, not just the
+  // highest. So the best case a family can plan on is the UNION of what all the rungs name,
+  // valued ONCE — two rungs pointed at the same corn maze cover it once, not twice.
+  //
+  // ⚠ This is what the parent view got wrong until 2026-08-04: it took the LARGEST single
+  // rung's own figure, and a rung's own figure counts only what that rung ADDS. For Pack 569
+  // that quoted $146 of a $500 ladder, so a family reading "reaching the top tier brings this
+  // down to $451" was told the ladder was worth less than a third of what it is.
+  function allTierCoverKeys() {
+    var keys = {};
+    sortedTiers().forEach(function (t) {
+      arrOf(t.covers).forEach(function (k) { keys[k] = true; });
+    });
+    return keys;
+  }
   // WHAT A YEAR OF SCOUTING COSTS A FAMILY, WITH NO TIER EARNED — owner ask, 2026-08-02.
   //
   // Every other family figure in this app is netted down by something: fees a tier covers leave
@@ -4531,9 +4548,13 @@
   //   expected  scout + adult, which is what a family with one scout actually pays
   //   sibling   a younger brother or sister brought along. Genuinely optional, so it stays
   //             separate — no pack requires a sibling to attend anything.
+  //   covered   what the whole reward ladder takes off `expected` (see allTierCoverKeys)
   function familyYearCostForDen(den) {
     var one = [{ id: '_one', den: den || '' }];
-    var out = { den: den || '', scout: 0, adult: 0, sibling: 0, throughPack: 0, direct: 0, lines: [] };
+    var out = { den: den || '', scout: 0, adult: 0, sibling: 0, throughPack: 0, direct: 0, covered: 0, lines: [] };
+    // Den-aware, unlike the pack-wide tierCoverCentsPerScout: a tier pointed at a Webelos-only
+    // event is worth nothing to a Lion, and this figure is quoted per den.
+    var covKeys = allTierCoverKeys();
     allBudgetLines().forEach(function (r) {
       var l = r.line;
       if (!lineFamilyFunded(l)) return;                      // the pack pays it: costs a family nothing
@@ -4547,6 +4568,10 @@
       var sb = linePerFamily(l) ? 0 : (l.siblingRateCents || 0);
       if (!sc && !ad && !sb) return;
       out.scout += sc; out.adult += ad; out.sibling += sb;
+      // Scout and adult only, because `expected` is scout + adult: a covered SIBLING share
+      // cannot come off a figure that never included one.
+      if (covKeys[coverKeyOf(r.key, 'scout')]) out.covered += sc;
+      if (ad && covKeys[coverKeyOf(r.key, 'adult')]) out.covered += ad;
       // The two halves split the EXPECTED cost — scout plus the one adult — because that is the
       // figure they are reconciling. Splitting the scout share alone would tie to nothing on
       // screen once the adult is in the headline.
@@ -7152,6 +7177,10 @@
           den: String(r.den || ''),
           scoutCents: r.scout, adultCents: r.adult, siblingCents: r.sibling,
           expectedCents: r.expected,
+          // What every reward tier together takes off this den's figure — the union, valued
+          // once and den-aware. Published rather than derived in the parent app, because only
+          // this side can see which lines a den actually attends.
+          coveredCents: r.covered,
           lines: (r.lines || []).map(function (x) {
             return {
               name: String(x.name || ''), scoutCents: x.scout, adultCents: x.adult,
@@ -8225,7 +8254,9 @@
         '<td style="white-space:normal">' + (reward ? esc(reward) : '<span class="muted">—</span>') +
         // The money half of the reward, beside the words. A prize-only rung has none, and saying
         // so would be noise — a patch is worth having and costs the family nothing either way.
-        (covers > 0 ? '<br><span class="small"><strong class="money">' + fmt(covers) +
+        // "adds", because the rungs stack: this is what THIS one puts on top of the ones below,
+        // which is the same figure the leaders' side calls the tier's own cover.
+        (covers > 0 ? '<br><span class="small">adds <strong class="money">' + fmt(covers) +
           '</strong> off your costs</span>' : '') +
         (note ? '<br><span class="small muted">' + esc(note) + '</span>' : '') + '</td>' +
         '<td style="white-space:nowrap">' + (t && t.dueBy ? esc(fmtDate(String(t.dueBy))) : '<span class="muted">any time</span>') +
@@ -8244,11 +8275,6 @@
   function parentFamilyCost(pv) {
     var dens = Array.isArray(pv.familyCost) ? pv.familyCost : [];
     if (!dens.length) return '';
-    var tiers = Array.isArray(pv.tiers) ? pv.tiers : [];
-    // The best case the ladder offers a single scout: the deepest rung's own cover, not the sum of
-    // every rung. Two tiers can be pointed at the same fee, and coversCents is already the whole
-    // amount that rung waives — adding them would promise a family the same dues twice.
-    var bestCover = tiers.reduce(function (m, t) { return Math.max(m, (t && t.coversCents) || 0); }, 0);
     var h = '<div class="card"><h2 class="section display">What a year costs a family</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Out of pocket for <strong>one scout and the adult who ' +
       'brings them</strong>, across the whole year, if the scout earns <strong>no reward tier at all</strong>. ' +
@@ -8258,7 +8284,11 @@
       var open = !!ui.parentCostOpen[d.den || ''];
       var label = String(d.den || '') || 'No den set';
       var expected = d.expectedCents || 0;
-      var after = Math.max(0, expected - bestCover);
+      // Every tier, not the biggest one: the rungs stack, so a scout at the top has earned all
+      // of them. Falls back to nothing on a payload published before 2026-08-04, which is the
+      // safe direction — the line simply does not appear rather than quoting a stale figure.
+      var cover = d.coveredCents || 0;
+      var after = Math.max(0, expected - cover);
       h += '<div class="list-row' + (open ? ' open' : '') + '" data-act="parent-cost-toggle" data-name="' +
         esc(String(d.den || '')) + '" role="button" tabindex="0" aria-expanded="' + open + '"' +
         ' aria-label="' + esc(label + ', ' + fmt(expected) + ' for a scout and one adult') + '">' +
@@ -8267,10 +8297,11 @@
         '<div class="small muted">scout ' + fmt(d.scoutCents || 0) +
         ((d.adultCents || 0) ? ' + one adult ' + fmt(d.adultCents) : '') +
         ((d.siblingCents || 0) ? ' · a sibling adds ' + fmt(d.siblingCents) : '') + '</div>' +
-        // The whole point of showing a family the bill: what the ladder does to it.
-        (bestCover > 0
-          ? '<div class="small" style="margin-top:3px">Reaching the top tier brings this down to <strong class="money">' +
-            fmt(after) + '</strong></div>'
+        // The whole point of showing a family the bill: what the ladder does to it. Every rung,
+        // because they stack — and said that way, so nobody reads it as one tier's doing.
+        (cover > 0
+          ? '<div class="small" style="margin-top:3px">Earning every reward tier brings this down to <strong class="money">' +
+            fmt(after) + '</strong> <span class="muted">(' + fmt(cover) + ' covered)</span></div>'
           : '') +
         '</div><span class="mo-chev" aria-hidden="true">' + (open ? '▾' : '›') + '</span></div>';
       if (!open) return;
@@ -9728,11 +9759,14 @@
   // scout can act on: nobody sells commission. `needSales` is the sales that reach the threshold
   // at the lower rate, which is the figure to put on a poster. Cover is cumulative, because the
   // tiers stack and so does what a scout at this level walks away with.
-  // What a SET of cover keys is worth, counting each key once. tierCumulativeCoverCents below
-  // sums tier by tier, which double-counts when two tiers are pointed at the same line — fine for
-  // what it is used for (tierBreakEven's "does this tier pay for itself"), wrong for "what does
-  // reaching the next one ADD", because packCoverage unions the keys and a key covered twice
-  // covers nothing extra.
+  // What a SET of cover keys is worth, counting each key once — because packCoverage() unions
+  // the keys, and a key covered twice covers nothing extra.
+  //
+  // ⚠ tierCumulativeCoverCents used to SUM tier by tier, and the comment here defended that as
+  // "fine for tierBreakEven". It was not: Pack 569 names the Gladiators and the corn maze on
+  // two rungs each, so the top adult tier's break-even claimed $629 handed back against a real
+  // $582 — $47 of coverage the pack would have been asked to fund twice. Both readers now go
+  // through this one function (2026-08-04).
   function coverValueOfKeys(keys) {
     var cents = 0;
     coverableLines().forEach(function (r) {
@@ -9743,11 +9777,11 @@
     return cents;
   }
   function tierCumulativeCoverCents(t) {
-    var cents = 0;
+    var keys = {};
     sortedTiers().forEach(function (o) {
-      if (o.thresholdCents <= t.thresholdCents) cents += tierCoverCentsPerScout(o);
+      if (o.thresholdCents <= t.thresholdCents) arrOf(o.covers).forEach(function (k) { keys[k] = true; });
     });
-    return cents;
+    return coverValueOfKeys(keys);
   }
   function tierBreakEven(t) {
     var cover = tierCumulativeCoverCents(t);

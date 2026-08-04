@@ -3791,10 +3791,15 @@ test('a tier says what its threshold is worth in sales AND in commission', () =>
   ok(/needSales: salesForCommission\(earns\)/.test(fn[0]),
     'it does not work out the sales that reach the threshold');
   ok(!/\* pct \/ 100/.test(fn[0]), 'the break-even still multiplies the threshold by a rate');
-  // Cumulative, because the tiers stack and so does what a scout at that level walks away with.
+  // Cumulative, because the tiers stack and so does what a scout at that level walks away with —
+  // and UNIONED, not summed. ⚠ This test used to require the sum (`cents += tierCoverCentsPerScout`),
+  // which counts a line named on two rungs twice: Pack 569's break-even claimed $629 handed back
+  // against a real $582, $47 of coverage the pack was asked to fund twice.
   const cum = /function tierCumulativeCoverCents\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(cum && /if \(o\.thresholdCents <= t\.thresholdCents\) cents \+= tierCoverCentsPerScout\(o\);/.test(cum[0]),
+  ok(cum && /if \(o\.thresholdCents <= t\.thresholdCents\) arrOf\(o\.covers\)/.test(cum[0]),
     'the break-even ignores what the tiers below already hand out');
+  ok(cum && /return coverValueOfKeys\(keys\);/.test(cum[0]),
+    'the break-even sums per-rung figures, double-counting a line two rungs both name');
   ok(/A scout gets there on/.test(SCRIPT), 'the sales figure is never shown');
   // Converted at the same rate as the goal, so the two cannot disagree.
   const conv = /function salesForCommission\(cents\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
@@ -4753,18 +4758,22 @@ test('a year of Scouting, priced for a family that earns no tier', () => {
   // in this app is netted down by something (a tier's covers leave B, earned coverage stops
   // standing, the pack fronts and recovers). This one is deliberately GROSS — the most a family
   // can be asked for, which is the number you quote to somebody deciding whether they can join.
-  const ctx = vm.createContext({});
+  const ctx = vm.createContext({ state: { rewardTiers: { tiers: [] } } });
   vm.runInContext(
     `${slice('scoutsInDens')}
      ${slice('linePerHead')}
      ${slice('linePerFamily')}
      ${slice('lineThroughPack')}
      ${slice('lineFamilyFunded')}
+     ${slice('arrOf')}
+     ${slice('sortedTiers')}
+     ${slice('coverKeyOf')}
+     ${slice('allTierCoverKeys')}
      ${slice('familyYearCostForDen')}
      ${slice('familyYearCost')}
      ${slice('DENS')}
      function activeScouts() { return SCOUTS; }
-     function allBudgetLines() { return LINES.map(function (l) { return { kind: 'activity', line: l }; }); }
+     function allBudgetLines() { return LINES.map(function (l) { return { kind: 'activity', line: l, key: l.name }; }); }
      function lineDens(l) { return l.dens || []; }`, ctx);
   ctx.SCOUTS = [{ id: 'a', den: 'Wolf' }, { id: 'b', den: 'Lion' }, { id: 'c', den: '' }];
   ctx.LINES = [
@@ -4805,6 +4814,26 @@ test('a year of Scouting, priced for a family that earns no tier', () => {
   // One row per den that HAS scouts — never a price for an empty rank.
   const rows = vm.runInContext('familyYearCost()', ctx);
   eq(rows.map((r) => r.den), ['Lion', 'Wolf', ''], 'a den with nobody in it was quoted a price');
+  eq(wolf.covered, 0, 'a pack with no tiers covers nothing');
+
+  // WHAT THE LADDER TAKES OFF IT. Three rungs that stack, two of them pointed at the same
+  // banquet — the union, valued once, den-aware, scout and adult only.
+  ctx.state.rewardTiers.tiers = [
+    { id: 'a', thresholdCents: 15000, covers: ['Registration'] },
+    { id: 'b', thresholdCents: 33000, covers: ['Blue & Gold', 'Tigermania'] },
+    { id: 'c', thresholdCents: 41500, covers: ['Blue & Gold', 'Blue & Gold#adult'] }
+  ];
+  const wolf2 = vm.runInContext("familyYearCostForDen('Wolf')", ctx);
+  // 85 registration + 42 banquet + 56 the banquet's adult. NOT Tigermania — no Wolf attends it,
+  // and NOT the largest single rung ($98), which is the bug this replaced.
+  eq(wolf2.covered, 18300, 'the union of every rung, counting the twice-named banquet once');
+  eq(wolf2.expected - wolf2.covered, 6500, 'what a Wolf family still pays with every tier earned');
+  const lion2 = vm.runInContext("familyYearCostForDen('Lion')", ctx);
+  eq(lion2.covered - wolf2.covered, 2000, 'a Lion, who does attend Tigermania, is covered for it');
+  // A covered SIBLING share must not come off a figure that never counted a sibling.
+  ctx.state.rewardTiers.tiers = [{ id: 'a', thresholdCents: 15000, covers: ['Blue & Gold#sibling'] }];
+  eq(vm.runInContext("familyYearCostForDen('Wolf')", ctx).covered, 0,
+    'a sibling share was taken off the scout-and-adult figure');
 });
 
 test('the year-cost card says what it excludes, and points at the tiers', () => {
@@ -5149,14 +5178,59 @@ test('a family can see what the year costs, and what a tier takes off it', () =>
     'a family’s actual balance is reachable from the published view');
   // The money half of each reward, so the ladder and the bill can be read against each other.
   ok(/coversCents: tierCoverCentsPerScout\(t\)/.test(src), 'a tier does not publish what it waives');
+  // What the whole ladder takes off the figure, published per den.
+  ok(/coveredCents: r\.covered/.test(src), 'the year cost never says what the tiers cover');
   const fn = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'parentFamilyCost() not found');
-  // ⚠ The deepest rung's own cover, NOT the sum of every rung: two tiers can point at the same
-  // fee, and coversCents is already the whole amount that rung waives, so adding them would
-  // promise a family the same dues twice.
-  ok(/reduce\(function \(m, t\) \{ return Math\.max\(m, \(t && t\.coversCents\) \|\| 0\); \}, 0\)/.test(fn[0]),
-    'the tier covers are summed, which double-counts two tiers pointed at one fee');
-  ok(/Math\.max\(0, expected - bestCover\)/.test(fn[0]), 'the after-tier figure can go negative');
+  // ⚠ THIS TEST USED TO PIN THE BUG. It required `Math.max(m, t.coversCents)` across the
+  // published tiers, on the reasoning that a rung's own figure is "the whole amount that rung
+  // waives" — it is not. Coverage STACKS (packCoverage credits every tier reached), so a rung's
+  // own figure counts only what it ADDS, and the largest single one understated Pack 569's
+  // ladder by $354 of $500. The union now comes from the leaders' side, den-aware.
+  ok(!/coversCents/.test(fn[0]), 'the family figure is back to reading one rung in isolation');
+  ok(/var cover = d\.coveredCents \|\| 0;/.test(fn[0]), 'the published cover is not used');
+  ok(/Math\.max\(0, expected - cover\)/.test(fn[0]), 'the after-tier figure can go negative');
+  // A payload written before the field existed must show no claim at all, not a stale one.
+  ok(/\(cover > 0/.test(fn[0]), 'an old payload still prints an after-tier figure');
+  // The ladder's own column stays per-rung, and has to SAY so now that the two differ.
+  const lad = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(lad && /adds <strong class="money">/.test(lad[0]), 'a rung claims its own figure is the whole ladder');
+});
+
+test('a rung named on two tiers is handed back once, not twice', () => {
+  const ctx = vm.createContext({ state: { rewardTiers: { tiers: [] } } });
+  vm.runInContext(
+    `${slice('arrOf')} ${slice('sortedTiers')} ${slice('COVER_WHO')} ${slice('coverKeyOf')}
+     ${slice('lineRateForWho')} ${slice('coverValueOfKeys')} ${slice('tierCumulativeCoverCents')}
+     function coverableLines() { return LINES; }`, ctx);
+  ctx.LINES = [
+    { key: 'maze', line: { scoutRateCents: 2200, adultRateCents: 2200 } },
+    { key: 'dues', line: { scoutRateCents: 8500 } }
+  ];
+  ctx.state.rewardTiers.tiers = [
+    { id: 'a', thresholdCents: 15000, covers: ['dues', 'maze'] },
+    { id: 'b', thresholdCents: 33000, covers: ['maze', 'maze#adult'] },  // maze again
+    { id: 'c', thresholdCents: 90000, covers: ['dues'] }                 // above: must not count
+  ];
+  const at = (id) => vm.runInContext(`tierCumulativeCoverCents(state.rewardTiers.tiers.find(function (t) { return t.id === '${id}'; }))`, ctx);
+  eq(at('a'), 10700, 'the first rung: 85 dues + 22 maze');
+  // 85 + 22 + 22 adult. The SUM would say 15100 — the maze scout share billed to the pack twice.
+  eq(at('b'), 12900, 'a line both rungs name is handed back once');
+  eq(at('c'), 12900, 'the top rung adds a key it already had');
+});
+
+test('the ladder covers are unioned, not summed, and every rung counts', () => {
+  const ctx = vm.createContext({ state: { rewardTiers: { tiers: [] } } });
+  vm.runInContext(slice('arrOf') + slice('sortedTiers') + slice('allTierCoverKeys'), ctx);
+  ctx.state.rewardTiers.tiers = [
+    { id: 'a', thresholdCents: 15000, covers: ['dues', 'shirt'] },
+    { id: 'b', thresholdCents: 33000, covers: ['maze', 'shirt'] },          // shirt twice
+    { id: 'c', thresholdCents: 41500, covers: ['maze', 'stripers#adult'] }  // maze twice
+  ];
+  eq(Object.keys(vm.runInContext('allTierCoverKeys()', ctx)).sort(),
+    ['dues', 'maze', 'shirt', 'stripers#adult'], 'the union of every rung');
+  ctx.state.rewardTiers.tiers = [];
+  eq(Object.keys(vm.runInContext('allTierCoverKeys()', ctx)), [], 'no tiers covers nothing');
 });
 
 test('the parent calendar is a real month grid, driven only by the published events', () => {
