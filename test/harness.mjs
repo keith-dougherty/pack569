@@ -1405,10 +1405,104 @@ test('the shift preview says what it is about to do', () => {
   ok(/o\.fillCount/.test(fn), 'the preview does not count the shifts it will fill in');
   ok(/Everything here is already on your schedule/.test(fn),
     'the disabled button still claims the storefronts were the problem');
-  ok(/No existing block is changed, renamed, moved or removed/.test(fn),
-    'the preview no longer promises that recorded sales and sign-ups are safe');
+  // ⚠ This assertion used to read `No existing block is changed, renamed, moved or removed`, and
+  // was CORRECTLY broken by the 2026-08-15 change that lets the report remove sign-ups. The old
+  // sentence went on to promise "nothing you have recorded against one — sign-ups, sales,
+  // donations — can be lost", which became a lie the moment a scout could come off. The promise
+  // that survives is narrower and is the one that still holds: the BLOCK and its MONEY are safe.
+  // Do not restore the old wording to make this pass.
+  ok(/No existing block is renamed, moved, retimed or removed, and no sales or donations are/.test(fn),
+    'the preview no longer promises that existing blocks and recorded money are safe');
+  ok(!/can be lost by importing this/.test(fn),
+    'the preview is back to promising sign-ups can never be lost, which removal made false');
   const build = /function teBuildShiftPreview\(mapped\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/addCount:/.test(build) && /fillCount:/.test(build), 'the preview data carries no fill counts');
+});
+
+/* ================================================================
+   Owner, 2026-08-15: "it is only adding scouts from the report that are not on the website, it
+   does not remove scouts from the website if no longer on the schedule from the report" — and,
+   on which side wins: "The report from Trails Ends wins."
+   ================================================================ */
+
+const dropCtx = (() => {
+  const ctx = vm.createContext({});
+  vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout')].join('\n') +
+    '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
+  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' },
+    { id: 's3', name: 'Logan Dougherty' }];
+  return ctx;
+})();
+const emptyBlock = (ids) => ({ assignments: ids.map((id) => ({ scoutId: id, weight: 1 })), salesCents: 0, donationsCents: 0 });
+
+test('a scout the report has dropped comes off the block', () => {
+  // The complaint: Logan is on the block here, the report no longer has him on that shift, and
+  // the import left him standing there. The block is who turns up on the day.
+  const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
+  eq(dropCtx.teDroppedSignups(emptyBlock(['s1', 's2', 's3']), shift).map((a) => a.scoutId), ['s3'],
+    'a scout no longer on the report was left signed up');
+  // A shift the report has emptied out clears the block — the modal case, since a blank Scout Name
+  // row is exactly what a dropped shift looks like on the report.
+  eq(dropCtx.teDroppedSignups(emptyBlock(['s1', 's2']), { start: '10:00 AM', scouts: [] }).length, 2,
+    'a shift nobody is signed up for on the report kept its old sign-ups');
+  // Nobody is removed when the report and the block already agree, so re-importing is a no-op.
+  eq(dropCtx.teDroppedSignups(emptyBlock(['s1', 's2']), shift).length, 0,
+    're-importing the same report churns the assignments');
+  // A scout the report added but the block does not have yet is teNewSignups' job, not this one.
+  eq(dropCtx.teDroppedSignups(emptyBlock([]), shift).length, 0, 'an empty block invented a removal');
+});
+
+test('removal never re-splits money that has already been recorded', () => {
+  // Symmetric with teNewSignups' guard, and for the identical reason: blockShares divides takings
+  // by weight, so taking somebody OFF a paid block changes what everybody left on it earned.
+  const shift = { start: '10:00 AM', scouts: ['Bowie G'] };
+  eq(dropCtx.teDroppedSignups({ assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 48000, donationsCents: 0 }, shift).length, 0,
+    'a block with recorded SALES lost an assignee, re-splitting the money');
+  eq(dropCtx.teDroppedSignups({ assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 0, donationsCents: 2500 }, shift).length, 0,
+    'a block with recorded DONATIONS lost an assignee');
+});
+
+test('removal refuses on a shift carrying a name it could not resolve', () => {
+  // "Bowie G" with two Bowie G's on the roster resolves to nobody — and the scout already on the
+  // block may BE the one the report meant. Removing on a guess deletes a sign-up the report is
+  // still asking for, and nothing here can tell the difference. So the whole shift is left alone.
+  const ctx = vm.createContext({});
+  vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout')].join('\n') +
+    '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
+  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
+  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowie G'] }).length, 0,
+    'an ambiguous name on the shift still removed somebody');
+  // A name matching nobody at all is the same problem: it may be a roster spelling difference.
+  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }];
+  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowy Gladden'] }).length, 0,
+    'a name that matched nobody was treated as "the shift is empty" and cleared the block');
+});
+
+test('the commit removes as well as adds, and only where the report has an opinion', () => {
+  const fn = /function teCommitShiftImport\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'teCommitShiftImport() not found');
+  ok(/teDroppedSignups\(b, sh\)/.test(fn[0]), 'the commit never asks what the report has dropped');
+  ok(/b\.assignments = \(b\.assignments \|\| \[\]\)\.filter\(/.test(fn[0]),
+    'the dropped sign-ups are computed and then not actually removed');
+  // A block whose start matches no shift on the report is skipped before any of this — the report
+  // says nothing about that slot, so it has no opinion to win with.
+  ok(/var sh = byStart\[b\.start\];\s*\n\s*if \(!sh\) return;/.test(fn[0]),
+    'a block the report does not cover is reconciled anyway, so an unrelated shift loses its scouts');
+  ok(/removed ' \+ dropped \+ ' scout/.test(fn[0]), 'removals happen silently, with no toast');
+});
+
+test('the preview discloses the removals before the button is pressed', () => {
+  const fn = /function renderTePreview\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/Coming off<\/span>/.test(fn), 'the scouts about to be removed are not surfaced');
+  ok(/schedule of record/.test(fn), 'the preview does not say the report wins');
+  ok(/Anything you added by hand that the report does not/.test(fn),
+    'the preview hides that hand-typed sign-ups are removed too');
+  ok(/o\.dropCount/.test(fn), 'the preview does not count the sign-ups it will remove');
+  // The one thing worse than not removing is removing without saying so on the button.
+  ok(/'remove ' : 'Remove '/.test(fn), 'the confirm button does not name the removals');
+  const build = /function teBuildShiftPreview\(mapped\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/dropCount:/.test(build) && /dropHeld:/.test(build),
+    'the preview data does not carry the removal outcome');
 });
 
 test('the parent view never carries the ledger', () => {

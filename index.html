@@ -14423,6 +14423,7 @@
       if (o.newCount) doing.push('Add ' + o.newCount + ' storefront' + (o.newCount === 1 ? '' : 's'));
       if (o.fillCount) doing.push((doing.length ? 'fill ' : 'Fill in ') + o.fillCount + ' shift' + (o.fillCount === 1 ? '' : 's'));
       if (o.signCount) doing.push((doing.length ? 'sign up ' : 'Sign up ') + o.signCount + ' scout' + (o.signCount === 1 ? '' : 's'));
+      if (o.dropCount) doing.push((doing.length ? 'remove ' : 'Remove ') + o.dropCount + ' scout' + (o.dropCount === 1 ? '' : 's'));
       var confirmBtn = doing.length
         ? '<button type="button" class="btn primary" data-act="te-confirm-shifts">' + doing.join(' and ') + '</button>'
         : '<button type="button" class="btn" disabled>Everything here is already on your schedule</button>';
@@ -14450,36 +14451,67 @@
           'empty: <strong>' + o.unmatched.map(esc).join(', ') + '</strong>. The report abbreviates ' +
           '(“Bowie G”), so this is usually a spelling difference or a scout not on the roster yet — ' +
           'and where two scouts share a first name and an initial it refuses to guess. Add them by ' +
-          'hand on the storefront.</p>';
+          'hand on the storefront. Nobody is removed from those shifts either: a scout already on ' +
+          'the block might BE the name it could not read, and taking them off on a guess would ' +
+          'delete a sign-up the report is still asking for.</p>';
       }
-      if (o.heldBack) {
+      // The report is the roster for a shift, so a scout the report has dropped comes off. Said
+      // plainly and up front, because this is the one thing in the import that TAKES something
+      // away, and a leader who has typed sign-ups in by hand has to know that before pressing it.
+      if (o.dropCount) {
+        // .pill.bad, not the bare amber one: bare .pill already means "needs attention" on this
+        // preview ("Not signed up"), and this is the only row that TAKES something away.
+        h += '<p class="small" style="margin:0 0 10px"><span class="pill bad">Coming off</span> ' +
+          '<strong>' + o.dropCount + ' scout' + (o.dropCount === 1 ? '' : 's') + '</strong> ' +
+          (o.dropCount === 1 ? 'is' : 'are') + ' signed up here but no longer on this report, so ' +
+          (o.dropCount === 1 ? 'that sign-up is' : 'those sign-ups are') + ' removed. The Trail’s End ' +
+          'report is the schedule of record: if somebody dropped a shift there, the block here should ' +
+          'not still say they are covering it. Anything you added by hand that the report does not ' +
+          'know about comes off too.</p>';
+      }
+      if (o.heldBack || o.dropHeld) {
         h += '<p class="small" style="margin:0 0 10px"><span class="pill navy">Left alone</span> ' +
-          o.heldBack + ' sign-up' + (o.heldBack === 1 ? '' : 's') + ' fall on shifts that already ' +
-          'have sales or donations recorded. Adding somebody to those would re-split money already ' +
-          'earned, so they are not touched — add them by hand if the takings should be shared.</p>';
+          (o.heldBack
+            ? o.heldBack + ' sign-up' + (o.heldBack === 1 ? ' falls' : 's fall') +
+              ' on a shift that already has sales or donations recorded. '
+            : '') +
+          (o.dropHeld
+            ? o.dropHeld + ' scout' + (o.dropHeld === 1 ? ' the report has dropped is' : 's the report has dropped are') +
+              ' on a shift that already has sales or donations recorded. '
+            : '') +
+          'Adding somebody to those, or taking somebody off them, would re-split money already ' +
+          'earned, so they are not touched — sort those out by hand on the storefront.</p>';
       }
       h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Storefront</th>' +
         '<th scope="col" class="num">Shifts</th><th scope="col" class="num">Adding</th>' +
-        '<th scope="col" class="num">Sign-ups</th><th scope="col">Status</th></tr></thead><tbody>';
+        '<th scope="col" class="num">Sign-ups</th><th scope="col" class="num">Removing</th>' +
+        '<th scope="col">Status</th></tr></thead><tbody>';
       o.items.forEach(function (it) {
+        // "Already complete" has to account for the sign-ups too, or a storefront whose blocks all
+        // exist but whose people are changing reads as nothing-to-do beside a row that is moving.
         var status = it.isNew
           ? '<span class="pill">New</span>'
           : (it.addCount
             ? '<span class="pill good">Filling in shifts</span>'
-            : '<span class="pill navy">Already complete</span>');
+            : (it.signUps || it.drops
+              ? '<span class="pill good">Updating sign-ups</span>'
+              : '<span class="pill navy">Already complete</span>'));
         h += '<tr><td>' + esc(fmtDate(it.date)) + '</td><td>' + esc(it.name) + '</td>' +
           '<td class="num">' + it.count + '</td>' +
           '<td class="num">' + (it.addCount || '\u2014') + '</td>' +
           '<td class="num">' + (it.signUps || '\u2014') + '</td>' +
+          '<td class="num">' + (it.drops || '\u2014') + '</td>' +
           '<td>' + status + '</td></tr>';
       });
       h += '</tbody></table></div>' +
         '<p class="small muted" style="margin:14px 0 0">A <strong>New</strong> row is added with all its shifts as blocks. ' +
-        'A storefront you already have keeps everything it has — this only adds the shifts it is missing, matched on ' +
-        'start time. <strong>No existing block is changed, renamed, moved or removed</strong>, so nothing you have ' +
-        'recorded against one — sign-ups, sales, donations — can be lost by importing this. Scouts on the report are ' +
-        'signed up for their shifts, but only onto blocks with no money recorded against them yet: adding somebody to a ' +
-        'block that already has takings would change how those takings are split.</p>' +
+        'A storefront you already have keeps every block it has — this only adds the shifts it is missing, matched on ' +
+        'start time. <strong>No existing block is renamed, moved, retimed or removed, and no sales or donations are ' +
+        'ever touched.</strong> Who is signed up, though, is taken from the report: <strong>this report is the ' +
+        'schedule of record</strong>, so a scout it lists is added to their shift and a scout it no longer lists comes ' +
+        'off — including one you added by hand. The one exception is a block that already has money recorded against ' +
+        'it. Those are left exactly as they are, in both directions, because adding or removing an assignee re-splits ' +
+        'takings the scouts on it have already earned.</p>' +
         '</div></div></div>';
       return h;
     }
@@ -15597,6 +15629,41 @@
     });
     return out;
   }
+  // Which scouts are signed up on the block but are NOT on the report's version of this shift.
+  //
+  // Owner, 2026-08-15: "it is only adding scouts from the report that are not on the website, it
+  // does not remove scouts from the website if no longer on the schedule from the report" — and
+  // then, when asked which side should win: "The report from Trails Ends wins."
+  //
+  // So the report is the roster for a shift, not a set of additions to it. A scout who drops a
+  // shift on Trail's End used to stay on the block here forever, and the block is who turns up on
+  // the day — so the schedule quietly said a child was covering a slot nobody was covering.
+  //
+  // TWO guards survive the ruling, because neither is a disagreement the report can settle:
+  //
+  //  ⚠ 1. ONLY OFF A BLOCK HOLDING NO MONEY. Exactly the guard teNewSignups keeps, for exactly the
+  //        same reason: blockShares splits a block's takings across its assignees by weight, so
+  //        removing one silently re-divides money already earned and changes what everybody else
+  //        on that block made. An empty block splits nothing, so emptying it is free.
+  //  ⚠ 2. ONLY WHERE EVERY NAME ON THE SHIFT RESOLVED. If one sign-up on the shift matched no
+  //        single scout ("Bowie G" with two Bowie G's on the roster), we do not know who the
+  //        report meant — and the scout already on the block may BE them. Removing on a guess
+  //        would delete a correct sign-up that the report is, in fact, still asking for. Those
+  //        names are already surfaced in the preview; the leader resolves them by hand.
+  //
+  // A block whose start time matches no shift on the report is never passed here at all: the
+  // report says nothing about that slot, so it has no opinion to win with.
+  function teDroppedSignups(block, shift) {
+    if (!block || !shift) return [];
+    if ((block.salesCents || 0) > 0 || (block.donationsCents || 0) > 0) return [];
+    var want = {}, unresolved = false;
+    (shift.scouts || []).forEach(function (nm) {
+      var sid = teMatchShiftScout(nm);
+      if (sid) want[sid] = true; else unresolved = true;
+    });
+    if (unresolved) return [];
+    return (block.assignments || []).filter(function (a) { return !want[a.scoutId]; });
+  }
   function teBuildShiftPreview(mapped) {
     var existing = {};
     state.storefronts.forEach(function (sf) { existing[teStorefrontKey(sf.name, sf.date)] = true; });
@@ -15610,7 +15677,7 @@
       var match = byKey[key];
       var missing = teMissingShifts(match, sf.shifts);
       // What the sign-ups will do, worked out the same way the commit will do it.
-      var signUps = 0, unmatched = [], heldBack = 0;
+      var signUps = 0, unmatched = [], heldBack = 0, drops = 0, dropHeld = 0;
       var byStart = {};
       (match ? match.blocks || [] : []).forEach(function (b) { if (b.start) byStart[b.start] = b; });
       sf.shifts.forEach(function (sh) {
@@ -15619,16 +15686,24 @@
         var target = block || { assignments: [], salesCents: 0, donationsCents: 0 };
         if (block && ((block.salesCents || 0) > 0 || (block.donationsCents || 0) > 0)) {
           heldBack += (sh.scouts || []).length;
+          // The removals a paid block refuses are counted too, or the preview would promise the
+          // report wins everywhere and then quietly leave scouts standing on those blocks.
+          var wanted = {};
+          (sh.scouts || []).forEach(function (nm) { var s = teMatchShiftScout(nm); if (s) wanted[s] = true; });
+          (block.assignments || []).forEach(function (a) { if (!wanted[a.scoutId]) dropHeld += 1; });
           return;
         }
         var got = teNewSignups(target, sh);
         signUps += got.length;
+        // Only an EXISTING block can lose anybody — a new one is created empty.
+        if (block) drops += teDroppedSignups(block, sh).length;
         (sh.scouts || []).forEach(function (nm) {
           if (!teMatchShiftScout(nm) && unmatched.indexOf(nm) === -1) unmatched.push(nm);
         });
       });
       return {
         signUps: signUps, unmatched: unmatched, heldBack: heldBack,
+        drops: drops, dropHeld: dropHeld,
         name: sf.name, date: sf.date, count: sf.shifts.length,
         isNew: !existing[key], shifts: sf.shifts,
         // On a NEW storefront every shift is added, so `missing` is the whole list either way.
@@ -15642,6 +15717,8 @@
     var fillWhere = items.filter(function (it) { return !it.isNew && it.addCount; }).length;
     var signCount = items.reduce(function (n, it) { return n + it.signUps; }, 0);
     var heldBack = items.reduce(function (n, it) { return n + it.heldBack; }, 0);
+    var dropCount = items.reduce(function (n, it) { return n + it.drops; }, 0);
+    var dropHeld = items.reduce(function (n, it) { return n + it.dropHeld; }, 0);
     var unmatched = [];
     items.forEach(function (it) {
       it.unmatched.forEach(function (nm) { if (unmatched.indexOf(nm) === -1) unmatched.push(nm); });
@@ -15649,6 +15726,7 @@
     return { kind: 'te-preview', report: 'shifts', items: items, newCount: newCount,
       fillCount: fillCount, fillWhere: fillWhere,
       signCount: signCount, unmatched: unmatched, heldBack: heldBack,
+      dropCount: dropCount, dropHeld: dropHeld,
       totalShifts: mapped.totalShifts, season: season };
   }
   // Wave 16 — case-insensitive trimmed roster matcher, shared by the sales preview AND
@@ -15762,16 +15840,29 @@
       return b;
     }
     // Sign-ups onto blocks that were ALREADY on the schedule, matched to the report by start time.
+    //
+    // The report is the roster for a shift, not a list of additions to it (owner, 2026-08-15:
+    // "The report from Trails Ends wins"), so this reconciles in BOTH directions: anybody the
+    // report lists and the block does not gains a seat, and anybody the block holds and the
+    // report does not loses one. teDroppedSignups carries the two guards that ruling cannot
+    // settle — never off a block holding money, never where a name on the shift was ambiguous.
     function signExisting(sf, shifts) {
       var byStart = {};
       shifts.forEach(function (sh) { var st = parseLegacyTime(sh.start); if (st) byStart[st] = sh; });
       (sf.blocks || []).forEach(function (b) {
         var sh = byStart[b.start];
         if (!sh) return;
+        var gone = teDroppedSignups(b, sh);
+        if (gone.length) {
+          var drop = {};
+          gone.forEach(function (a) { drop[a.scoutId] = true; });
+          b.assignments = (b.assignments || []).filter(function (a) { return !drop[a.scoutId]; });
+          dropped += gone.length;
+        }
         teNewSignups(b, sh).forEach(function (m) { b.assignments.push({ scoutId: m.scoutId, weight: 1 }); signed += 1; });
       });
     }
-    var added = 0, filled = 0, filledOn = 0, signed = 0;
+    var added = 0, filled = 0, filledOn = 0, signed = 0, dropped = 0;
     o.items.forEach(function (it) {
       var key = teStorefrontKey(it.name, it.date);
       var match = byKey[key];
@@ -15808,6 +15899,7 @@
     if (filled) say.push('filled in ' + filled + ' shift' + (filled === 1 ? '' : 's') +
       ' on ' + filledOn + ' existing storefront' + (filledOn === 1 ? '' : 's'));
     if (signed) say.push('signed up ' + signed + ' scout' + (signed === 1 ? '' : 's'));
+    if (dropped) say.push('removed ' + dropped + ' scout' + (dropped === 1 ? '' : 's') + ' no longer on the report');
     showToast(say.length ? (say.join(' and ').charAt(0).toUpperCase() + say.join(' and ').slice(1)) : 'Every shift on this report is already on your schedule');
   }
   function teCommitSalesArchive() {
