@@ -3948,6 +3948,93 @@ test('the plan is priced at the CHOSEN tier, and checked against the sales that 
   const share = /function tierScoutShareForLine\(r\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
 });
 
+test('the planned tier is also checked against the PLAN, not just against its own rewards', () => {
+  // "I am confused on how the cost of leader is getting covered" (owner, 2026-08-31). It was
+  // covered — inside C, carried by the goal — but the rewards card never said so, because
+  // `net` only ever weighed the promise against itself. A pack could read "clears it, with $420
+  // to spare" off a tier that left the year underfunded, and the leaders' places were the part
+  // most likely to be sitting in that gap: they are in A, never in B, and no tier can cover them.
+  const fn = /function tierAssumption\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'tierAssumption() not found');
+  ok(/var fund = fundingSummary\(\);/.test(fn[0]), 'the check never reads what the plan needs');
+  ok(/var planGap = pt \? fund\.C - commission : null;/.test(fn[0]),
+    'the plan gap is not C minus the commission the tier earns');
+  ok(/need: fund\.C,/.test(fn[0]), 'the figure the gap was measured against is not reported');
+  ok(/planPerScout: roster > 0 \? Math\.round\(fund\.C \/ roster\) : fund\.C,/.test(fn[0]),
+    'what the plan asks of ONE scout is not worked out, so the gap cannot be made actionable');
+  ok(/leaderPlanned: fund\.leaderPlanned,/.test(fn[0]),
+    'the leaders’ cost is not carried through, so the copy cannot name it');
+  // Like `net`, this is commission on both sides — it must hold before a rate is ever set.
+  ok(!/planGap[^;]*pct/.test(fn[0]), 'the plan gap is being routed through a commission rate');
+});
+
+test('fundingSummary() must never call tierAssumption() — the new check depends on it', () => {
+  // tierAssumption() now calls fundingSummary(). That is only safe while the arrow points one
+  // way, and nothing in the language stops somebody adding the return edge: fundingSummary is
+  // where every tier figure already lands, so reaching for tierAssumption() there would look
+  // natural and would hang the app on the next render.
+  const fs = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fs, 'fundingSummary() not found');
+  ok(!/tierAssumption/.test(fs[0]), 'fundingSummary() calls tierAssumption() — that is a cycle');
+  ok(!/computeBudget/.test(fs[0]), 'fundingSummary() calls computeBudget(), which calls it back');
+});
+
+test('the two verdicts stay separate, and the short one names the leaders', () => {
+  // They answer different questions and can disagree without either being wrong: covering the
+  // rewards is the smaller test, and the cost of the promise sits inside C, so clearing the plan
+  // clears the rewards but not the reverse. Collapsing them back into one would put the pack
+  // right back where it started.
+  ok(/clears it|short by/.test(SCRIPT), 'the rewards verdict is gone');
+  ok(/covers the rewards with/.test(SCRIPT),
+    'the rewards verdict no longer says it is only about the rewards');
+  ok(/funds the plan/.test(SCRIPT) && /plan still short by/.test(SCRIPT),
+    'there is no verdict on whether the tier funds the plan');
+  // ASCII only. index.html mixes literal punctuation with ’ / — escapes, and a regex
+  // written with the character does not match the escape — so match the words between them.
+  ok(/places is inside that/.test(SCRIPT),
+    'a plan that is short never names the leaders’ places as part of the gap');
+  ok(/no family is billed for those, so popcorn carries them/.test(SCRIPT),
+    'nothing says WHY the leaders’ cost lands on popcorn rather than on a family');
+  ok(/The plan asks <strong class="money">' \+ fmt\(ta\.planPerScout\)/.test(SCRIPT),
+    'the gap is never restated as what the plan asks of one scout');
+});
+
+test('a tier can clear its rewards and still leave the plan short', () => {
+  // The exact case the check exists for, run rather than pattern-matched: a sign error would
+  // sail past every regex above.
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `function arrOf(x) { return Array.isArray(x) ? x : []; }
+     function sortedTiers() { return [{ id: 't1', thresholdCents: 15000, covers: ['dues'] }]; }
+     function plannedTier() { return sortedTiers()[0]; }
+     function plannedCoverKeys() { return { dues: true }; }
+     function tierIsStretch() { return false; }
+     function activeScouts() { return new Array(12); }
+     function commissionRates() { return { goal: 30 }; }
+     function salesForCommission(c) { return c ? Math.ceil(c / 0.30) : null; }
+     // The rewards are cheap: $600 of dues against $1,800 of commission.
+     function coverCostForKeys() {
+       return { picked: 60000, fees: 60000, extra: 0, extraHeads: 0, extraReimburse: 0, lines: [] };
+     }
+     // ...but the plan needs $2,500, of which $520 is leaders' places nobody is billed for.
+     function fundingSummary() { return { C: 250000, leaderPlanned: 52000 }; }
+     ${slice('tierAssumption')}`, ctx);
+  const ta = ctx.tierAssumption();
+  eq(ta.commission, 180000, 'the tier earns the threshold across the roster');
+  ok(ta.net >= 0, 'this fixture is meant to CLEAR its rewards — the case only bites when it does');
+  eq(ta.net, 120000, 'the rewards verdict changed');
+  eq(ta.planGap, 70000, 'the plan gap is not what the plan needs less what the tier earns');
+  ok(ta.planGap > 0, 'a tier that clears its rewards is being reported as funding the plan');
+  eq(ta.need, 250000, 'the plan figure is not reported');
+  eq(ta.planPerScout, 20833, 'the per-scout ask is not C across the roster');
+  ok(ta.planPerScout > ta.planned.thresholdCents,
+    'the fixture must ask MORE of a scout than the tier does, or it proves nothing');
+  eq(ta.leaderPlanned, 52000, 'the leaders’ cost is not carried through for the copy');
+  // Closing the gap turns the verdict over, and never reads as short by a negative.
+  vm.runInContext('function fundingSummary() { return { C: 100000, leaderPlanned: 52000 }; }', ctx);
+  ok(ctx.tierAssumption().planGap <= 0, 'a tier that covers the plan is still reported as short');
+});
+
 test('the choice is per tier, one at a time, and the worksheet says why B dropped', () => {
   ok(/data-ch="tier-plan-on"/.test(SCRIPT), 'there is no per-tier control');
   ok(/data-ch="tier-plan-on" data-id="' \+ t\.id \+ '"/.test(SCRIPT),
@@ -3957,7 +4044,12 @@ test('the choice is per tier, one at a time, and the worksheet says why B droppe
   ok(/>Plan on this tier</.test(SCRIPT), 'the control is unlabelled');
   ok(/Not asked for &mdash; reward tiers cover it|Not asked for \u2014 reward tiers cover it/.test(SCRIPT),
     'B drops with no line on the worksheet to say why');
-  ok(/clears it|short by/.test(SCRIPT), 'the self-funding verdict is never shown');
+  // Both branches pinned by text unique to THIS verdict. It used to be /clears it|short by/,
+  // which the plan verdict added in 2026-08-31 ("plan still short by") would satisfy on its own —
+  // so the assertion would have gone on passing with the self-funding verdict deleted.
+  ok(/clears it/.test(SCRIPT), 'the self-funding verdict is never shown');
+  ok(/At this level the rewards cost more than the sales/.test(SCRIPT),
+    'the self-funding verdict has no failing branch');
 });
 
 test('the worksheet says why A grew when a tier buys adult shirts', () => {
@@ -4536,7 +4628,90 @@ test('covering the leaders is shown, and priced per scout on the goal', () => {
   ok(/leaderPerScout: \(salesGoal != null && scouts > 0 && leaderPlanned > 0\)/.test(SCRIPT),
     'the per-scout share of the leaders’ cost is not worked out');
   ok(/of which leaders/.test(SCRIPT), 'the worksheet never shows it');
-  ok(/a scout on the goal/.test(SCRIPT), 'it does not say what that is per scout');
+  // Was /a scout on the goal/. That wording is gone on purpose: it described a COST figure
+  // using the words of the SALES goal four rows below it. The row now prints both units and
+  // labels each, so the assertion is that BOTH are there — a cost per scout, and the sales
+  // that cost takes. Dropping either one puts the ambiguity straight back.
+  ok(/leaderPerScoutSales: \(salesGoal != null && scouts > 0 && leaderPlanned > 0\)/.test(SCRIPT),
+    'the leaders’ cost is never converted into the unit the goal is actually in');
+  ok(/fmt\(fs2\.leaderPerScout\) \+ ' a scout'/.test(SCRIPT),
+    'the per-scout COST is not printed, or is not labelled as being per scout');
+  ok(/of their sales goal/.test(SCRIPT),
+    'the sales figure is not named as sales, so it reads as another cost');
+  // codeOnly, because the comments explaining the change necessarily QUOTE the old wording —
+  // the same trap the buildParentView absence tests hit, and the reason that helper exists.
+  ok(!/a scout on the goal/.test(codeOnly(SCRIPT)),
+    'the old wording is back — a cost figure described as part of the sales goal');
+});
+
+test('a line shows the arithmetic behind its total, and the parts sum to it', () => {
+  // The Budget showed heads, and rates, and a total, and never multiplied them out — so ticking
+  // "Include registered leaders" moved the total with nothing on screen saying by how much.
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `${slice('linePerHead')}\n${slice('linePerFamily')}\n${slice('linePlannedHeads')}\n` +
+    `${slice('linePlannedCents')}\n${slice('linePlannedPartsOf')}\n${slice('freshLine')}\n${slice('uid')}`, ctx);
+  const line = ctx.freshLine({
+    basis: 'per-head', scoutRateCents: 8500, leaderRateCents: 6500,
+    includeLeaders: true, adultRateCents: 0
+  });
+  const parts = ctx.linePlannedPartsOf(line, 12, 5, 12);
+  eq(parts.map((p) => p.who), ['scout', 'leader'], 'the head classes are wrong or out of order');
+  eq(parts.map((p) => p.cents), [102000, 32500], 'a part is not heads × rate');
+  eq(parts.map((p) => p.label), ['12 scouts', '5 leaders'], 'the head labels do not pluralise');
+  // THE INVARIANT: the parts are the total, broken up. If these ever drift the screen is lying.
+  eq(parts.reduce((n, p) => n + p.cents, 0), ctx.linePlannedCents(line, 12, 5, 12),
+    'the breakdown does not add up to the total it claims to explain');
+  // A rate of nought is NOT PRICED, not "zero dollars" — or every line grows empty rows.
+  const noLeader = ctx.freshLine({ basis: 'per-head', scoutRateCents: 8500, includeLeaders: false });
+  eq(ctx.linePlannedPartsOf(noLeader, 12, 5, 12).map((p) => p.who), ['scout'],
+    'a line that does not include leaders is still pricing them');
+  eq(ctx.linePlannedPartsOf(ctx.freshLine({ basis: 'flat', flatCents: 5000 }), 12, 5, 12), [],
+    'a flat line has heads to multiply out');
+  // A per-family fee is ONE fee for whoever the family brings — one part, never three.
+  const fam = ctx.freshLine({ basis: 'per-family', scoutRateCents: 4000, includeLeaders: true, leaderRateCents: 6500 });
+  eq(ctx.linePlannedPartsOf(fam, 12, 5, 9).map((p) => [p.who, p.n]), [['family', 9]],
+    'a per-family line splits into head classes it does not have');
+});
+
+test('the breakdown is only shown where it adds something', () => {
+  const fn = /function linePlannedBreakdown\(l\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'linePlannedBreakdown() not found');
+  ok(/if \(parts\.length < 2\) return '';/.test(fn[0]),
+    'a single-part line restates its own total as arithmetic, which is noise');
+  // Reads as a sum the caller can close with "= <total> planned". It used to put an "=" inside
+  // each part, which gave "… = $325.00 = $1,345.00 planned" — one broken-looking equation.
+  ok(/fmt\(p\.cents\) \+ ' \(' \+ p\.label \+ ' × ' \+ fmt\(p\.rate\) \+ '\)'/.test(fn[0]),
+    'a part does not lead with what it comes to, or drops its working');
+  ok(/\.join\(' \+ '\)/.test(fn[0]), 'the parts do not read as a sum');
+  ok(/linePlannedBreakdown\(l\)/.test(SCRIPT), 'nothing on the Budget renders it');
+  // Reachable from the collapsed row as well as from the expanded options.
+  ok(/esc\(linePlannedBreakdown\(l\) \|\| 'Planned — set the rates in Options'\)/.test(SCRIPT),
+    'the total’s tooltip does not carry the breakdown, or lost its fallback hint');
+});
+
+test('ticking "include registered leaders" says where that money goes', () => {
+  // The parent's place had a sentence either way; the leader's had none, and the branch was an
+  // else-if chain so a leaders-and-no-parents line fell through it in silence. That silence is
+  // what produced "I am confused on how the cost of leader is getting covered".
+  const blk = /var counted = \[scoutN \+ denWord[\s\S]*?return head;/.exec(SCRIPT);
+  ok(blk, 'the budget line head-count note not found');
+  ok(/if \(l\.includeLeaders\) \{/.test(blk[0]), 'the leaders still have no sentence of their own');
+  ok(/No family is ever billed for a leader/.test(blk[0]),
+    'it does not say that a leader’s place is never family income');
+  ok(/it lands in A and never in B, and the fundraising goal is what pays for it/.test(blk[0]),
+    'it does not say what DOES pay for a leader’s place');
+  // Both boxes ticked must produce BOTH sentences, so the chain must not be else-if any more.
+  ok(!/\} else if \(l\.includeAdults && lineFamilyFunded\(l\)\) \{/.test(blk[0]),
+    'the branches are still exclusive, so a line with leaders AND parents drops one of them');
+  ok(/Families pay, so the parent/.test(blk[0]) && /The pack is paying for those parents/.test(blk[0]),
+    'the parent’s two sentences were lost in the restructure');
+  // Two clauses that each appended their own '. ' produced "…pays for it.. Families pay…" on a
+  // line with both boxes ticked. They are joined now, and no clause carries a leading separator.
+  ok(/if \(tail\.length\) head \+= '\. ' \+ tail\.join\(' '\);/.test(blk[0]),
+    'the clauses are not joined, so two of them run their punctuation together');
+  ok(!/tail\.push\('\. /.test(blk[0]) && !/head \+= '\. No family/.test(blk[0]),
+    'a clause still carries its own leading full stop');
 });
 
 test('a tier with no deadline shows no date box', () => {

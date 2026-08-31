@@ -1135,8 +1135,10 @@
      grids — they sit in a .tbl-wrap and scroll sideways — but this table has no wrapper, so a
      long label could not wrap and could not scroll: it pushed the table to 542px inside a 349px
      card and the entire amount column was clipped off-screen with no scrollbar and no fade cue.
-     The one row that did it is "…of which leaders' places the pack covers ($13.85 a scout on the
-     goal)", so the bug only appeared on packs that cover their leaders. */
+     The one row that did it is "…of which leaders' places the pack covers ($13.85 a scout, or
+     $46.17 of their sales goal)", so the bug only appeared on packs that cover their leaders —
+     and that row got LONGER in 2026-08-31 when it started naming both units, so this rule is
+     load-bearing rather than historical. */
   .fund-tbl td:not(.num) { white-space: normal; }
   .fund-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .fund-tbl .fund-sub { padding-left: 18px; color: var(--ink-soft); }
@@ -4176,9 +4178,22 @@
       tierExtra: tierExtra,
       tierExtraHeads: tierCost.extraHeads, tierExtraReimburse: tierCost.extraReimburse,
       // What covering the pack's leaders costs, and what that is per scout once popcorn carries it.
+      //
+      // TWO UNITS, AND THEY ARE NOT INTERCHANGEABLE — 2026-08-31. `leaderPerScout` is SPENDING
+      // divided by heads: what the leaders cost each scout. It was printed on the worksheet as
+      // "a scout on the goal", four rows above `perScoutGoal`, which is SALES — so the two read
+      // as the same kind of number when at a 30% commission they differ by more than three
+      // times. A treasurer comparing them was comparing a cost to a sales target.
+      //
+      // So the sales figure is worked out here too, and both are printed and labelled. This is
+      // the honest one to set beside the goal: the popcorn it takes to cover the leaders, per
+      // scout. Via salesForCommission so it uses the SAME rate the goal is derived at — deriving
+      // it any other way would give a figure that did not add up against the goal beside it.
       leaderPlanned: leaderPlanned,
       leaderPerScout: (salesGoal != null && scouts > 0 && leaderPlanned > 0)
         ? Math.round(leaderPlanned / scouts) : 0,
+      leaderPerScoutSales: (salesGoal != null && scouts > 0 && leaderPlanned > 0)
+        ? Math.round((salesForCommission(leaderPlanned) || 0) / scouts) : 0,
       // Which rate that was, so the screens can name it instead of assuming the storefront one.
       goalIsOnline: rates.goalIsOnline, ratesSplit: rates.split,
       basePct: rates.base, onlinePct: rates.online,
@@ -4428,6 +4443,58 @@
     return (l.scoutRateCents || 0) * hd.scouts +
       (l.leaderRateCents || 0) * hd.leaders +
       (l.adultRateCents || 0) * hd.adults;
+  }
+  // THE ARITHMETIC BEHIND THAT TOTAL — 2026-08-31.
+  //
+  // The Budget showed a line's heads ("12 active scouts and 5 registered leaders") and its rates
+  // ("scout $85.00 · leader $65.00") and its total ($1,345.00), and never once multiplied them
+  // out. So ticking "Include registered leaders" moved the total and nothing said by how much:
+  // the one number that would have answered "what is covering the leaders costing me" was the
+  // one number missing, on the very screen where the box is.
+  //
+  // Same signature as linePlannedCents and built on the same linePlannedHeads, so the parts can
+  // never disagree with the total — the harness pins that they sum to it.
+  function linePlannedPartsOf(l, scoutN, leaderN, familyN) {
+    if (!linePerHead(l)) return [];
+    var hd = linePlannedHeads(l, scoutN, leaderN, familyN);
+    var out = [];
+    function add(who, one, many, n, rate) {
+      // A head class with no heads or no rate is not "zero dollars", it is NOT PRICED — and
+      // printing "0 leaders × $0.00" on every line would bury the rows that mean something.
+      if (n > 0 && rate > 0) {
+        out.push({ who: who, n: n, rate: rate, cents: n * rate, label: n + ' ' + (n === 1 ? one : many) });
+      }
+    }
+    // A per-family fee is one fee for whoever the family brings, so it has exactly one part.
+    if (linePerFamily(l)) {
+      add('family', 'family', 'families', hd.scouts, l.scoutRateCents || 0);
+      return out;
+    }
+    add('scout', 'scout', 'scouts', hd.scouts, l.scoutRateCents || 0);
+    add('leader', 'leader', 'leaders', hd.leaders, l.leaderRateCents || 0);
+    add('adult', 'parent', 'parents', hd.adults, l.adultRateCents || 0);
+    return out;
+  }
+  // The same, against the line's OWN roster — which a den-limited event narrows, exactly as
+  // linePlanned does. This is what the screens call.
+  function linePlannedParts(l) {
+    var roster = lineRoster(l);
+    return linePlannedPartsOf(l, roster.length, activeLeaders().length, familiesOf(roster).length);
+  }
+  // "$1,020.00 (12 scouts × $85.00) + $325.00 (5 leaders × $65.00)" — a SUM, which is what it is,
+  // and the caller closes it with "= $1,345.00 planned". The subtotal leads because it is the
+  // figure being asked for ("what is covering the leaders costing me"); the heads and the rate
+  // follow in brackets as the working. Written "12 scouts × $85.00 = $1,020.00 + …" first, which
+  // put two equals signs in a row once the caller added the total and read as one broken sum.
+  //
+  // Empty for a flat line, and for a line with a single part — there the total already on the row
+  // IS the arithmetic, and restating it is noise.
+  function linePlannedBreakdown(l) {
+    var parts = linePlannedParts(l);
+    if (parts.length < 2) return '';
+    return parts.map(function (p) {
+      return fmt(p.cents) + ' (' + p.label + ' × ' + fmt(p.rate) + ')';
+    }).join(' + ');
   }
   // Does this money pass through the pack's bank account? A line with a payee named in
   // paidDirectTo never does — families pay THEM — so it must never move the pack's balance,
@@ -10634,8 +10701,49 @@
     // rate is only needed to say what that means in sales, and the plan no longer depends on it.
     var commission = pt ? (pt.thresholdCents || 0) * roster : 0;
     var sales = salesForCommission(commission);
+    // DOES REACHING IT FUND THE PLAN? — owner ask, 2026-08-31: "I am confused on how the cost
+    // of leader is getting covered."
+    //
+    // `net` below weighs the promise against ITSELF: the commission a tier earns versus the
+    // rewards it hands back. A pack can clear that comfortably and still be short, because the
+    // plan needs C and the tier only earns `commission` — two numbers that had never met on a
+    // screen. So "clears it, with $420 to spare" was being read as "we are funded", which it
+    // has never meant.
+    //
+    // The gap is where a cost NOBODY IS BILLED FOR lives, and the leaders' places are the
+    // biggest of them: includeLeaders puts leaderRateCents × the leader roster into A, but the
+    // fees fallback is lineFamilyPlanned — the scout and parent shares only — because no family
+    // is ever billed for a leader's place. So the leaders sit in A with no matching row in B,
+    // fall through to C, and are carried by the goal whether or not anybody reaches a tier. No
+    // tier can pick them up either: COVER_WHO is scout/adult/sibling and there is no leader
+    // share to point one at.
+    //
+    // C is already tier-aware — `fees` drops by tierAssumed and A grows by tierExtra for THIS
+    // tier's covers — so it is exactly "what popcorn must raise given we plan on this level",
+    // and comparing it to the commission that level earns is self-consistent. Both sides are
+    // commission, so like `net` this needs no rate.
+    //
+    // It also SUBSUMES `net`: the cost of the promise sits inside C, so clearing the plan
+    // clears the rewards. `net` is the weaker test, which is why both verdicts are shown and
+    // each is scoped out loud to the question it answers.
+    //
+    // Against the PLAN's C, never the typed goal: a pack that set its Trail's End goal by hand
+    // has still budgeted what it budgeted, and "is the plan funded" is the question either way.
+    var fund = fundingSummary();
+    var planGap = pt ? fund.C - commission : null;
     return {
       planned: pt, roster: roster, sales: sales, commission: commission, pct: pct,
+      // What the plan has to raise, what reaching this tier everywhere leaves unraised, and what
+      // that shortfall is in popcorn. `need` is stated even when the gap is closed — a treasurer
+      // reading "funds the plan" should see the figure it cleared.
+      need: fund.C,
+      planGap: planGap,
+      planGapSales: (planGap != null && planGap > 0) ? salesForCommission(planGap) : null,
+      // What the plan actually asks of one scout, to set beside the threshold they were told to
+      // reach. This is the sentence that makes the gap actionable rather than merely alarming.
+      planPerScout: roster > 0 ? Math.round(fund.C / roster) : fund.C,
+      // Carried through so the copy can name the leaders without a second walk of the budget.
+      leaderPlanned: fund.leaderPlanned,
       // picked = the lot. fees = the part that was family income; extra = the part the pack buys
       // outright (an adult or sibling share), which is new spending in A rather than lost income.
       picked: cost.picked, fees: cost.fees, extra: cost.extra,
@@ -11055,14 +11163,45 @@
               head += '. Tick a box if the pack pays for leaders on this one too, the way registration and a ' +
                 'campsite fee do, or if it is priced per PERSON at the door \u2014 a party or a banquet, ' +
                 'where a parent comes with every scout.';
-            } else if (l.includeAdults && lineFamilyFunded(l)) {
-              head += '. Families pay, so the parent\u2019s place is expected INCOME, not pack spending.';
-            } else if (l.includeAdults) {
-              head += '. The pack is paying for those parents, so it is in the fundraising goal.';
+            } else {
+              // A LEADER'S PLACE HAD NO SENTENCE HERE \u2014 2026-08-31. The parent's place got one
+              // either way ("expected INCOME" / "in the fundraising goal"); the leader's got
+              // nothing, on the very row the box lives on. So ticking it moved the total and
+              // left the money unexplained, which is precisely the question that came back:
+              // how is the cost of a leader covered? It was an `else if` chain, so a line with
+              // leaders and no parents fell through it and said nothing at all.
+              //
+              // The answer never varies, which is why it can be stated flatly: no family is
+              // EVER billed for a leader's place, so it cannot be income however the line is
+              // funded, and the goal is the only thing left to carry it.
+              // Collected and joined rather than each appending its own '. ' \u2014 with two of them
+              // able to fire now, that produced "\u2026pays for it.. Families pay\u2026". Each clause is a
+              // finished sentence; this only supplies the break before the first.
+              var tail = [];
+              if (l.includeLeaders) {
+                tail.push('No family is ever billed for a leader\u2019s place, so it is the pack\u2019s to find: ' +
+                  'it lands in A and never in B, and the fundraising goal is what pays for it.');
+              }
+              if (l.includeAdults) {
+                tail.push(lineFamilyFunded(l)
+                  ? 'Families pay, so the parent\u2019s place is expected INCOME, not pack spending.'
+                  : 'The pack is paying for those parents, so it is in the fundraising goal.');
+              }
+              if (tail.length) head += '. ' + tail.join(' ');
             }
             return head;
           })() +
-        '</span>';
+        '</span>' +
+        // ...and the arithmetic, on its own line and NOT muted, because it is the figure being
+        // explained rather than the explanation. Only where there are two or more head classes
+        // to multiply out \u2014 on a scouts-only line the total on the row already is the sum.
+        (function () {
+          var bd = linePlannedBreakdown(l);
+          return bd
+            ? '<span class="small brow-note" style="margin-top:2px">' + esc(bd) +
+              ' = <strong class="money">' + fmt(linePlanned(l)) + '</strong> planned</span>'
+            : '';
+        })();
     }
     // What a FAMILY pays for the heads it brings — asked on EVERY line families are billed for,
     // whether the pack collects it or the council does.
@@ -11131,7 +11270,11 @@
     var open = !!ui.lineOpen[l.id];
     var perHead = linePerHead(l);
     var money = perHead
-      ? '<span class="bmoney money" title="Planned — set the rates in Options">' + fmt(linePlanned(l)) + '</span>'
+      // The breakdown rides on the total's tooltip too, so it can be had from the COLLAPSED row
+      // without opening Options — which is where somebody is standing when they wonder why the
+      // number is what it is. Falls back to the old hint on a line with nothing to multiply out.
+      ? '<span class="bmoney money" title="' + esc(linePlannedBreakdown(l) || 'Planned — set the rates in Options') +
+        '">' + fmt(linePlanned(l)) + '</span>'
       : '<input class="money-in bmoney" inputmode="decimal" data-ch="line-flat" data-id="' + l.id + '" value="' +
         dollars(l.flatCents) + '" placeholder="Cost" aria-label="Cost">';
     // Whose money it is, as a class the rail hangs off. Pack-pays deliberately gets nothing —
@@ -11332,7 +11475,19 @@
       // the scouts": every scout's share of the goal already includes their share of this.
       (fs2.leaderPlanned
         ? '<tr><td class="fund-sub">…of which leaders\u2019 places the pack covers' +
-          (fs2.leaderPerScout ? ' <span class="muted">(' + fmt(fs2.leaderPerScout) + ' a scout on the goal)</span>' : '') +
+          // BOTH UNITS, BOTH LABELLED. This used to read "($27.08 a scout on the goal)" — a
+          // COST, sitting four rows above "$929.17 per active scout", which is SALES. Two
+          // per-scout figures in one table, described the same way, differing by the whole
+          // commission rate: the row was inviting the exact misreading it exists to prevent.
+          // The cost keeps its place (this row is inside A, where the column is spending) and
+          // the sales figure is named for what it is, so it can be read straight against the
+          // goal below without anybody converting anything in their head.
+          (fs2.leaderPerScout
+            ? ' <span class="muted">(' + fmt(fs2.leaderPerScout) + ' a scout' +
+              (fs2.leaderPerScoutSales
+                ? ', or ' + fmt(fs2.leaderPerScoutSales) + ' of their sales goal'
+                : '') + ')</span>'
+            : '') +
           '</td><td class="num money">' + fmt(fs2.leaderPlanned) + '</td></tr>'
         : '') +
       // Everything from here down SUMS TO B. The two "…of which" rows above are inside A and
@@ -13927,12 +14082,44 @@
               ? ' \u2014 set a commission rate to see what that is in sales.'
               : ' \u2014 which takes <strong class="money">' + fmt(ta.sales) + '</strong> of sales at ' +
                 esc(String(ta.pct)) + '%.') + '</p>';
+          // TWO VERDICTS, TWO QUESTIONS. This first one is about the REWARDS only \u2014 does the
+          // commission a tier earns pay for what it hands back \u2014 and it says so out loud now,
+          // because on its own it was being read as "we are funded". The second, below, is the
+          // one that answers that.
           if (ta.net != null) {
             h += '<p class="small" style="margin:4px 0 0">' + (ta.net >= 0
-              ? '<span class="pill navy">clears it</span> The commission those sales earn covers it with <strong class="money">' +
+              ? '<span class="pill navy">clears it</span> The commission those sales earn covers the rewards with <strong class="money">' +
                 fmt(ta.net) + '</strong> to spare.'
               : '<span class="pill bad">short by ' + fmt(-ta.net) + '</span> At this level the rewards cost more than the sales ' +
                 'that earn them \u2014 plan on a lower tier, raise this one, or cover less at it.') + '</p>';
+          }
+          // ...and does it pay for the YEAR? Covering the rewards is the smaller question: the
+          // plan needs C, which carries everything no family is billed for \u2014 the leaders' places
+          // above all. A pack reading "clears it" and stopping there is exactly who this is for.
+          //
+          // `need > 0` because C is floored at nought: a pack whose carryover and income already
+          // cover the year has no plan left to fund, and "funds the plan" against a need of
+          // $0.00 is a verdict on nothing. The rewards verdict above still stands there.
+          if (ta.planGap != null && ta.need > 0) {
+            h += '<p class="small" style="margin:4px 0 0">' + (ta.planGap <= 0
+              ? '<span class="pill navy">funds the plan</span> Every scout at this level earns the pack <strong class="money">' +
+                fmt(ta.commission) + '</strong>, against the <strong class="money">' + fmt(ta.need) +
+                '</strong> the plan needs \u2014 so the tier carries the year, leaders included.'
+              : '<span class="pill bad">plan still short by ' + fmt(ta.planGap) + '</span> Every scout reaching this tier ' +
+                'earns the pack <strong class="money">' + fmt(ta.commission) + '</strong>, and the plan needs <strong class="money">' +
+                fmt(ta.need) + '</strong>. ' +
+                // Named, not implied. This is the cost the card had no way of showing before, and
+                // the one a pack is most surprised by, because nothing bills a family for it.
+                (ta.leaderPlanned
+                  ? 'The <strong class="money">' + fmt(ta.leaderPlanned) + '</strong> of leaders\u2019 places is inside that \u2014 ' +
+                    'no family is billed for those, so popcorn carries them whether or not anybody reaches a tier. '
+                  : '') +
+                'The plan asks <strong class="money">' + fmt(ta.planPerScout) + '</strong> a scout, not ' +
+                fmt(ta.planned.thresholdCents) + '' +
+                (ta.planGapSales == null
+                  ? '.'
+                  : ' \u2014 the gap is <strong class="money">' + fmt(ta.planGapSales) + '</strong> more of sales across the pack.') +
+                ' Raise the tier to what the plan needs, trim the plan, or accept that the goal sits above the tier.') + '</p>';
           }
         }
       }
