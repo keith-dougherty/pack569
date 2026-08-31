@@ -1006,12 +1006,26 @@ const tpCtx = (() => {
     var TIERS = [], MAP = {}, SCOUTS = [], COMM = 0, NO_RATE = false, NO_SALES = false;
     var TOTALS_CALLS = [];
     function sortedTiers() { return TIERS; }
+    var PLANNED = null;
+    function plannedTier() { return PLANNED; }
     function tierRateMissing() { return NO_RATE; }
     function tierEarnedMap() { return MAP; }
     function activeScouts() { return SCOUTS; }
-    function computeScoutTotals(k) { TOTALS_CALLS.push(k); var m = {}; SCOUTS.forEach(function (s) { m[s.id] = {}; }); return m; }
+    var COMBINED = {};
+    function computeScoutTotals(k) {
+      TOTALS_CALLS.push(k);
+      var m = {};
+      SCOUTS.forEach(function (s) { m[s.id] = { combined: COMBINED[s.id] || 0 }; });
+      return m;
+    }
     function scoutCommissionOf() { return COMM; }
     function salesForCommission(c) { return NO_SALES ? null : (c ? Math.ceil(c / 0.30) : null); }
+    // Two rates, so the row carries the shape the card now renders: biggest (safest) first.
+    function sellingRoutes(c) {
+      if (NO_SALES || !c) return [];
+      return [{ sell: true, label: 'at a storefront or wagon', pct: 30, cents: Math.ceil(c / 0.30) },
+              { sell: true, label: 'online', pct: 35, cents: Math.ceil(c / 0.35) }];
+    }
     function tierCumulativeCoverCents(t) { return t.cover || 0; }
     function tierCoverCentsPerScout(t) { return t.fee == null ? (t.cover || 0) : t.fee; }
     ${slice('arrOf')}
@@ -1031,7 +1045,9 @@ function tp(opts) {
     TIERS: opts.tiers, MAP: opts.map || {}, SCOUTS: opts.scouts,
     COMM: opts.comm == null ? 0 : opts.comm,
     NO_RATE: !!opts.noRate, NO_SALES: !!opts.noSales,
-    KEY_VALUE: opts.keyValue || {}
+    KEY_VALUE: opts.keyValue || {},
+    PLANNED: opts.planned || null,
+    COMBINED: opts.combined || {}
   });
   tpCtx.TOTALS_CALLS = [];
   return tpCtx.tierProgressRows();
@@ -1057,6 +1073,105 @@ test('progress is measured toward the next tier a scout can still reach', () => 
   eq(r.shortSales, Math.ceil(1840 / 0.30), 'the gap said in popcorn');
   // What REACHING it adds: the dues key Silver brings, not the neckerchief Bronze already gave.
   eq(r.unlocks, 7500, 'the incremental value of the next tier');
+});
+
+test('the bar runs to the planned tier, with the rungs below it notched in', () => {
+  // Owner ask, 2026-08-31. Measured rung by rung, a scout who has just cleared Bronze and a scout
+  // two dollars off Gold both show a nearly empty bar — the column cannot be read down at all,
+  // which is the one thing a bar is for. One denominator makes the lengths comparable.
+  const planned = TP_TIERS[2];                       // Gold, $300 of commission
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 13160,
+    keyValue: TP_KEYS, planned });
+  eq(r.anchor.name, 'Gold', 'the bar is anchored somewhere other than the planned tier');
+  eq(r.anchorPct, 44, '$131.60 of a $300 planned tier is 44%');
+  // Still chasing Silver — the rung ahead is unchanged, only the bar's denominator moved.
+  eq(r.next.name, 'Silver', 'anchoring the bar moved which tier is next');
+  // Notches: every rung BELOW the anchor. Gold is the end of the bar, not a checkpoint on it,
+  // and Platinum sits off the end of it.
+  eq(r.marks, [{ name: 'Bronze', pct: 17, plan: false }, { name: 'Silver', pct: 50, plan: false }],
+    'the checkpoints are not the rungs below the planned tier');
+  // On the plan scale the planned tier IS the end of the bar, so it is never one of the notches
+  // and nothing is ever flagged. The flag only means something on the stretch scale.
+  eq(r.planPct, null, 'a plan-scale row was handed a stretch boundary');
+  eq(r.pastPlan, false, 'a scout below the plan was put in the stretch cohort');
+});
+
+test('a scout past the planned tier is measured to the top rung instead', () => {
+  // Owner ask, 2026-08-31. Pinned to the planned tier, a scout who cleared it read a full bar and
+  // 100% for the rest of the season however much more they sold, and the rungs above the plan had
+  // no notch to pass. Same track, rescaled: the plan stays filled, the rest fills beyond it.
+  const planned = TP_TIERS[1];                       // Silver, $150; top is Platinum, $500
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' }, s: { a: 'earned' } },
+    comm: 20000, keyValue: TP_KEYS, planned });
+  eq(r.pastPlan, true, 'a scout past the plan is still on the plan scale');
+  eq(r.anchor.name, 'Platinum', 'the bar is not rescaled to the top rung');
+  eq(r.anchorPct, 40, '$200 of a $500 top rung is 40%');
+  eq(r.planPct, 30, 'the plan boundary is not at $150 of $500');
+  ok(r.planPct <= r.anchorPct, 'the stretch segment would be drawn with a negative width');
+  // Every rung below the top is notched on this scale, and the planned one is flagged so the
+  // renderers can draw the boundary between the two fills heavier than an ordinary notch.
+  eq(r.marks, [{ name: 'Bronze', pct: 10, plan: false },
+               { name: 'Silver', pct: 30, plan: true },
+               { name: 'Gold', pct: 60, plan: false }],
+    'the stretch scale does not notch every rung below the top, or does not flag the plan');
+  // The plan is done; the ladder is not. Those stay different questions.
+  ok(r.next && r.next.name === 'Gold', 'a scout past the plan is treated as finished');
+  ok(r.short > 0, 'a scout with a rung ahead of them is shown no gap');
+});
+
+test('a make-up payment does not put a scout on the stretch scale', () => {
+  // earnedTierFor counts a tier credited by a make-up payment, so such a scout HOLDS the planned
+  // tier while their commission sits below its threshold. Anchoring them to the top rung would
+  // put anchorPct below planPct and hand the renderer a negative-width segment. `pastPlan` is
+  // measured on `base` for exactly this reason.
+  const planned = TP_TIERS[1];                       // Silver, $150
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' }, s: { a: 'madeUp' } },
+    comm: 9000, keyValue: TP_KEYS, planned });       // $90 earned — below Silver
+  eq(r.earned.name, 'Silver', 'the make-up credit was lost');
+  eq(r.pastPlan, false, 'a scout who paid rather than sold was put on the stretch scale');
+  eq(r.planPct, null, 'a plan-scale row was handed a stretch boundary');
+  eq(r.anchor.name, 'Silver', 'the bar was rescaled for a scout who did not sell past the plan');
+});
+
+test('no rung above the plan means no second scale at all', () => {
+  // Planning on the TOP tier, and planning on nothing, both have to fall through to exactly the
+  // single-scale bar the card drew before any of this.
+  const onTop = tp({ tiers: TP_TIERS, scouts: TP_ONE, comm: 60000, keyValue: TP_KEYS,
+    planned: TP_TIERS[3] })[0];                      // Platinum is the top rung
+  eq(onTop.ladder.stretchOn, false, 'a stretch cohort was invented above the top rung');
+  eq(onTop.pastPlan, false, 'a scout was put on a scale that does not exist');
+  eq(onTop.planPct, null, 'a plan boundary was published with nothing beyond it');
+  const none = tp({ tiers: TP_TIERS, scouts: TP_ONE, comm: 60000, keyValue: TP_KEYS })[0];
+  eq(none.ladder.stretchOn, false, 'a stretch cohort appeared with no tier planned on');
+  eq(none.anchor.name, 'Platinum', 'the fallback anchor is not the top rung');
+});
+
+test('with no tier planned on, a full bar is the top of the ladder', () => {
+  // A bar has to mean something. "Everything there is" is the only other honest answer, and the
+  // card names which one is in force rather than leaving a reader to guess.
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, comm: 25000, keyValue: TP_KEYS });
+  eq(r.anchor.name, 'Platinum', 'the fallback anchor is not the top rung');
+  eq(r.anchorPct, 50, '$250 of a $500 top rung is 50%');
+  eq(r.marks.map((m) => m.name), ['Bronze', 'Silver', 'Gold'], 'the lower rungs are not notched');
+  const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/A full bar is <strong>/.test(card), 'the card never says what a full bar means');
+  ok(/no tier is planned on yet/.test(card), 'the fallback anchor is presented as the planned tier');
+  // The bar and the percentage beside it read off the same figure, or they contradict each other.
+  ok(/\(r\.planPct == null \? r\.anchorPct : r\.planPct\) \+ '%"/.test(card) &&
+     /'<span class="tprog-pct">' \+ r\.anchorPct/.test(card),
+    'the bar and its percentage are measured differently');
+  // On the plan scale there is one fill and it runs to anchorPct, exactly as before.
+  ok(/r\.planPct == null\s*\n?\s*\? ''/.test(card), 'a plan-scale row is drawn with a stretch segment');
+});
+
+test('a ladder with nothing to measure against draws no bar at all', () => {
+  // A single tier at nought, or a threshold of nought: dividing by it would be Infinity, and an
+  // empty track next to a scout who has done everything asked of them is a lie told by geometry.
+  const [r] = tp({ tiers: [{ id: 'z', name: 'Free', thresholdCents: 0, covers: [] }],
+    scouts: TP_ONE, comm: 5000 });
+  eq(r.anchorPct, null, 'a bar was drawn against a threshold of nought');
+  const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/r\.anchorPct == null\s*\n?\s*\? ''/.test(card), 'the bar is drawn even with nothing to measure');
 });
 
 test('a tier that covers what a scout already has adds nothing', () => {
@@ -1118,18 +1233,32 @@ test('the card refuses to guess when tiers cannot be measured', () => {
   eq(r.short, 5000, 'the commission gap is still reported');
 });
 
-test('rows are ordered closest-first, with everyone finished at the end', () => {
+test('rows are ordered by what a scout has brought in, exactly as the family board is', () => {
+  // Owner ask, 2026-08-31. It was closest-to-the-next-rung first, which made this card and the
+  // family-facing board list the same scouts in two different orders — a leader reading one while
+  // a parent read the other had to re-find every child.
+  const scouts = [{ id: 'far', name: 'Far' }, { id: 'done', name: 'Done' }, { id: 'near', name: 'Near' }];
   const rows = tp({
-    tiers: TP_TIERS,
-    scouts: [{ id: 'far', name: 'Far' }, { id: 'done', name: 'Done' }, { id: 'near', name: 'Near' }],
+    tiers: TP_TIERS, scouts,
     map: { b: { far: 'earned', near: 'earned', done: 'earned' },
            s: { near: 'earned', done: 'earned' },
            g: { done: 'earned' } },
-    comm: 14000
+    comm: 14000,
+    combined: { far: 20000, done: 90000, near: 50000 }
   });
-  // Far needs Silver (1000 short); Near needs Gold (16000 short); Done is blocked by closed
-  // Platinum. So: smallest gap, larger gap, then the one with nothing ahead.
-  eq(rows.map((r) => r.scout.name), ['Far', 'Near', 'Done'], 'the order is not closest-first');
+  eq(rows.map((r) => r.scout.name), ['Done', 'Near', 'Far'], 'the board is not ordered by what came in');
+  eq(rows.map((r) => r.combined), [90000, 50000, 20000], 'the row does not carry the figure it is sorted on');
+  // Same tiebreak as rankBy(), so no two rows swap places between renders.
+  const tied = tp({
+    tiers: TP_TIERS, scouts: [{ id: 'b', name: 'Bo' }, { id: 'a', name: 'Al' }],
+    comm: 0, combined: { a: 5000, b: 5000 }
+  });
+  eq(tied.map((r) => r.scout.name), ['Al', 'Bo'], 'equal totals do not fall back to the name');
+  // Unfiltered by any tier deadline — it is what they have brought in, not what counted toward
+  // a rung that closed in November.
+  const fn = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/combined: \(totalsFor\(''\)\[s\.id\] \|\| \{\}\)\.combined/.test(fn[0]),
+    'the sort figure is measured against a deadline');
 });
 
 test('the tier-progress rows never recompute what "earned" means', () => {
@@ -1228,13 +1357,23 @@ test('the tier-progress card states each reason it can say nothing', () => {
   ok(/No reward tiers set yet/.test(fn[0]), 'no tiers is not explained');
   ok(/no commission rate set/.test(fn[0]), 'a missing rate is not explained');
   ok(/No active scouts/.test(fn[0]), 'an empty roster is not explained');
-  // The threshold basis is the most misread thing about tiers, so the card says it outright.
-  ok(/commission a scout has earned the pack/.test(fn[0]), 'the card does not say what a threshold measures');
-  ok(/closest first/.test(fn[0]), 'the row order is unlabelled, so it reads as random');
+  // Owner ask, 2026-08-31: the card talks in SELLING. A tier is still defined in commission —
+  // Popcorn · Rewards sets it there and the budget counts it there — but nobody sells commission,
+  // and making a leader do that conversion on a phone call was the complication being removed.
+  ok(/still has to ' \+\s*'<strong>sell<\/strong>/.test(fn[0]) || /has to <strong>sell<\/strong>/.test(fn[0]),
+    'the card no longer says its figures are what a scout has to sell');
+  ok(!/earned ' \+ fmt\(r\.base\) \+ ' of ' \+ fmt\(r\.need\) \+ '<\/span>/.test(fn[0]),
+    'the commission running total is back on every row');
+  // Each rate spelled out, so a scout can pick the cheaper road rather than being handed one number.
+  ok(/r\.sellRoutes\.forEach\(routeSeg\)/.test(fn[0]), 'the card shows a single rate instead of each one');
+  ok(/esc\(String\(rt\.pct\)\) \+ '%\)/.test(fn[0]), 'the rates are unnamed, so the two figures look arbitrary');
+  ok(/Ordered by <strong>what they have brought in<\/strong>, same as the family board/.test(fn[0]),
+    'the row order is unlabelled, so it reads as random');
   // Reuses the shared segment idiom rather than a private copy that can drift.
   ok(/class="bseg"/.test(fn[0]), 'the meta line no longer uses the shared .bseg segments');
   // The bar restates the percentage already in the text, so it must not be announced twice.
-  ok(/aria-hidden="true"><div class="bar-fill"/.test(fn[0]), 'the progress bar is not hidden from screen readers');
+  ok(/<div class="bar tprog-bar" aria-hidden="true">/.test(fn[0]),
+    'the progress bar is not hidden from screen readers');
   // The fill has to be visible against its own track in BOTH themes. --accent on --surface-2 is
   // 2.54:1 in light, under the 3:1 non-text floor — a progress bar you cannot read the length of.
   ok(/\.bar-fill \{[^}]*background: var\(--accent-text\)/.test(SCRIPT_CSS),
@@ -2847,12 +2986,27 @@ test('the two goals get separate bars, on their own scales', () => {
 
 test('the stretch goal stays with the leaders', () => {
   // Chosen scope: it must not reach the published parent document or the family digest.
+  //
+  // ⚠ This guard used to be a bare /stretch/i scan, and it can no longer be: 2026-08-31 gave the
+  // ladder a STRETCH TIER scale, which is a different thing entirely and is published on purpose.
+  // The two have always been unrelated in code — stretchGoalOf/pack.stretch touch no tier function
+  // and tierIsStretch touches no goal — so the guard now names the goal's own identifiers instead
+  // of the word they happen to share.
+  const GOAL = /stretchGoalCents|stretchGoalOf|pack\.stretch\b|\.stretch\s*>\s*0|Stretch goal/;
   const pv = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(pv, 'buildParentView() not found');
-  ok(!/stretch/i.test(pv[0]), 'the stretch goal leaked into the parent view');
+  ok(!GOAL.test(pv[0]), 'the stretch goal leaked into the parent view');
   const dg = /function monthlyDigest\(mk\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(dg, 'monthlyDigest() not found');
-  ok(!/stretch/i.test(dg[0]), 'the stretch goal leaked into the family digest');
+  ok(!GOAL.test(dg[0]), 'the stretch goal leaked into the family digest');
+  // And the guard still has teeth: it fires on the real thing.
+  ok(GOAL.test(/function renderTotals\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'the goal guard no longer matches the stretch goal it is protecting');
+  // The ladder's stretch block is a TIER scale — no money in it, only names and percentages.
+  const lad = /ladderProg\.stretch = \{[\s\S]*?\n          \};/.exec(SCRIPT);
+  ok(lad, 'the published ladder lost its stretch scale');
+  ok(/topName:/.test(lad[0]) && /planPct:/.test(lad[0]), 'the stretch scale is published without its bounds');
+  ok(!/Cents/.test(lad[0]), 'a money figure reached the published ladder');
 });
 
 test('Season setup says what the Trail’s End goal actually is', () => {
@@ -3898,17 +4052,121 @@ test('a tier says what its threshold is worth in sales AND in commission', () =>
   // Converted at the same rate as the goal, so the two cannot disagree.
   const conv = /function salesForCommission\(cents\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(conv, 'salesForCommission() not found');
-  ok(/var pct = commissionRates\(\)\.goal;/.test(conv[0]),
+  ok(/salesAtRate\(cents, commissionRates\(\)\.goal\)/.test(conv[0]),
     'the sales figure uses a different rate from the goal');
-  ok(/Math\.ceil\(cents \/ \(pct \/ 100\)\)/.test(conv[0]),
+  // The arithmetic moved to salesAtRate when the progress card started quoting every rate.
+  // Both readers round the same way or a scout lands a cent short of the tier at one of them.
+  const rate = /function salesAtRate\(cents, pct\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(rate, 'salesAtRate() not found');
+  ok(/Math\.ceil\(cents \/ \(pct \/ 100\)\)/.test(rate[0]),
     'a minimum is being rounded down, which can land a scout a cent short of the tier');
+  ok(/if \(pct == null \|\| pct <= 0 \|\| !cents\) return null;/.test(rate[0]),
+    'a rate of nought would divide by zero rather than declining to answer');
+});
+
+/* ========================================================================
+   A commission gap, said in selling — 2026-08-31
+   ===================================================================== */
+
+// Owner ask: "instead of showing what they need to earn in commission, just show what they need
+// to sell, at each commission rate." sellingRoutes is that conversion.
+function routesCtx(base, online, cashPct, viaTE) {
+  const ctx = vm.createContext({
+    state: { commissionPct: base, commissionPctOnline: online, cashScoutPct: cashPct, cashThroughTrailsEnd: !!viaTE }
+  });
+  vm.runInContext(slice('commissionRates') + slice('cashScoutRate') + slice('cashCreditOn') +
+    slice('salesAtRate') + slice('sellingRoutes'), ctx);
+  return (cents) => vm.runInContext(`sellingRoutes(${cents})`, ctx);
+}
+
+test('a gap is quoted at every rate the pack earns at, safest figure first', () => {
+  // $60 of commission short. At 30% that is $200 of popcorn; at 35%, $171.43 — and the bigger
+  // number leads, because it is the one that gets there whatever the scout sells.
+  const routes = routesCtx(30, 35, '', false)(6000);
+  eq(routes.map((r) => r.cents), [20000, 17143], 'the shortcut is quoted ahead of the safe figure');
+  eq(routes.map((r) => r.pct), [30, 35], 'the rates do not match their figures');
+  eq(routes.map((r) => r.label), ['at a storefront or wagon', 'online'],
+    'the channels are unnamed, so two bare figures look arbitrary');
+  // Same floor as the goal conversion: a minimum that lands a cent short is not a minimum.
+  ok(routes[1].cents * 0.35 >= 6000, 'the online figure rounds down, landing a scout short of the tier');
+});
+
+test('one rate is one figure, and the row says so instead of repeating it', () => {
+  const routes = routesCtx(30, 30, '', false)(6000);
+  eq(routes.length, 1, 'a pack with one rate is offered a choice it does not have');
+  eq(routes[0].label, 'in popcorn', 'the single-rate label reads as a channel');
+  eq(routes[0].pct, 30, 'the rate is wrong');
+  // A pack that typed only an online rate earns nothing at a storefront, so calling that figure
+  // "in popcorn" would send a scout to the wrong shift.
+  const onlineOnly = routesCtx('', 40, '', false)(6000);
+  eq(onlineOnly.map((r) => [r.label, r.cents]), [['online', 15000]],
+    'an online-only pack is told to work a storefront');
+});
+
+test('which channel pays better is derived, never assumed to be online', () => {
+  // Owner correction, 2026-08-31: this pack's ONLINE rate is the LOWER of the two, and copy that
+  // told a scout to sell online to arrive sooner was sending them the slower way round. The app
+  // already knew — commissionRates().goalIsOnline is true exactly when online is the lower rate —
+  // the prose just was not asking.
+  const tiers = /function renderRewardTiers\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(tiers, 'renderRewardTiers() not found');
+  ok(/be\.goalIsOnline \? 'at a storefront or on a wagon' : 'online'/.test(tiers[0]),
+    'the better-rate sentence names a channel without checking which one it is');
+  // tierBreakEven has to carry the flag, or the branch above is reading undefined and always
+  // taking the same side — which is the bug, silently restored.
+  const be = /function tierBreakEven\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(be && /goalIsOnline: rates\.goalIsOnline/.test(be[0]), 'the break-even drops the flag the copy branches on');
+  // And nowhere on these surfaces is "online" hard-wired to the encouraging half of a sentence.
+  for (const fn of ['renderRewardTiers', 'renderTierProgress', 'sellingRoutes']) {
+    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
+    ok(!/online[^']*(sooner|faster|better|ahead)/i.test(codeOnly(src[0])),
+      `${fn} still promises that selling online gets a scout there sooner`);
+  }
+  // The progress card's own two figures are ordered by SIZE, not by channel, so the safe one
+  // leads whichever rate happens to be lower.
+  const routes = routesCtx(35, 30, '', false)(6000);   // online the LOWER rate, as this pack has it
+  eq(routes.map((r) => r.label), ['online', 'at a storefront or wagon'],
+    'the bigger figure does not lead when online is the lower rate');
+  eq(routes[0].cents, 20000, 'the safe figure is not the one worked out at the lower rate');
+});
+
+test('the cash credit rate is never quoted as a rate of its own', () => {
+  // Owner ruling, 2026-08-31: it is always set to the storefront rate, so a third line quoting
+  // the same figure under another name is clutter — and worse, it implies a difference that
+  // never exists. The credit itself is untouched; only the copy is.
+  eq(routesCtx(30, 35, 50, false)(6000).map((r) => r.label), ['at a storefront or wagon', 'online'],
+    'cash is quoted as a route of its own');
+  eq(routesCtx(30, 30, 50, false)(6000).length, 1, 'cash reappears as a second route on a one-rate pack');
+  ok(routesCtx(30, 35, 50, false)(6000).every((r) => r.sell),
+    'a non-selling route is being handed to the card, which takes its headline from the first entry');
+  // Nor anywhere else on the tier surfaces. The forbidden thing is the RATE, not the word: the
+  // channel is still called "cash donations" wherever the pack runs it through Trail's End, and
+  // cashScoutCredit still pays the credit. Reads CODE, not prose — the warning comments that
+  // record this ruling name the very field they forbid.
+  for (const fn of ['renderRewardTiers', 'sellingRoutes', 'renderTierProgress']) {
+    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
+    ok(src, `${fn}() not found`);
+    ok(!/\.cash\b|cashScoutRate|cashScoutPct/.test(codeOnly(src[0])),
+      `${fn} still quotes the cash credit rate`);
+  }
+});
+
+test('a pack with no usable rate is offered no figure at all, rather than a wrong one', () => {
+  eq(routesCtx('', '', '', false)(6000), [], 'a sell figure was invented with no rate to derive it from');
+  // 0% divides to Infinity. tierRateMissing() does NOT catch this — 0 is a rate that was typed —
+  // so the routes list is the thing that has to decline, and the card falls back to commission.
+  eq(routesCtx(0, 0, '', false)(6000), [], 'a nought rate produced a figure');
+  const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(!r\.routes\.length\) segs\.push/.test(card), 'the row says nothing at all when no rate can convert the gap');
+  ok(/r\.sellRoutes\.length \? r\.sellRoutes\[0\]\.cents : r\.short/.test(card),
+    'the headline figure has no fallback, so it prints a dash for a pack with a nought rate');
 });
 
 test('sales-to-reach-a-tier is quoted at the rate a scout can always beat', () => {
   // The conversion has to be a floor, not an estimate: sell this much and you are there
   // whatever the channel mix, because every other channel earns more per dollar.
   const ctx = vm.createContext({ state: {} });
-  vm.runInContext(slice('commissionRates') + slice('cashScoutRate') + slice('cashCreditOn') + slice('salesForCommission'), ctx);
+  vm.runInContext(slice('commissionRates') + slice('cashScoutRate') + slice('cashCreditOn') + slice('salesForCommission') + slice('salesAtRate'), ctx);
   const need = (base, online, cents) => {
     ctx.state.commissionPct = base; ctx.state.commissionPctOnline = online;
     return vm.runInContext(`salesForCommission(${cents})`, ctx);
@@ -5210,7 +5468,7 @@ test('every scout on the board gets a progress bar, and it is a list so the bar 
   // The table this replaced was right when a row was four short figures. A bar needs width, and a
   // 10px track in a fifth column is either unreadably narrow or — on a phone, inside .tbl-wrap —
   // only reachable by swiping the table sideways to find your own scout.
-  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i\); \}\);/.test(fn[0]),
+  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i, ladder\); \}\);/.test(fn[0]),
     'the board does not render one list row per scout');
   ok(!/tbl-wrap|<th scope="col"/.test(codeOnly(fn[0])),
     'the board is a table again, which puts the bar behind a sideways scroll on a phone');
@@ -5219,22 +5477,64 @@ test('every scout on the board gets a progress bar, and it is a list so the bar 
   ok(!/goalPct/.test(fn[0]), 'the of-goal percentage is still on the row');
 });
 
-test('the bar is measured from zero, in commission, and never invents a figure', () => {
+test('the family bar runs to the planned tier, the same one the leaders’ card does', () => {
   const src = codeOnly(BPV());
-  // ⚠ From ZERO toward the next threshold, not from the rung just earned. A scout who cleared a
-  // tier by a dollar would otherwise show a near-empty bar after a season of work.
-  ok(/Math\.round\(p\.base \/ p\.need \* 100\)/.test(src),
-    'the bar is measured against something other than the next threshold');
-  ok(/Math\.max\(0, Math\.min\(100, Math\.round/.test(src), 'the percentage is not clamped to 0-100');
-  // A finished ladder is 100%, and a pack with nothing to measure publishes null — so the renderer
-  // can leave the bar out rather than draw an empty one.
-  ok(/\(\(p && p\.earned && !p\.next\) \? 100 : null\)/.test(src),
-    'a scout at the top of the ladder, or a pack with no measurable tiers, is mishandled');
-  // The ratio is deliberately taken in commission: salesForCommission divides both halves by the
-  // same goal rate, so it is the same ratio in sales terms. Converting per scout would break it,
+  // Owner ask, 2026-08-31: both boards on one denominator. Published straight off the row rather
+  // than recomputed here — a second ratio in this file is a second thing to keep in step.
+  ok(/nextPct: \(p && typeof p\.anchorPct === 'number'\) \? p\.anchorPct : null/.test(src),
+    'the bar is measured against something other than the planned tier');
+  ok(!/Math\.round\(p\.base \/ p\.need \* 100\)/.test(src),
+    'the old next-rung ratio is still being published alongside it');
+  // Clamping and the top-of-ladder case moved with it, onto tierProgressRows.anchorPct.
+  const rows = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/Math\.max\(0, Math\.min\(100, Math\.round\(base \/ anchor\.thresholdCents \* 100\)\)\)/.test(rows),
+    'the percentage is not clamped to 0-100');
+  ok(/anchor && anchor\.thresholdCents > 0/.test(rows),
+    'a pack with nothing to measure publishes a figure instead of null');
+  // The field NAME is unchanged on purpose: a payload published before this change still renders,
+  // just measured the old way, rather than losing every bar until a leader next saves.
+  ok(/nextPct:/.test(src), 'the field was renamed, so older payloads lose their bars');
+  // The ratio is still taken in commission: salesForCommission divides both halves by the same
+  // goal rate, so it is the same ratio in sales terms. Converting per scout would break it,
   // because a scout's own rate depends on their channel mix (online pays differently).
   ok(!/salesForCommission\(p\.base\)|salesForCommission\(p\.need\)/.test(src),
     'the bar converts each side to sales per scout, so it disagrees with the shortfall beside it');
+});
+
+test('the family board is told what a full bar means, and can survive not being told', () => {
+  const src = codeOnly(BPV());
+  ok(/out\.tierLadder = ladderProg;/.test(src), 'the ladder legend is never published');
+  ok(/anchorName: String\(progLad\.plan\.name/.test(src), 'the anchor is published without its name');
+  // ⚠ Read off the shared ladder, NOT off row zero's own anchor. Rows are ordered by what a scout
+  // brought in, so row zero is usually a stretch-cohort row — a legend built from it would name
+  // the top rung and describe the exception rather than the rule.
+  ok(!/progRows\[0\]\.anchor|progAny\.anchor/.test(src),
+    'the legend is built from the top seller’s own scale');
+  ok(/progLad\.stretchOn/.test(src), 'the stretch scale is never published');
+  ok(/pastPlan: !!\(p && p\.pastPlan\)/.test(src), 'the row does not say which scale it is on');
+  ok(/planned: !!plannedTier\(\)/.test(src),
+    'the payload cannot tell a planned anchor from the top-of-ladder fallback');
+  // Every renderer path has to cope with the field being absent — a pack that has not republished
+  // since this shipped serves a payload with no ladder on it at all.
+  const list = /function renderParentStandings\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/pv\.tierLadder && typeof pv\.tierLadder === 'object' && !Array\.isArray\(pv\.tierLadder\)/.test(list),
+    'the legend trusts the payload to have the shape it expects');
+  // parentBar is handed the cohort's own marks rather than the whole ladder — which scale a row
+  // is on is parentTierProgress's decision, and the bar should not have to know about cohorts.
+  const bar = /function parentBar\(pct, label, marks, planPct\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(bar, 'parentBar() no longer takes the marks and plan boundary');
+  ok(/Array\.isArray\(marks\) \? marks : \[\]/.test(bar[0]),
+    'the notches are drawn without checking the payload carries any');
+  // A payload whose planPct sat above the scout's own percentage would ask for a negative width.
+  ok(/planPct >= 0 && planPct <= p/.test(bar[0]), 'the stretch segment can be drawn backwards');
+  // And the cohort choice itself degrades: a row flagged pastPlan on a payload with no stretch
+  // block published still draws the single-scale bar rather than throwing.
+  const prog = /function parentTierProgress\(r, ladder\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/var past = !!\(r && r\.pastPlan && stretch\);/.test(prog[0]),
+    'a pastPlan row trusts a stretch block that may not have been published');
+  // Notches are decoration: each is named once in the legend, so repeating them inside every
+  // bar's label would read the whole ladder out once per scout.
+  ok(/role="img" aria-label="/.test(bar[0]), 'the bar lost the only thing that reaches a screen reader');
 });
 
 test('the progress bar carries its figure in words, and is absent when there is nothing to measure', () => {
@@ -5265,10 +5565,90 @@ test('the progress bar carries its figure in words, and is absent when there is 
   ok(!/\$0\.00/.test(noRate), 'a prize-only rung claims it is worth nothing off your costs');
 });
 
+test('a family sees the stretch scale as two fills, and is told which rung it ends at', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentTierProgress']);
+  // The ladder as published: plan scale for most rows, stretch scale for anyone past Gold.
+  const LADDER = {
+    anchorName: 'Gold',
+    planned: true,
+    marks: [{ name: 'Bronze', pct: 25, plan: false }, { name: 'Silver', pct: 50, plan: false }],
+    stretch: {
+      topName: 'Platinum', planPct: 60,
+      marks: [{ name: 'Bronze', pct: 15, plan: false }, { name: 'Silver', pct: 30, plan: false },
+              { name: 'Gold', pct: 60, plan: true }]
+    }
+  };
+  const past = ctx.parentTierProgress({ nextTier: 'Platinum', nextPct: 80, pastPlan: true,
+    nextReward: 'A week of summer camp, paid', nextSalesCents: 50167, nextUnlocksCents: 3500 }, LADDER);
+  // Two fills: the plan complete, then what they have done beyond it.
+  ok(/<div class="bar-fill bar-fill-part" style="width:60%">/.test(past),
+    'the plan half of the bar is missing, or still drawn as a pill that stops mid-track');
+  ok(/<div class="bar-fill-stretch" style="left:60%;width:20%">/.test(past),
+    'the stretch segment does not run from the plan boundary to where the scout actually is');
+  // The plan notch is the boundary, and is flagged so it can be drawn heavier than a rung.
+  ok(/class="tprog-tick is-plan" style="left:60%"/.test(past), 'the plan boundary is an ordinary notch');
+  // Caption and spoken label say the same thing, so a screen reader is not given a percentage
+  // measured against a rung the sighted caption never names.
+  ok(/<strong>Gold<\/strong> met · 80% of the way to <strong>Platinum<\/strong>/.test(past),
+    'the caption does not say which rung the percentage is measured against');
+  ok(/aria-label="Gold met, 80 percent of the way to Platinum"/.test(past),
+    'the spoken label still claims the old scale');
+
+  // A row on the plan scale is untouched by any of it — the majority case, and the regression
+  // that would matter most.
+  const below = ctx.parentTierProgress({ nextTier: 'Silver', nextPct: 47, nextSalesCents: 3334 }, LADDER);
+  ok(/<div class="bar-fill" style="width:47%">/.test(below), 'a plan-scale bar gained a second fill');
+  ok(!/bar-fill-stretch|is-plan/.test(below), 'a plan-scale bar was drawn with the stretch furniture');
+  ok(/47% of the way to <strong>Gold<\/strong>/.test(below) && !/met ·/.test(below),
+    'a scout below the plan is told they have met it');
+  ok(/left:25%/.test(below) && /left:50%/.test(below), 'the plan-scale notches are not the plan-scale rungs');
+
+  // A payload published before any of this: pastPlan absent, no stretch block. Must render
+  // exactly the single-scale bar it always did rather than throwing.
+  const oldPayload = ctx.parentTierProgress({ nextTier: 'Silver', nextPct: 43, nextSalesCents: 25000 },
+    { anchorName: 'Gold', planned: true, marks: [{ name: 'Bronze', pct: 25 }] });
+  ok(/<div class="bar-fill" style="width:43%">/.test(oldPayload), 'an old payload lost its bar');
+  ok(!/bar-fill-stretch/.test(oldPayload), 'an old payload grew a segment it never published');
+  // And a row flagged pastPlan whose payload carries NO stretch block — a half-upgraded document —
+  // falls back rather than reading through undefined.
+  const halfway = ctx.parentTierProgress({ nextTier: 'Platinum', nextPct: 80, pastPlan: true },
+    { anchorName: 'Gold', planned: true, marks: [] });
+  ok(/<div class="bar-fill" style="width:80%">/.test(halfway), 'a half-upgraded payload breaks the bar');
+  ok(!/bar-fill-stretch/.test(halfway), 'a stretch segment was drawn with no scale published for it');
+});
+
+test('the two fills are not told apart by colour alone', () => {
+  // --good against the gold fill measures 1.09:1 in light, 1.01:1 in dark, 1.09:1 in print — the
+  // two are the same LIGHTNESS and differ only in hue, so on greyscale, on paper, or to a
+  // red-green colour-blind reader they are one solid bar. Same trap .brow::after documents. No
+  // token in the palette clears 3:1 against gold in every theme, so the texture has to carry it.
+  ok(/\.bar-fill-stretch \{[^}]*background-image: repeating-linear-gradient/.test(SCRIPT_CSS),
+    'the stretch fill is distinguished by hue alone');
+  ok(/\.bar-fill-stretch \{[^}]*background: var\(--good\)/.test(SCRIPT_CSS),
+    'the stretch fill lost the token that clears 3:1 against the track in all three themes');
+  // --navy would be invisible in dark: it is a background token there, 1.08:1 on the dark track.
+  ok(!/\.bar-fill-stretch \{[^}]*var\(--navy\)/.test(SCRIPT_CSS),
+    'the stretch fill uses a background token that vanishes in dark mode');
+  // The boundary is a position, not a colour, so it works for the same readers.
+  ok(/\.tprog-tick\.is-plan \{[^}]*width: 3px/.test(SCRIPT_CSS), 'the plan boundary is not drawn heavier');
+  // Neither legend names a colour — "the green part" fails exactly the readers it is written for.
+  for (const fn of ['renderTierProgress', 'renderParentStandings']) {
+    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
+    ok(src, `${fn}() not found`);
+    ok(/hatched/.test(src[0]), `${fn} does not tell a reader what the second fill looks like`);
+    ok(!/\bgreen\b/i.test(codeOnly(src[0])), `${fn} names a colour a reader may not be able to see`);
+  }
+});
+
 test('the published standings carry the tier progress, from the shared tier map', () => {
   const src = codeOnly(BPV());
-  ok(/tierProgressRows\(\)\.forEach\(function \(p\) \{ progById\[p\.scout\.id\] = p; \}\)/.test(src),
+  // One call, two readers: the per-scout map below and the pack-wide ladder legend. tierProgressRows
+  // walks every storefront and every entry, so calling it twice per publish is not free.
+  ok(/var progRows = tierProgressRows\(\);/.test(src) &&
+     /progRows\.forEach\(function \(p\) \{ progById\[p\.scout\.id\] = p; \}\)/.test(src),
     'per-scout tier progress is not taken from tierProgressRows');
+  ok((src.match(/tierProgressRows\(\)/g) || []).length === 1,
+    'the publish walks every scout’s totals more than once');
   // Sales, never the commission shortfall — the same rule the ladder follows.
   ok(/nextSalesCents: \(p && p\.next && typeof p\.shortSales === 'number'\) \? p\.shortSales : null/.test(src),
     'the shortfall is published as commission, or invented when there is no rate');

@@ -721,7 +721,47 @@
      declaration said 36. Same specificity trap as .btiny.armed earlier: a base rule with two
      classes beats a single-class override, and only measuring the resolved style catches it. */
   .btn.small.tprog-pay { flex: 0 0 auto; min-height: 36px; padding: 4px 10px; font-size: 0.78rem; }
-  .tprog-bar { margin-top: 5px; height: 6px; }
+  .tprog-bar { position: relative; margin-top: 5px; height: 6px; }
+  /* Checkpoints: where each rung below the planned tier falls along the bar. Drawn in the TRACK
+     colour rather than a line colour so a notch reads as a gap in the fill — over the unfilled
+     part it disappears into the track, which is right: a rung nobody has reached yet is not a
+     thing to look at. 2px and no border-radius, because .bar clips them to its own pill shape. */
+  .tprog-tick {
+    position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+    background: var(--surface-2);
+  }
+  /* THE PLAN NOTCH, on a bar drawn to the stretch scale — the boundary between the two fills.
+     Wider than a rung notch because it is the one position on that bar a reader has to be able
+     to find: it is where the old scale ended, and everything right of it is beyond what the pack
+     budgeted for. Track-coloured like the others, which is what makes it read as a gap:
+     --surface-2 measures 4.77:1 against the gold fill and 5.19:1 against the stretch fill, so it
+     separates them cleanly in every theme. */
+  .tprog-tick.is-plan { width: 3px; margin-left: -1.5px; }
+  /* Progress BEYOND the planned tier.
+
+     ⚠ THE HATCH, NOT THE HUE, IS WHAT DISTINGUISHES THIS. --good against the gold fill measures
+     1.09:1 in light, 1.01:1 in dark and 1.09:1 in print — the two fills are the same LIGHTNESS
+     and differ only in hue, so on greyscale, on paper, or to a red-green colour-blind reader they
+     are one solid bar. That is the identical trap .brow::after documents above ("within 1.2:1 of
+     each other in luminance and nobody should have to tell them apart by hue"), and it is not
+     fixable by picking a different token: every candidate in the palette measures under 3:1
+     against gold in at least one theme (--navy is worse still — a background token in dark, 1.08:1
+     on the dark track). So the colour is the nicety and the texture is the information.
+
+     --good itself is a foreground token in both themes and clears the 3:1 non-text floor against
+     the track everywhere: 5.19:1 light, 6.01:1 dark, 5.19:1 print. Square, like the notches —
+     .bar clips both ends to its own pill. */
+  .bar-fill-stretch {
+    position: absolute; top: 0; bottom: 0;
+    background: var(--good);
+    background-image: repeating-linear-gradient(135deg,
+      transparent 0 3px,
+      color-mix(in srgb, var(--surface-2) 60%, transparent) 3px 6px);
+  }
+  /* The gold half of a two-part bar. .bar-fill is a pill on its own; a rounded cap stopping in
+     the middle of a track reads as the end of the bar rather than a join. The outer ends still
+     round, because .bar clips to its own radius. */
+  .bar-fill-part { border-radius: 0; }
 
   /* Money · Ledger (Phase 0) — same wrapping-row idiom as .erow, with a left rule that
      tells money in from money out at a glance without relying on colour alone. */
@@ -1293,6 +1333,10 @@
   .pv-scout-name { font-weight: 650; flex: 1 1 140px; min-width: 0; }
   .pv-scout-total { font-weight: 650; font-variant-numeric: tabular-nums; }
   .pv-prog { margin-top: 8px; }
+  /* Positioning context for the tier notches, which are absolutely placed inside the track.
+     .bar itself is shared with the pack-goal bar, which has no notches and must not gain a
+     stacking context it does not need. */
+  .pv-bar { position: relative; }
   .pv-prog-note { margin: 5px 0 0; font-size: 0.86rem; }
   .pv-prog-note + .pv-prog-note { margin-top: 2px; }
   /* The preview banner. Tinted, not a plain card: a leader who forgets they are in here will
@@ -7077,7 +7121,8 @@
       // archived-but-credited scout on the board simply has no entry and shows no tier — which is
       // right: they are not chasing one.
       var progById = {};
-      tierProgressRows().forEach(function (p) { progById[p.scout.id] = p; });
+      var progRows = tierProgressRows();
+      progRows.forEach(function (p) { progById[p.scout.id] = p; });
       var standings = ranked.map(function (r) {
           var p = progById[r.id];
           return {
@@ -7100,22 +7145,65 @@
             // The prize in words, which is what actually sells a shift — "Camp week" is a label,
             // "a week of summer camp, paid" is the reason to knock on a door.
             nextReward: (p && p.next) ? String(p.next.reward || '') : '',
-            // How full the bar is. Measured from ZERO toward the next rung's threshold, not from
-            // the rung just earned: a scout who has cleared one tier by a dollar would otherwise
-            // see a near-empty bar after a season of work, which is both demotivating and a poor
-            // description of what they have done. A threshold is an absolute target, and "43% of
-            // the way to Camp week" is the plain reading of a bar pointed at one.
+            // Where to sell it, at each rate the pack earns — the same list the leaders' card
+            // shows, published so a family gets the choice too rather than one blended figure.
+            // Biggest first, which is the safe one: sell that and they arrive whatever the mix.
+            // ⚠ The cash credit rate is NOT among them (owner ruling, 2026-08-31) — it is always
+            // the storefront rate, so it would be the same figure under another name.
+            nextRoutes: (p && p.next) ? (p.sellRoutes || []).map(function (rt) {
+              return { label: String(rt.label || ''), pct: rt.pct, cents: rt.cents };
+            }) : [],
+            // How full the bar is — against the PLANNED tier, not the next rung (owner ask,
+            // 2026-08-31). Measured rung by rung, a scout who has just cleared one tier and a
+            // scout two dollars off the next both show a nearly empty bar, so the board could not
+            // be read down at all. One denominator makes the lengths comparable, and the notches
+            // published on `tierLadder` say which rung each scout is passing.
             //
             // ⚠ The RATIO is computed in commission, and that is deliberate: it is the same ratio
             // in sales terms, because salesForCommission divides both halves by the same goal
             // rate. Do not "fix" this by converting each side first — a scout's own sales-to-
             // commission rate depends on their channel mix (online pays a different rate), so
             // per-scout conversion would make the bar and the shortfall beside it disagree.
-            nextPct: (p && p.next && p.need > 0)
-              ? Math.max(0, Math.min(100, Math.round(p.base / p.need * 100)))
-              : ((p && p.earned && !p.next) ? 100 : null)
+            //
+            // Field name unchanged on purpose: a payload published before this change still
+            // renders, just measured the old way, rather than losing its bars until a leader
+            // next saves.
+            nextPct: (p && typeof p.anchorPct === 'number') ? p.anchorPct : null,
+            // Which scale that percentage is on. A scout who has cleared the planned tier is
+            // measured to the top rung instead, so the board can draw the rest of what they have
+            // done rather than pinning them at a full bar for the rest of the season. Absent on an
+            // older payload → falsy → the single-scale bar the board has always drawn.
+            pastPlan: !!(p && p.pastPlan)
           };
         });
+      // WHAT A FULL BAR MEANS, published once. Pack-wide — the anchor and the notches are a
+      // property of the ladder, not of a scout — so the board can caption itself instead of
+      // leaving a parent to guess what 43% is 43% of. Absent on an older payload, and the
+      // renderer then draws a plain bar with no legend, which is what it always did.
+      var ladderProg = null;
+      var progLad = progRows[0] && progRows[0].ladder;
+      function pubMarks(a) {
+        return (a || []).map(function (m) {
+          return { name: String(m.name || ''), pct: m.pct, plan: !!m.plan };
+        });
+      }
+      if (progLad && progLad.plan) {
+        ladderProg = {
+          anchorName: String(progLad.plan.name || ''),
+          planned: !!plannedTier(),
+          marks: pubMarks(progLad.marksPlan)
+        };
+        // The stretch scale, published only where a rung above the plan exists. planPct and the
+        // notch positions are pack-wide — a property of the ladder, not of a scout — so they live
+        // here and the standings rows carry nothing but the boolean saying which scale they are on.
+        if (progLad.stretchOn) {
+          ladderProg.stretch = {
+            topName: String((progLad.top && progLad.top.name) || ''),
+            planPct: progLad.planPct,
+            marks: pubMarks(progLad.marksTop)
+          };
+        }
+      }
       // ONE goal, owner ask 2026-08-02. Parents used to get two bars — a Trail's End goal and a
       // cash-donations goal — which is the pack's own internal split: cash either runs through
       // Trail's End and earns commission or the pack keeps all of it, and that decision changes
@@ -7230,6 +7318,7 @@
       out.goals = goals;
       out.derby = derby;
       if (tiers.length) out.tiers = tiers;
+      if (ladderProg) out.tierLadder = ladderProg;
       if (familyCost.length) out.familyCost = familyCost;
       return out;
     } finally {
@@ -8375,42 +8464,75 @@
   // One scout on the board: the money they have brought in, then how close they are to the next
   // rung and what it is worth. The bar is the point — a figure says where you are, a bar says how
   // close, and "how close" is what gets a family out on a Saturday.
-  function parentStandingRow(r, i) {
+  function parentStandingRow(r, i, ladder) {
     var h = '<div class="pv-scout"><div class="pv-scout-head">' +
       '<span class="pv-scout-rank">' + (i + 1) + '</span>' +
       '<span class="pv-scout-name">' + esc(String((r && r.name) || '')) +
       ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') +
       ((r && r.tier) ? ' <span class="pill good">' + esc(String(r.tier)) + '</span>' : '') + '</span>' +
       '<span class="pv-scout-total money">' + fmt((r && r.combinedCents) || 0) + '</span></div>';
-    return h + parentTierProgress(r) + '</div>';
+    return h + parentTierProgress(r, ladder) + '</div>';
   }
   // The bar and its caption. Deliberately absent — not a zero-width bar — when there is nothing to
   // measure: a pack with no tiers, or with no commission rate to convert a threshold into a
   // sell-through figure. An empty track next to a scout who has done everything asked of them
   // would be a lie told by geometry.
-  function parentTierProgress(r) {
+  function parentTierProgress(r, ladder) {
     var pct = (r && typeof r.nextPct === 'number') ? r.nextPct : null;
     if (pct == null) return '';
+    // WHICH SCALE THIS ROW IS ON. A scout who has cleared the planned tier is measured to the top
+    // rung instead — see tierProgressRows. Both halves have to be present for the stretch scale to
+    // be usable: the row's own flag, and a payload that actually published the stretch block.
+    // Either missing and this is the single-scale bar the board has always drawn.
+    var stretch = (ladder && ladder.stretch && typeof ladder.stretch === 'object') ? ladder.stretch : null;
+    var past = !!(r && r.pastPlan && stretch);
+    var marks = past ? stretch.marks : (ladder ? ladder.marks : []);
+    var planPct = past ? stretch.planPct : null;
+    var planName = String((ladder && ladder.anchorName) || '');
+    // What the bar is measured against, for the caption and the spoken label. Named, because
+    // "43%" with no denominator is not information. Falls back to the next rung's name on a
+    // payload published before the bar was rebased, which is what that bar actually meant.
+    var anchorName = past
+      ? String(stretch.topName || r.nextTier || '')
+      : String((ladder && ladder.anchorName) || r.nextTier || '');
+    // The caption and the spoken label say the same thing, so a screen reader is not told a
+    // percentage measured against a rung the sighted caption does not name.
+    var reached = (past && planName) ? planName + ' met, ' : '';
     // Top of the ladder: a full bar and a plain statement, which is the reward for finishing.
     if (!r.nextTier) {
-      return '<div class="pv-prog">' + parentBar(100, 'Every tier earned') +
+      return '<div class="pv-prog">' + parentBar(100, 'Every tier earned', marks, planPct) +
         '<p class="pv-prog-note"><strong>Every tier earned.</strong> ' +
         '<span class="muted">Nothing left to chase — thank you.</span></p></div>';
     }
     var name = String(r.nextTier);
-    var out = '<div class="pv-prog">' + parentBar(pct, pct + ' percent of the way to ' + name) +
-      '<p class="pv-prog-note">' + pct + '% of the way to <strong>' + esc(name) + '</strong>';
+    var out = '<div class="pv-prog">' +
+      parentBar(pct, reached + pct + ' percent of the way to ' + (anchorName || name), marks, planPct) +
+      '<p class="pv-prog-note">' +
+      ((past && planName) ? '<strong>' + esc(planName) + '</strong> met · ' : '') +
+      pct + '% of the way to <strong>' + esc(anchorName || name) + '</strong>' +
+      // Which rung is actually next, when it is not the one the bar ends at. A scout can be 60%
+      // of the way to the planned tier with a nearer rung in front of them, and that nearer rung
+      // is the one worth chasing this week.
+      (anchorName && anchorName !== name ? ' <span class="muted">· next up <strong>' + esc(name) + '</strong></span>' : '');
     // The prize in words, where there is room for it: the tier's NAME is a label, its reward is
     // the reason to knock on a door.
     if (r.nextReward) out += ' <span class="muted">— ' + esc(String(r.nextReward)) + '</span>';
     out += '</p>';
-    // The two figures a family can act on. Both are optional and for different reasons: the
-    // shortfall is null when the pack has typed no rate, and the value is zero for a prize-only
-    // rung (a patch is worth having and costs the family nothing either way).
+    // What is left to SELL, and where. The routes are the same list the leaders' card shows —
+    // biggest first, which is the safe one — so a family gets the choice rather than one blended
+    // figure. Older payloads carry no routes and fall back to the single figure they published.
+    var routes = (r && Array.isArray(r.nextRoutes)) ? r.nextRoutes : [];
     var bits = [];
-    if (typeof r.nextSalesCents === 'number' && r.nextSalesCents > 0) {
-      bits.push('<strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell');
+    if (routes.length > 1) {
+      routes.forEach(function (rt) {
+        bits.push('<strong class="money">' + fmt(rt.cents) + '</strong> ' + esc(String(rt.label || '')) +
+          ' <span class="muted">(' + esc(String(rt.pct)) + '%)</span>');
+      });
+    } else if (typeof r.nextSalesCents === 'number' && r.nextSalesCents > 0) {
+      bits.push('<strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell' +
+        (routes.length === 1 ? ' <span class="muted">(at ' + esc(String(routes[0].pct)) + '%)</span>' : ''));
     }
+    // Zero for a prize-only rung — a patch is worth having and costs the family nothing either way.
     if ((r.nextUnlocksCents || 0) > 0) {
       bits.push('worth <span class="money">' + fmt(r.nextUnlocksCents) + '</span> off your costs');
     }
@@ -8420,10 +8542,26 @@
   // A bar carries no text of its own, so role="img" plus a label is the only way it reaches a
   // screen reader — and the caption beneath repeats the figure in words for everyone else, because
   // a bar alone is a shape, not information.
-  function parentBar(pct, label) {
+  function parentBar(pct, label, marks, planPct) {
     var p = Math.max(0, Math.min(100, pct || 0));
-    return '<div class="bar" role="img" aria-label="' + esc(label) + '">' +
-      '<div class="bar-fill" style="width:' + p + '%"></div></div>';
+    // The rungs below the anchor, notched into the track. Decoration only — every one of them is
+    // named in the legend above the list, so repeating them inside each bar's label would make a
+    // screen reader read the whole ladder out once per scout.
+    var ms = Array.isArray(marks) ? marks : [];
+    // Two fills once a scout is past the plan: the plan itself, complete, then what they have done
+    // beyond it. Clamped both ways — a payload whose planPct somehow sat above the scout's own
+    // percentage would otherwise ask for a negative width.
+    var plan = (typeof planPct === 'number' && planPct >= 0 && planPct <= p) ? planPct : null;
+    return '<div class="bar pv-bar" role="img" aria-label="' + esc(label) + '">' +
+      '<div class="bar-fill' + (plan == null ? '' : ' bar-fill-part') + '" style="width:' +
+      (plan == null ? p : plan) + '%"></div>' +
+      (plan == null
+        ? ''
+        : '<div class="bar-fill-stretch" style="left:' + plan + '%;width:' + (p - plan) + '%"></div>') +
+      ms.map(function (m) {
+        return '<span class="tprog-tick' + (m.plan ? ' is-plan' : '') +
+          '" style="left:' + esc(String(m.pct)) + '%"></span>';
+      }).join('') + '</div>';
   }
   function renderParentStandings(pv) {
     var h = '';
@@ -8447,7 +8585,36 @@
       // been either unreadably narrow or, on a phone, only reachable by scrolling the table
       // sideways: a parent should not have to swipe to find out how close their own scout is.
       // In a list every figure carries its own words instead, so nothing is left to a column head.
-      rows.forEach(function (r, i) { h += parentStandingRow(r, i); });
+      // The ladder legend, once, above the rows: a bar is unreadable without knowing what a full
+      // one means, and the answer is pack-wide rather than per scout. Absent on a payload
+      // published before 2026-08-31, and the rows then draw plain bars exactly as they used to.
+      var ladder = (pv.tierLadder && typeof pv.tierLadder === 'object' && !Array.isArray(pv.tierLadder))
+        ? pv.tierLadder : null;
+      if (ladder) {
+        var lmarks = Array.isArray(ladder.marks) ? ladder.marks : [];
+        h += '<p class="small muted" style="margin:0 0 10px">A full bar is <strong>' +
+          esc(String(ladder.anchorName || 'the top tier')) + '</strong>' +
+          (ladder.planned ? ' — the level the pack plans on' : ', the top of the ladder') +
+          (lmarks.length
+            ? '. The notches are the rungs below it: ' +
+              lmarks.map(function (m) {
+                return esc(String(m.name || 'a tier')) + ' at ' + esc(String(m.pct)) + '%';
+              }).join(', ')
+            : '') + '.</p>';
+        // The second scale, only where the pack has a rung above the plan. Names no colour: the
+        // two fills are within 1.09:1 of each other in luminance, so the hatching is what actually
+        // tells them apart and "the green part" would fail exactly the readers this sentence is
+        // written for. A notch is a position, and everyone can find a position.
+        var lstretch = (ladder.stretch && typeof ladder.stretch === 'object') ? ladder.stretch : null;
+        if (lstretch) {
+          h += '<p class="small muted" style="margin:0 0 10px">A scout who has passed <strong>' +
+            esc(String(ladder.anchorName || 'the planned tier')) + '</strong> is measured to <strong>' +
+            esc(String(lstretch.topName || 'the top tier')) + '</strong> instead, so their bar is drawn to a ' +
+            'different scale. The part past the heavy notch is shaded and hatched — that is what ' +
+            'they have done beyond what the pack planned for.</p>';
+        }
+      }
+      rows.forEach(function (r, i) { h += parentStandingRow(r, i, ladder); });
     }
     h += '</div>';
     h += parentTierLadder(pv);
@@ -9707,9 +9874,50 @@
   // the better rate gets there sooner. Rounded UP, because a minimum that lands a cent short is
   // not a minimum. Null until a rate is set.
   function salesForCommission(cents) {
-    var pct = commissionRates().goal;
+    return salesAtRate(cents, commissionRates().goal);
+  }
+  // The same sum at a NAMED rate rather than the goal rate. Split out because "what do they have
+  // to sell" has a different answer at every channel the pack earns at, and a scout deciding
+  // between a Saturday storefront shift and an evening of online links is choosing between them.
+  function salesAtRate(cents, pct) {
     if (pct == null || pct <= 0 || !cents) return null;
     return Math.ceil(cents / (pct / 100));
+  }
+  // A COMMISSION GAP, SAID IN SELLING — owner ask, 2026-08-31: "instead of showing what they need
+  // to earn in commission, just show what they need to sell, at each commission rate."
+  //
+  // One entry per rate the pack actually earns at. SELLING routes first, biggest figure first —
+  // and the biggest is the guaranteed one, because the lower the rate the more popcorn it takes.
+  // A scout who sells that reaches the tier whatever their mix; the ones under it are shortcuts.
+  //
+  // Cash is in here even though nobody "sells" a donation: where a pack credits kept cash it
+  // closes the very same gap at its own rate, and a card that left it out would be telling a
+  // scout who raised $300 in cash that they had not moved. It carries `sell: false` and sorts
+  // last whatever its rate — a pack crediting cash at 10% would otherwise produce the BIGGEST
+  // figure of the three and hand it to the card as the headline, which would tell a scout to
+  // sell $600 of popcorn when $200 gets them there.
+  function sellingRoutes(cents) {
+    var rates = commissionRates();
+    var out = [];
+    if (rates.base != null && rates.online != null && rates.split) {
+      out.push({ sell: true, label: 'at a storefront or wagon', pct: rates.base, cents: salesAtRate(cents, rates.base) });
+      out.push({ sell: true, label: 'online', pct: rates.online, cents: salesAtRate(cents, rates.online) });
+    } else {
+      // One rate, or only one of the two typed. `rates.online` is the EFFECTIVE online rate and
+      // falls back to base, so this covers both — but a pack that typed ONLY an online rate earns
+      // nothing at a storefront, and calling that figure "in popcorn" would invite the wrong shift.
+      var only = rates.base != null ? rates.base : rates.online;
+      if (only != null) {
+        out.push({ sell: true, label: rates.base != null ? 'in popcorn' : 'online', pct: only, cents: salesAtRate(cents, only) });
+      }
+    }
+    // ⚠ NO CASH ROUTE, deliberately (owner ruling, 2026-08-31): the cash credit rate is always set
+    // to the storefront rate, so the storefront figure above already IS the cash answer, and a
+    // third line quoting the same number under a different name is the clutter this card is
+    // shedding. `sell` stays on the entries — it is what keeps the headline honest if a
+    // non-selling route ever comes back.
+    return out.filter(function (r) { return r.cents != null; })
+      .sort(function (a, b) { return (a.sell ? 0 : 1) - (b.sell ? 0 : 1) || b.cents - a.cents; });
   }
   // Whether tiers can be measured at all. With no rate anywhere there is no way to turn what a
   // scout brought in into what the pack earned, so nothing is earned and the card has to say so
@@ -9984,6 +10192,53 @@
       if (!byDate[key]) byDate[key] = computeScoutTotals(key || null);
       return byDate[key];
     }
+    // WHAT THE FULL BAR MEANS. The tier the pack PLANS on — the level it has budgeted for every
+    // scout to reach — or, where no tier has been chosen, the top of the ladder, because a full
+    // bar has to mean something and "everything there is" is the only other honest answer.
+    // Named in the card's lead-in either way, so nobody has to guess which one they are looking at.
+    var planAnchor = plannedTier() || tiers[tiers.length - 1] || null;
+    var topAnchor = tiers[tiers.length - 1] || null;
+    // TWO COHORTS, TWO SCALES — owner ask, 2026-08-31: "show scouts' progress towards the stretch
+    // tiers." Anchored on the plan alone, a scout past it reads a full bar and 100% for the rest
+    // of the season however much more they sell, and the rungs above the plan have no notch to
+    // pass. So a scout who has cleared the plan is measured to the TOP rung instead: same track,
+    // rescaled, with the plan still filled in the ordinary colour and everything beyond it in a
+    // second one. Below the plan nothing changes at all.
+    //
+    // The cost is honest and worth naming: two rows can now be drawn to different scales, so bar
+    // LENGTHS are only comparable within a cohort. What keeps that readable is that the cohort is
+    // visible — a bar with a second fill on it is a scout past the plan, and the plan notch says
+    // where the old scale ended.
+    var stretchOn = !!(planAnchor && topAnchor && planAnchor.thresholdCents > 0 &&
+      topAnchor.thresholdCents > planAnchor.thresholdCents);
+    // The rungs below a given anchor, as positions along that bar. A tier at or above the anchor
+    // is not a checkpoint — the anchor IS the end of the bar. `plan` flags the planned rung so the
+    // renderers can draw the boundary between the two fills heavier than an ordinary notch.
+    function marksAgainst(a) {
+      if (!a || a.thresholdCents <= 0) return [];
+      return tiers.filter(function (t) { return t.thresholdCents > 0 && t.thresholdCents < a.thresholdCents; })
+        .map(function (t) {
+          return {
+            name: String(t.name || ''),
+            pct: Math.round(t.thresholdCents / a.thresholdCents * 100),
+            plan: !!(planAnchor && t.id === planAnchor.id)
+          };
+        });
+    }
+    var marksPlan = marksAgainst(planAnchor);
+    var marksTop = stretchOn ? marksAgainst(topAnchor) : [];
+    // Where the plan falls on the stretch scale — one figure for the pack, not per scout.
+    var planPct = stretchOn
+      ? Math.round(planAnchor.thresholdCents / topAnchor.thresholdCents * 100)
+      : null;
+    // Everything the CARD needs to caption itself, on every row. Deliberately NOT read off the
+    // first row's own anchor: rows are ordered by what a scout brought in, so row zero is usually
+    // in the stretch cohort, and a legend built from it would describe the exception rather than
+    // the rule.
+    var ladder = {
+      plan: planAnchor, top: topAnchor, stretchOn: stretchOn,
+      marksPlan: marksPlan, marksTop: marksTop, planPct: planPct
+    };
     // Cached per tier: tierCoverCentsPerScout walks every coverable line, and there is one row
     // per scout all asking about the same handful of tiers.
     var coverByTier = {};
@@ -10021,6 +10276,28 @@
         });
         arrOf(next.covers).forEach(function (k) { if (!held[k]) addedKeys[k] = true; });
       }
+      // Once per row: sellingRoutes walks the rate table, and both fields below read the same list.
+      var routes = next ? sellingRoutes(short) : [];
+      // THE BAR RUNS TO THE PLANNED TIER, not to the next rung — owner ask, 2026-08-31: "100% of
+      // the bar filled should represent the planned tier, with check points for the lower tiers
+      // at their respective % points."
+      //
+      // Rebasing every scout on ONE denominator is the whole point. Measured rung by rung, a
+      // scout who has just cleared Bronze and a scout two dollars off Gold both show a nearly
+      // empty bar, and the column cannot be read down at all — which is the one thing a bar is
+      // for. Against the planned tier the lengths are comparable, and the notches say which rung
+      // each scout is passing.
+      //
+      // ⚠ MEASURED ON `base`, NOT ON `earned`. earnedTierFor counts a tier credited by a MAKE-UP
+      // PAYMENT, and such a scout holds the planned tier while their commission sits below its
+      // threshold. Anchoring them to the top rung would put anchorPct below planPct and hand the
+      // renderer a stretch segment of negative width. They did not sell past the plan, so they
+      // are not in the stretch cohort — their bar stays on the plan scale.
+      var pastPlan = !!(stretchOn && base >= planAnchor.thresholdCents);
+      var anchor = pastPlan ? topAnchor : planAnchor;
+      var anchorPct = anchor && anchor.thresholdCents > 0
+        ? Math.max(0, Math.min(100, Math.round(base / anchor.thresholdCents * 100)))
+        : null;
       return {
         scout: s, earned: earned, next: next, closedAhead: closedAhead,
         base: base, need: need, short: short,
@@ -10028,6 +10305,26 @@
         // The one figure a family can act on. `salesForCommission` is null when the pack has no
         // goal rate, so this stays null rather than inventing a number — nobody sells commission.
         shortSales: next ? salesForCommission(short) : null,
+        // The same gap at every rate the pack earns at, biggest first. This is what the card
+        // SHOWS now; `short` stays because the Pay button spends it and the sort reads it.
+        routes: routes,
+        // The bar and the percentage beside it, both against this row's own anchor. Null when
+        // there is nothing to measure against, so the row draws no bar rather than an empty one.
+        // `marks` is one of two SHARED arrays — the checkpoints are a property of the ladder, not
+        // of a scout — and `ladder` rides along so the card needs no second call.
+        anchor: anchor, anchorPct: anchorPct, marks: pastPlan ? marksTop : marksPlan,
+        ladder: ladder,
+        // Past the level the pack planned on, and where that level sits on this row's scale.
+        // planPct is null off the stretch cohort, which is what tells a renderer to draw the
+        // single-fill bar it always drew.
+        pastPlan: pastPlan, planPct: pastPlan ? planPct : null,
+        // What this scout has brought in, all channels, unfiltered by any tier's deadline — the
+        // figure the board is ordered on. Deliberately the SAME expression the parent standings
+        // rank by (rankBy over r.t.combined), so the two boards read in the same order.
+        combined: (totalsFor('')[s.id] || {}).combined || 0,
+        // The selling half of them, which is what the headline figure comes from — cash is a way
+        // to close the gap, not a thing to sell, and quoting it as "go and sell this" is wrong.
+        sellRoutes: routes.filter(function (rt) { return rt.sell; }),
         // What reaching it ADDS, as a set difference rather than a subtraction of two sums.
         // Two tiers can be pointed at the same line — Bronze and Silver both covering dues, say —
         // and the second one then adds nothing, because packCoverage unions the keys. Subtracting
@@ -10036,11 +10333,15 @@
         pct: next ? (need > 0 ? Math.min(100, Math.round(base / need * 100)) : 100) : 100
       };
     }).sort(function (a, b) {
-      // Scouts who still have a tier ahead of them first, closest to it first — the smallest
-      // nudge is the best return on a phone call. Then everyone already at the top. Name breaks
-      // ties so no two rows swap places between renders.
-      return (a.next ? 0 : 1) - (b.next ? 0 : 1) ||
-        a.short - b.short ||
+      // HIGHEST SELLER FIRST — owner ask, 2026-08-31: order it the way the parent board does.
+      //
+      // It was closest-to-the-next-rung first, on the argument that the smallest nudge is the
+      // best return on a phone call. The cost was that this card and the family-facing board
+      // listed the same scouts in two different orders, and a leader reading one while a parent
+      // read the other had to re-find every child. One order across both surfaces beats a
+      // marginally better call list. Identical to rankBy(): the value descending, name ascending
+      // to break ties so no two rows swap places between renders.
+      return b.combined - a.combined ||
         String(a.scout.name || '').localeCompare(String(b.scout.name || ''));
     });
   }
@@ -12631,18 +12932,51 @@
       return h + '<p class="small muted" style="margin:0">No active scouts on the roster yet.</p></div>';
     }
     var chasing = rows.filter(function (r) { return !!r.next; }).length;
+    // Properties of the LADDER, identical on every row — tierProgressRows computes them once and
+    // hands the same object out — so reading them off the first row is not a sample, it is the
+    // value. Read off `ladder` rather than row zero's own anchor: rows are ordered by what a
+    // scout brought in, so row zero is usually a stretch-cohort row and its anchor is the
+    // exception, not the rule.
+    var lad = rows[0].ladder;
+    var barAnchor = lad.plan;
+    var barMarks = lad.marksPlan || [];
     h += '<p class="small muted" style="margin:0 0 4px">' +
       (chasing
-        ? '<strong>' + chasing + '</strong> scout' + (chasing === 1 ? ' is' : 's are') + ' still working toward a tier, ' +
-          '<strong>closest first</strong> — the smallest nudge is the best return on a phone call.'
+        ? '<strong>' + chasing + '</strong> scout' + (chasing === 1 ? ' is' : 's are') + ' still working toward a tier. ' +
+          'Ordered by <strong>what they have brought in</strong>, same as the family board.'
         : 'Every scout has reached the top tier.') + '</p>' +
-      // Say what the threshold IS. It is the single most misread thing about tiers: it is not
-      // sales, it is the commission the scout earned the pack, and the popcorn figure beside it
-      // is that same gap converted at the rate the goal uses.
-      '<p class="small muted" style="margin:0 0 10px">A tier is reached on the ' +
-      '<strong>commission a scout has earned the pack</strong>, not on what they sold. ' +
-      'The “in popcorn” figure is what the gap means at the pack’s lower rate — ' +
-      'sell it all online and they get there sooner.</p>' +
+      // Owner ask, 2026-08-31: SELLING, not commission. A tier is still defined in commission —
+      // that is what Popcorn · Rewards sets and what the budget counts — but nobody sells
+      // commission, and asking a leader to do the conversion in their head on a phone call was
+      // the complication. The figure is what is left to sell; the rates are named because the
+      // same gap is a different amount of popcorn at each one.
+      '<p class="small muted" style="margin:0 0 10px">Figures are what a scout still has to ' +
+      '<strong>sell</strong>. The big number is the safe one — sell that much and they get ' +
+      'there whatever the mix; the rates beside it are the shortcuts.</p>' +
+      // What a full bar means, said once. Without this the bars are unreadable — a scout at 40%
+      // is 40% of WHAT — and the answer is different depending on whether the pack has chosen a
+      // tier to plan on, so the sentence has to name the one in force.
+      (barAnchor
+        ? '<p class="small muted" style="margin:0 0 10px">A full bar is <strong>' +
+          esc(barAnchor.name || 'the planned tier') + '</strong>' +
+          (plannedTier() ? ' — the level the pack plans on' : ', the top of the ladder — no tier is planned on yet') +
+          '. The notches are the rungs below it' +
+          (barMarks.length
+            ? ': ' + barMarks.map(function (m) { return esc(m.name || 'a tier') + ' at ' + m.pct + '%'; }).join(', ')
+            : '') +
+          '.</p>' +
+          // The second cohort, only where one can exist. Deliberately does NOT name the colour:
+          // the two fills are within 1.09:1 of each other in luminance, so the hatching is what
+          // actually distinguishes them and "the green part" would fail the readers the sentence
+          // is for. Point at the notch instead — that is a position, and everyone can find it.
+          (lad.stretchOn
+            ? '<p class="small muted" style="margin:0 0 10px">A scout who has passed <strong>' +
+              esc(barAnchor.name || 'the planned tier') + '</strong> is measured to <strong>' +
+              esc((lad.top && lad.top.name) || 'the top tier') + '</strong> instead, so their bar is ' +
+              'drawn to a different scale. Everything past the heavy notch — the plan — is shaded ' +
+              'and hatched: that part is beyond what the pack budgeted for.</p>'
+            : '')
+        : '') +
       // Said once here rather than on twelve rows.
       (rows.some(function (r) { return r.makeup > 0 && r.unlocks > 0; })
         ? '<p class="small muted" style="margin:0 0 10px"><strong>Pay</strong> records that a family ' +
@@ -12658,10 +12992,27 @@
       var segs = [];
       if (r.next) {
         segs.push('<span class="bseg">' + esc(r.next.name || 'the next tier') + '</span>');
-        segs.push('<span class="bseg">earned ' + fmt(r.base) + ' of ' + fmt(r.need) + '</span>');
-        // Null when the pack has no goal rate. The commission gap is still true, so the row
-        // still works — it just cannot offer the popcorn figure.
-        if (r.shortSales) segs.push('<span class="bseg">about ' + fmt(r.shortSales) + ' more in popcorn</span>');
+        function routeSeg(rt) {
+          segs.push('<span class="bseg">' + fmt(rt.cents) + ' ' + esc(rt.label) +
+            ' <span class="muted">(' + esc(String(rt.pct)) + '%)</span></span>');
+        }
+        // ONE selling rate: the headline figure already IS that number, so repeating it would be
+        // noise — name the rate instead. TWO, and each is spelled out, because the whole point of
+        // the change is that a scout can see the cheaper road.
+        if (r.sellRoutes.length === 1) {
+          segs.push('<span class="bseg">still to sell, at ' + esc(String(r.sellRoutes[0].pct)) + '%</span>');
+        } else {
+          r.sellRoutes.forEach(routeSeg);
+        }
+        // A pack whose only rate is 0% has no selling figure to offer at all, and the card still
+        // has to say something true. The commission gap is the fallback, not the headline.
+        if (!r.routes.length) segs.push('<span class="bseg">earned ' + fmt(r.base) + ' of ' + fmt(r.need) + ' commission</span>');
+        // A stretch-cohort row's percentage is measured against a different rung from the row
+        // above it, so the row has to say which. Without this the trailing "67%" is the one
+        // figure on the card with no stated denominator.
+        if (r.pastPlan && r.ladder.plan) {
+          segs.push('<span class="bseg">past ' + esc(r.ladder.plan.name || 'the plan') + '</span>');
+        }
         if (r.unlocks > 0) segs.push('<span class="bseg">unlocks ' + fmt(r.unlocks) + '</span>');
         if (r.next.dueBy) segs.push('<span class="bseg">by ' + esc(fmtDateShort(r.next.dueBy)) + '</span>');
       } else {
@@ -12690,14 +13041,36 @@
             ' as a family payment in the ledger and counts this scout as having reached ' +
             esc(r.next.name || 'the tier') + '">Pay ' + fmt(r.makeup) + '</button>'
           : '') +
-        '<span class="tprog-fig money">' + (r.next ? fmt(r.short) : '—') + '</span></div>' +
+        // The gap in SELLING, at the pack's lower selling rate — the figure a scout can act on,
+        // and the one that gets there whatever they sell. Cash is deliberately not a candidate:
+        // it is not selling, and at a low credit rate it is the biggest figure of the lot. Falls
+        // back to the commission gap only where no rate can convert it at all, which is the 0%
+        // pack sellingRoutes() returns nothing for.
+        '<span class="tprog-fig money">' +
+        (r.next ? fmt(r.sellRoutes.length ? r.sellRoutes[0].cents : r.short) : '—') + '</span></div>' +
         '<div class="tprog-meta">' + segs.join(' ') +
-        (r.next ? '<span class="tprog-pct">' + r.pct + '%</span>' : '') + '</div>' +
+        // The percentage is against the PLANNED tier now, same as the bar, so the two agree. A
+        // scout past the planned level reads 100% and keeps whatever rung is still ahead of them
+        // on the line above — finishing the plan is not the same as finishing the ladder.
+        (r.anchorPct == null ? '' : '<span class="tprog-pct">' + r.anchorPct + '%</span>') + '</div>' +
         // aria-hidden: the bar is a second reading of the percentage already in the text beside
-        // it, so a screen reader would otherwise announce the same fact twice.
-        (r.next
-          ? '<div class="bar tprog-bar" aria-hidden="true"><div class="bar-fill" style="width:' + r.pct + '%"></div></div>'
-          : '') +
+        // it, so a screen reader would otherwise announce the same fact twice. The notches are
+        // decoration for the same reason — each one is a tier already named in the lead-in.
+        (r.anchorPct == null
+          ? ''
+          : '<div class="bar tprog-bar" aria-hidden="true">' +
+            // Two fills where a scout is past the plan: the plan itself, complete, in the ordinary
+            // colour, then the stretch beyond it. Square inner edges — .bar-fill is a pill, and a
+            // rounded cap in the middle of a bar reads as the end of one.
+            '<div class="bar-fill' + (r.planPct == null ? '' : ' bar-fill-part') + '" style="width:' +
+            (r.planPct == null ? r.anchorPct : r.planPct) + '%"></div>' +
+            (r.planPct == null
+              ? ''
+              : '<div class="bar-fill-stretch" style="left:' + r.planPct + '%;width:' +
+                Math.max(0, r.anchorPct - r.planPct) + '%"></div>') +
+            r.marks.map(function (m) {
+              return '<span class="tprog-tick' + (m.plan ? ' is-plan' : '') + '" style="left:' + m.pct + '%"></span>';
+            }).join('') + '</div>') +
         '</div>';
     });
     return h + '</div>';
@@ -13248,14 +13621,14 @@
       (beRates.split
         ? ' (' + esc(String(beRates.base)) + '% at a storefront or wagon, ' + esc(String(beRates.online)) + '% online)'
         : '') +
-      // Cash the pack keeps earns no commission, so if it counts toward a tier at all it is
-      // because the pack said so — name the rate here or the board looks wrong to anyone adding
-      // a scout's sales up by hand.
-      (beRates.cash == null ? '' : ', plus ' + esc(String(beRates.cash)) + '% of any cash donation they brought in') +
+      // ⚠ THE CASH CREDIT RATE IS NEVER NAMED (owner ruling, 2026-08-31). It is always set to the
+      // storefront rate, so quoting it separately — here, on the break-even line, or as a route on
+      // the progress card — implies a difference that never exists and makes a reader hold a
+      // second number for nothing. The credit itself is untouched: cashScoutCredit still pays it,
+      // and it still counts toward every tier.
       ', and every tier below also says what that is in <strong>sales</strong>, worked out at ' +
       (beRates.goal == null ? 'your commission rate' : 'your lower rate of ' + esc(String(beRates.goal)) + '%') +
       ' so the figure is one a scout can hit whatever they sell' +
-      (beRates.cash == null ? '' : ' — cash on top of it, not counted in it') +
       '. Each tier can cover any ' +
       '<strong>“families pay”</strong> charge, and where a line prices an adult or a sibling too, ' +
       'each of those is its own thing to cover — so one tier can buy the scout’s shirt and a higher one an ' +
@@ -13325,14 +13698,22 @@
           (function () {
             var be = tierBreakEven(t);
             // The sales figure first, always — it is the only one a scout can act on, and it is
-            // the thing the threshold box does NOT say. "Or more" because the lower rate is a
+            // the thing the threshold box does NOT say. "Or less" because the lower rate is a
             // guarantee: sell the same amount at the better rate and you arrive early.
+            //
+            // ⚠ WHICH CHANNEL IS THE BETTER ONE IS DERIVED, NEVER ASSUMED (owner correction,
+            // 2026-08-31). This pack's ONLINE rate is the lower of the two, and copy that told a
+            // scout to sell online to arrive sooner was sending them the slower way. goalIsOnline
+            // is true when the goal was worked out at the online rate — i.e. online is the lower
+            // one — so the better channel is whatever it is not.
             var sell = be.needSales == null
               ? '<strong>Set a commission rate</strong> to see what that is in sales.'
               : 'A scout gets there on <strong class="money">' + fmt(be.needSales) + '</strong> of ' +
-                baseLabel + ' — or less, if they sell where the pack earns ' +
-                (be.split ? 'the better ' + esc(String(Math.max(beRates.base, beRates.online))) + '%' : 'more') + '.' +
-                (beRates.cash == null ? '' : ' Cash donations count too, at ' + esc(String(beRates.cash)) + '% of what they bring in.');
+                baseLabel + ' — or less, if they sell ' +
+                (be.split
+                  ? (be.goalIsOnline ? 'at a storefront or on a wagon' : 'online') +
+                    ', where the pack earns ' + esc(String(Math.max(beRates.base, beRates.online))) + '%'
+                  : 'where the pack earns more') + '.';
             if (!be.cover) {
               return '<span class="small" style="display:block;margin-top:4px;color:var(--ink-soft)">Reaching it means the scout ' +
                 'has earned the pack <strong class="money">' + fmt(be.earns) + '</strong>. ' + sell +
