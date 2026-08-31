@@ -1358,6 +1358,19 @@
      .bar itself is shared with the pack-goal bar, which has no notches and must not gain a
      stacking context it does not need. */
   .pv-bar { position: relative; }
+  /* The per-den cost breakdown. Always in the DOM so print can reveal it (see parentFamilyCost);
+     the disclosure only toggles the class. display:none, not visibility/height, so a collapsed
+     den stays out of the accessibility tree and aria-expanded keeps telling the truth. */
+  .pv-cost-detail { display: none; }
+  .pv-cost-detail.open { display: block; }
+  @media print {
+    /* On paper there is no disclosure to tap, so every den prints open — the breakdown and the
+       per-tier table are most of why this card exists, and a sheet pinned to a bulletin board
+       cannot be expanded. The chevron goes with them: it points at an interaction that is not
+       there, and every row would show the collapsed one. */
+    .pv-cost-detail { display: block !important; }
+    [data-act="parent-cost-toggle"] .mo-chev { display: none !important; }
+  }
   .pv-prog-note { margin: 5px 0 0; font-size: 0.86rem; }
   .pv-prog-note + .pv-prog-note { margin-top: 2px; }
   /* The preview banner. Tinted, not a plain card: a leader who forgets they are in here will
@@ -8457,8 +8470,16 @@
             fmt(after) + '</strong> <span class="muted">(' + fmt(cover) + ' covered)</span></div>'
           : '') +
         '</div><span class="mo-chev" aria-hidden="true">' + (open ? '▾' : '›') + '</span></div>';
-      if (!open) return;
-      h += '<ul class="small" style="margin:2px 0 8px;padding-left:18px;line-height:1.7">' +
+      // ⚠ ALWAYS RENDERED, hidden by class rather than skipped — owner ask, 2026-08-31: the print
+      // has to expand these. A collapsed den used to `return` here, so the detail was not in the
+      // DOM at all and no print rule could bring it back: paper got the headline figure and none
+      // of the breakdown, which is most of what this card is for. Now the toggle only decides
+      // whether it is SHOWN, and @media print shows every one of them.
+      //
+      // display:none keeps it out of the accessibility tree too, so a screen reader still follows
+      // aria-expanded rather than reading every den's line items whether or not they are open.
+      h += '<div class="pv-cost-detail' + (open ? ' open' : '') + '">' +
+        '<ul class="small" style="margin:2px 0 8px;padding-left:18px;line-height:1.7">' +
         (d.lines || []).map(function (x) {
           return '<li>' + esc(String(x.name || '')) + ' — <span class="money">' +
             fmt((x.scoutCents || 0) + (x.adultCents || 0)) + '</span>' +
@@ -8472,7 +8493,7 @@
       // The ladder, priced for this den. A parent reading the reward tiers card learns what they
       // GET; this is the same rungs answering what they PAY, which is the question underneath it.
       var steps = Array.isArray(d.steps) ? d.steps.filter(function (x) { return x && x.coveredCents > 0; }) : [];
-      if (!steps.length) return;
+      if (!steps.length) { h += '</div>'; return; }
       h += '<p class="eyebrow" style="margin:2px 0 4px">What each reward tier drops it to</p>' +
         '<div class="tbl-wrap"><table><caption class="visually-hidden">Reward tiers and what a ' +
         esc(label) + ' family still pays</caption><thead><tr>' +
@@ -8486,7 +8507,8 @@
         }).join('') + '</tbody></table></div>' +
         '<p class="small muted" style="margin:6px 0 10px">Each rung includes the ones below it, so ' +
         'reaching a higher tier keeps everything the earlier ones cover. Figures are what a scout ' +
-        'needs to <strong>sell</strong>.</p>';
+        'needs to <strong>sell</strong>.</p>' +
+        '</div>';
     });
     return h + '<p class="small muted" style="margin:8px 0 0">These are what the pack plans for, not a bill — ' +
       'ask a pack leader what your family currently owes.</p></div>';
@@ -8622,7 +8644,18 @@
       }).join('') + '</div>';
   }
   function renderParentStandings(pv) {
-    var h = '';
+    // THE SHEET. Owner ruling, 2026-08-31: what gets printed for a bulletin board or a parents
+    // meeting is simply this page — the thing families will read online once the site is shared —
+    // rather than a separately authored handout that has to be kept in step with it. So the print
+    // affordance lives here, on the page itself, and there is exactly one source for the ladder,
+    // the standings and the year's cost.
+    //
+    // no-print, like every other control: the print stylesheet keeps <main> visible in parent mode
+    // (see the body.parent-mode rule) and strips the chrome, so the paper is the cards alone.
+    var h = '<div class="row no-print" style="margin:0 0 12px">' +
+      '<button type="button" class="btn" data-act="parent-print">Print / Save PDF</button>' +
+      '<span class="small muted" style="flex:1 1 220px">Prints this page — the standings, the reward ' +
+      'ladder and what a year costs, with every den opened out.</span></div>';
     var g = pv.goals;
     // ONE bar. Whether a dollar of cash runs through Trail's End or the pack keeps it is an
     // internal decision that moved money between two bars without any family having done
@@ -13575,145 +13608,6 @@
   }
 
   /* ----- Wave 8: reward tiers card (Standings tab) ----- */
-  /* ----- The parents-meeting handout: the reward ladder on paper ----- */
-  // Owner ask, 2026-08-31: "a way to print out the Rewards tiers so we can hand it out at the
-  // parents meeting."
-  //
-  // Built from the SAME three functions the family view publishes from — sortedTiers(),
-  // salesForCommission() and familyYearCost() — rather than from a second walk over the tiers.
-  // Forty families leave the meeting holding this sheet; it cannot be able to disagree with what
-  // the app shows them a week later.
-  //
-  // The name-or-reward filter matches familyYearCostForDen's own. A tier with neither is a
-  // half-typed row that the per-den ladder already skips, and a nameless rung on a printed sheet
-  // is worse than a missing one.
-  function tierSheetRungs() {
-    var byKey = {};
-    coverableShares().forEach(function (s) {
-      // coverableShares' own label carries the price ("Cub Camp · adult · $40"), and a pack-wide
-      // sheet is the one place that figure must not go: a tier pointed at a Webelos-only event is
-      // worth nothing to a Lion. Name the charge here; the money is per den, further down, where
-      // it is exact. Same ruling as the family view's ladder card (2026-08-04).
-      byKey[s.coverKey] = (s.item.name || 'a pack charge') + (s.who === 'scout' ? '' : ' — ' + s.who);
-    });
-    return sortedTiers().filter(function (t) { return t.name || t.reward; }).map(function (t) {
-      return {
-        name: String(t.name || ''),
-        reward: String(t.reward || ''),
-        note: String(t.note || ''),
-        dueBy: t.dueBy || '',
-        // What a scout has to SELL. Null with no commission rate set, which the sheet says out
-        // loud rather than printing a column of em dashes at a room full of parents.
-        needSales: salesForCommission(t.thresholdCents),
-        covers: arrOf(t.covers).map(function (k) { return byKey[k]; }).filter(Boolean)
-      };
-    });
-  }
-  function tierSheetText() {
-    var py = state.budget.programYear;
-    var lines = [];
-    lines.push((state.packName || 'Pack') + ' — Reward tiers');
-    lines.push(py + '–' + (py + 1) + ' program year');
-    lines.push('');
-    lines.push('Each rung includes everything the ones below it cover, so reaching a higher');
-    lines.push('tier keeps the lot. Figures are what a scout needs to SELL.');
-    tierSheetRungs().forEach(function (r) {
-      lines.push('');
-      lines.push('Sell ' + (r.needSales == null ? '—' : fmt(r.needSales)) + '  —  ' + (r.name || 'Tier'));
-      if (r.reward) lines.push('  ' + r.reward);
-      r.covers.forEach(function (c) { lines.push('  covers ' + c); });
-      lines.push('  ' + (r.dueBy ? 'Reach it by ' + fmtDate(r.dueBy) : 'No deadline — any time this season'));
-      String(r.note).replace(/\r\n?/g, '\n').split('\n').forEach(function (l) {
-        if (l.trim()) lines.push('  ' + l.trim());
-      });
-    });
-    familyYearCost().forEach(function (d) {
-      var steps = arrOf(d.steps).filter(function (x) { return x.coveredCents > 0; });
-      if (!steps.length) return;
-      lines.push('');
-      lines.push('What a year costs a ' + (d.den || 'no-den') + ' family: ' + fmt(d.expected) +
-        ' for one scout and the adult who brings them, earning no tier at all.');
-      steps.forEach(function (x) {
-        lines.push('  Sell ' + (x.salesCents == null ? '—' : fmt(x.salesCents)) + '  —  ' +
-          (x.name || 'Tier') + '  →  ' + fmt(x.afterCents));
-      });
-    });
-    lines.push('');
-    lines.push('These are what the pack plans for, not a bill — ask a pack leader what your');
-    lines.push('family currently owes, or where your scout stands.');
-    return lines.join('\n');
-  }
-  function renderTierSheet(o) {
-    var rungs = tierSheetRungs();
-    var py = state.budget.programYear;
-    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Reward tier sheet"><div class="overlay-inner">' +
-      '<div class="row no-print" style="margin-bottom:12px">' +
-      '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
-      '<button type="button" class="btn" data-act="copy-tier-sheet">' + (o.copied ? 'Copied ✓' : 'Copy as text') + '</button>' +
-      '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>';
-    // On screen only, and deliberately so: a sheet whose Sell column is all em dashes is not
-    // one to hand out, and the fix is two taps away rather than on the paper.
-    if (tierRateMissing()) {
-      h += '<div class="warn no-print" style="margin:0 0 12px">No commission rate is set, so there is no way to work out ' +
-        'what a scout has to sell for each tier — the <strong>Sell</strong> column will print empty. Set the rate in ' +
-        '<strong>Season setup</strong> first.</div>';
-    }
-    h += '<div class="summary-sheet">' +
-      '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
-      '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — Reward tiers</h1></div>' +
-      '<p class="muted small" style="margin:0 0 14px">' + esc(py + '–' + (py + 1)) + ' program year</p>';
-    if (!rungs.length) {
-      h += '<p class="small muted" style="margin:0">No reward tiers to print yet.</p>';
-      return h + '</div></div></div>';
-    }
-    h += '<p class="small" style="margin:0 0 12px">Each rung includes everything the ones below it cover, so reaching a ' +
-      'higher tier keeps the lot. Figures are what a scout needs to <strong>sell</strong>.</p>' +
-      '<div class="tbl-wrap"><table><thead><tr>' +
-      '<th scope="col">Sell</th><th scope="col">Tier</th>' +
-      '<th scope="col">What it gets you</th><th scope="col">By</th>' +
-      '</tr></thead><tbody>';
-    rungs.forEach(function (r) {
-      var gets = '';
-      if (r.reward) gets += esc(r.reward);
-      if (r.covers.length) {
-        gets += (gets ? '<br>' : '') + '<span class="small">Covers ' +
-          esc(r.covers.join(', ')) + '</span>';
-      }
-      h += '<tr><td class="money" style="font-weight:650;white-space:nowrap">' +
-        (r.needSales == null ? '<span class="muted">—</span>' : esc(fmt(r.needSales))) + '</td>' +
-        '<td style="white-space:normal">' + esc(r.name) + '</td>' +
-        '<td style="white-space:normal">' + (gets || '<span class="muted">—</span>') +
-        (r.note.trim() ? '<div class="small">' + proseText(r.note) + '</div>' : '') + '</td>' +
-        '<td style="white-space:nowrap">' + (r.dueBy ? esc(fmtDate(r.dueBy)) : '<span class="muted">any time</span>') +
-        '</td></tr>';
-    });
-    h += '</tbody></table></div>';
-    // The same rungs answering the question underneath "what do I get" — what do I still PAY.
-    // Per den, because a den-limited event is most of what makes two families' years differ, and
-    // it is the only frame in which "sell $175" means anything.
-    familyYearCost().forEach(function (d) {
-      var steps = arrOf(d.steps).filter(function (x) { return x.coveredCents > 0; });
-      if (!steps.length) return;
-      h += '<p class="eyebrow" style="margin:16px 0 4px">What a year costs a ' + esc(d.den || 'no-den') + ' family</p>' +
-        '<p class="small" style="margin:0 0 6px"><strong class="money">' + fmt(d.expected) + '</strong> out of pocket for ' +
-        'one scout and the adult who brings them, across the whole year, earning <strong>no tier at all</strong>' +
-        ((d.sibling || 0) ? ' · a sibling adds ' + fmt(d.sibling) : '') + '.</p>' +
-        '<div class="tbl-wrap"><table><caption class="visually-hidden">Reward tiers and what a ' +
-        esc(d.den || 'no-den') + ' family still pays</caption><thead><tr>' +
-        '<th scope="col">Sell</th><th scope="col">Tier</th><th scope="col">Your year drops to</th>' +
-        '</tr></thead><tbody>' +
-        steps.map(function (x) {
-          return '<tr><td class="money" style="white-space:nowrap">' +
-            (x.salesCents == null ? '<span class="muted">—</span>' : esc(fmt(x.salesCents))) +
-            '</td><td style="white-space:normal">' + esc(String(x.name || '')) + '</td>' +
-            '<td class="money" style="font-weight:650;white-space:nowrap">' + fmt(x.afterCents || 0) + '</td></tr>';
-        }).join('') + '</tbody></table></div>';
-    });
-    h += '<p class="small muted" style="margin:14px 0 0">These are what the pack plans for, not a bill — ask a pack ' +
-      'leader what your family currently owes, or where your scout stands.</p>' +
-      '</div></div></div>';
-    return h;
-  }
   function renderRewardTiers() {
     var rt = state.rewardTiers;
     var sum = rewardTierSummary();
@@ -13766,9 +13660,9 @@
     // they want on paper.
     if (sum.tiers.length) {
       h += '<div class="row no-print" style="margin:0 0 10px">' +
-        '<button type="button" class="btn" data-act="tier-sheet">Print the tier sheet</button>' +
-        '<span class="small muted" style="flex:1 1 220px">One page for a parents meeting: what to sell for each rung, ' +
-        'and what each one takes off a family\u2019s year.</span></div>';
+        '<button type="button" class="btn" data-act="family-sheet">Print the family sheet</button>' +
+        '<span class="small muted" style="flex:1 1 220px">Opens the family view, ready to print: the ladder, ' +
+        'what a year costs each den, and the standings \u2014 exactly what families will see online.</span></div>';
     }
 
     if (sum.tiers.length) {
@@ -15105,8 +14999,6 @@
     if (o.kind === 'day-sheet') return renderDaySheet(o);
     // Wave 19(15b) — full-schedule table, one glance.
     if (o.kind === 'sf-glance') return renderGlance(o);
-    // Owner ask, 2026-08-31 — the reward ladder as a one-page handout for a parents meeting.
-    if (o.kind === 'tiers') return renderTierSheet(o);
     return '';
   }
 
@@ -17465,7 +17357,7 @@
   // other leader action is refused while parentMode() is true, so an exit that was not allowlisted
   // would leave an admin stuck until they reloaded.
   var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-cal-prev', 'parent-cal-next',
-    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'sign-out-google', 'toast-action'];
+    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -17589,6 +17481,8 @@
       ui.parentCalDay = (ui.parentCalDay === pcd) ? '' : pcd;   // tapping the open day closes it
       render(); return;
     }
+    // Reads nothing and mutates nothing — the browser prints the page that is already on screen.
+    if (act === 'parent-print') { window.print(); return; }
     if (act === 'parent-cost-toggle') {
       var pcDen = el.dataset.name || '';
       ui.parentCostOpen[pcDen] = !ui.parentCostOpen[pcDen];
@@ -18272,11 +18166,16 @@
       return;
     }
     if (act === 'te-print') { window.print(); return; }
-    // Owner ask, 2026-08-31 — printable reward tier sheet for the parents meeting.
-    if (act === 'tier-sheet') { ui.overlay = { kind: 'tiers' }; render(); return; }
-    if (act === 'copy-tier-sheet') {
-      copyText(tierSheetText(), function () { ui.overlay.copied = true; render(); });
-      return;
+    // THE PARENTS-MEETING HANDOUT IS THE FAMILY PAGE (owner ruling, 2026-08-31). This used to open
+    // a separately authored tier sheet; a second rendering of the same ladder is a second thing to
+    // keep in step, and the standings sheet in this very file had already drifted four ways by the
+    // time anybody looked. One tap into the view families will read online, printable from there.
+    if (act === 'family-sheet') {
+      if (!canPreviewParent()) return;
+      ui.previewParent = true;
+      ui.parentTab = 'standings';
+      ui.resetScroll = true;
+      render(); return;
     }
     if (act === 'toggle-archive') {
       var aid = el.dataset.id;

@@ -1326,9 +1326,8 @@ test('the standings row carries no deadline, and the deadline is still enforced'
   ok(/dueBy \? esc\(fmtDate\(String\(t\.dueBy\)\)\) : '<span class="muted">any time/.test(SCRIPT),
     'the family ladder card lost its By column');
   ok(/dueBy: String\(t\.dueBy \|\| ''\)/.test(SCRIPT), 'the deadline is no longer published to families');
-  // And the printed handout still carries it — that sheet is the one a family takes home.
-  const sheet = /function tierSheetRungs\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(sheet && /dueBy: t\.dueBy \|\| ''/.test(sheet[0]), 'the parents-meeting sheet lost the deadline');
+  // The printout is the family page now, and its ladder card keeps the By column — asserted just
+  // above. There is no separate handout left to check.
 });
 
 test('the three notch treatments are three treatments, not three shades of one', () => {
@@ -6251,106 +6250,68 @@ test('the source is text, with no control characters hiding in it', () => {
 });
 
 /* ========================================================================
-   The reward tiers, printed for a parents meeting — 2026-08-31
+   The printout IS the family page — 2026-08-31
    ===================================================================== */
 
-// tierSheetRungs is the whole sheet's data. Sliced with stubs for its four dependencies, so a
-// change to the tier model shows up here as a real failure rather than a sandbox that won't boot.
-function tierSheetCtx(tiers, shares, pct) {
-  const ctx = sandbox(['tierSheetRungs', 'arrOf']);
-  vm.runInContext(
-    'var TIERS = ' + JSON.stringify(tiers) + ';' +
-    'var SHARES = ' + JSON.stringify(shares) + ';' +
-    'function sortedTiers() { return TIERS.slice().sort(function (a, b) { return a.thresholdCents - b.thresholdCents; }); }' +
-    'function coverableShares() { return SHARES; }' +
-    'function salesForCommission(c) { return ' + (pct == null ? 'null' : '(c ? Math.ceil(c / (' + pct + ' / 100)) : null)') + '; }',
-    ctx);
-  return vm.runInContext('tierSheetRungs()', ctx);
-}
+// Owner ruling: what gets printed for a bulletin board or a parents meeting is the page families
+// will read online once the site is shared, not a separately authored handout. A second rendering
+// of the same ladder is a second thing to keep in step, and the standings sheet in this very file
+// had already drifted four ways by the time anybody looked at it.
 
-const SHEET_SHARES = [
-  // The real label shape from coverableShares(), price and all — the thing the sheet must not print.
-  { coverKey: 'dues:scout', who: 'scout', item: { name: 'Pack dues' }, rate: 12000, label: 'Pack dues · $120.00' },
-  { coverKey: 'camp:adult', who: 'adult', item: { name: 'Cub Camp' }, rate: 4000, label: 'Cub Camp · adult · $40.00' }
-];
-
-test('the printed sheet turns each threshold into what a scout has to SELL', () => {
-  // The threshold is commission. Nobody sells commission, and a sheet handed to a family has to
-  // carry the one figure they can act on.
-  const rungs = tierSheetCtx(
-    [{ id: 'b', name: 'Silver', thresholdCents: 15000, reward: '', covers: [], note: '', dueBy: '2026-11-01' },
-     { id: 'a', name: 'Bronze', thresholdCents: 7500, reward: 'Pack t-shirt', covers: ['dues:scout'], note: '', dueBy: '' }],
-    SHEET_SHARES, 30);
-  eq(rungs.map((r) => r.name), ['Bronze', 'Silver'], 'the rungs print out of order');
-  eq(rungs[0].needSales, 25000, 'a $75 commission rung is $250 of sales at 30%');
-  eq(rungs[1].needSales, 50000, 'a $150 commission rung is $500 of sales at 30%');
-  eq(rungs[0].dueBy, '', 'a tier with no deadline invented one');
-  eq(rungs[1].dueBy, '2026-11-01', 'the deadline did not survive onto the sheet');
-});
-
-test('a half-typed tier never reaches the sheet forty families are holding', () => {
-  // Same filter familyYearCostForDen applies to its own ladder: no name and no reward is a row
-  // somebody started and abandoned, and a nameless rung on paper is worse than a missing one.
-  const rungs = tierSheetCtx(
-    [{ id: 'a', name: '', thresholdCents: 5000, reward: '', covers: [], note: '', dueBy: '' },
-     { id: 'b', name: '', thresholdCents: 9000, reward: 'A patch', covers: [], note: '', dueBy: '' }],
-    SHEET_SHARES, 30);
-  eq(rungs.length, 1, 'the empty rung printed');
-  eq(rungs[0].reward, 'A patch', 'the reward-only rung was dropped instead');
-});
-
-test('the pack-wide sheet names the charges a tier covers, and never prices them', () => {
-  // The family view's ladder card carries this ruling in a ⚠ comment (2026-08-04): this sheet has
-  // no den, and a tier can cover a den-limited event, so any money figure in that column is wrong
-  // for somebody. coverableShares' own label has the price baked in — reuse it and the sheet lies.
-  const rungs = tierSheetCtx(
-    [{ id: 'a', name: 'Gold', thresholdCents: 20000, reward: '', covers: ['dues:scout', 'camp:adult'], note: '', dueBy: '' }],
-    SHEET_SHARES, 30);
-  eq(rungs[0].covers, ['Pack dues', 'Cub Camp — adult'], 'the covered charges do not read as a list a parent could follow');
-  ok(!rungs[0].covers.join(' ').includes('$'), 'a price reached the pack-wide column');
-  // And a stale key — a budget line since deleted — drops out rather than printing "undefined".
-  const stale = tierSheetCtx(
-    [{ id: 'a', name: 'Gold', thresholdCents: 20000, reward: 'A patch', covers: ['gone:scout'], note: '', dueBy: '' }],
-    SHEET_SHARES, 30);
-  eq(stale[0].covers, [], 'a deleted budget line still prints on the handout');
-});
-
-test('with no commission rate the Sell column is empty, and the leader is told before printing', () => {
-  const rungs = tierSheetCtx(
-    [{ id: 'a', name: 'Bronze', thresholdCents: 7500, reward: '', covers: [], note: '', dueBy: '' }],
-    SHEET_SHARES, null);
-  eq(rungs[0].needSales, null, 'a sell figure was invented with no rate to derive it from');
-  const src = /function renderTierSheet\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(src, 'renderTierSheet() not found');
-  ok(/tierRateMissing\(\)/.test(src[0]), 'the sheet prints a column of em dashes without saying why');
-  // On screen only: the warning is for the leader about to print, not for the paper.
-  ok(/class="warn no-print"/.test(src[0]), 'the warning prints onto the handout');
-});
-
-test('the handout and the family view cannot tell different stories', () => {
-  // Both the printed sheet and its copy-as-text go through the SAME two functions the family
-  // view publishes from. A second walk over the tiers is how a sheet handed out in September
-  // ends up promising what the app shows differently in October.
-  for (const fn of ['renderTierSheet', 'tierSheetText']) {
-    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
-    ok(src, `${fn}() not found`);
-    ok(/tierSheetRungs\(\)/.test(src[0]), `${fn} walks the tiers itself instead of using tierSheetRungs()`);
-    ok(/familyYearCost\(\)/.test(src[0]), `${fn} prices the ladder itself instead of using familyYearCost()`);
-    ok(/coveredCents > 0/.test(src[0]), `${fn} prints a den table of rungs worth nothing to that den`);
+test('there is no separately authored tier handout left to drift', () => {
+  for (const gone of ['tierSheetRungs', 'tierSheetText', 'renderTierSheet']) {
+    ok(!new RegExp(`function ${gone}\\(`).test(SCRIPT), `${gone}() is back — a second source for the ladder`);
   }
+  ok(!/kind: 'tiers'|o\.kind === 'tiers'/.test(SCRIPT), 'the retired tier-sheet overlay is still reachable');
+  ok(!/copy-tier-sheet|data-act="tier-sheet"/.test(SCRIPT), 'the retired sheet still has controls pointing at it');
+  // The affordance stays where leaders look; it just lands on the family view now.
+  ok(/data-act="family-sheet"/.test(SCRIPT), 'the Rewards card lost its print affordance entirely');
+  const h = /if \(act === 'family-sheet'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h, "the family-sheet action has no handler");
+  ok(/ui\.previewParent = true;/.test(h[0]) && /ui\.parentTab = 'standings';/.test(h[0]),
+    'the button does not land on the family Standings tab');
+  // Re-checks the role rather than trusting a button that was rendered for an admin who has since
+  // been demoted — the same guard parent-preview-on carries.
+  ok(/if \(!canPreviewParent\(\)\) return;/.test(h[0]), 'a demoted admin can still open the family view');
 });
 
-test('the tier sheet is reachable, printable and copyable', () => {
-  ok(/data-act="tier-sheet"/.test(SCRIPT), 'nothing opens the tier sheet');
-  ok(/if \(act === 'tier-sheet'\) \{ ui\.overlay = \{ kind: 'tiers' \}/.test(SCRIPT),
-    'the open action does not set the overlay');
-  ok(/if \(o\.kind === 'tiers'\) return renderTierSheet\(o\);/.test(SCRIPT),
-    'renderOverlay does not dispatch the tier sheet');
-  ok(/copyText\(tierSheetText\(\)/.test(SCRIPT), 'the sheet cannot be copied as text');
-  // The overlay's own print button — <main> is hidden in print, so an overlay is the only
-  // thing that can reach the paper.
-  const src = /function renderTierSheet\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(/data-act="te-print"/.test(src[0]), 'the sheet has no way to print');
+test('the family page can print itself, and the print reaches a parent’s own device', () => {
+  const list = /function renderParentStandings\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(list, 'renderParentStandings() not found');
+  ok(/data-act="parent-print"/.test(list[0]), 'the family page has no way to print itself');
+  ok(/class="row no-print"/.test(list[0]), 'the print control prints itself onto the paper');
+  // ⚠ The parent app ignores any action not on this list, so a button alone would be inert.
+  ok(/'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print'/.test(SCRIPT),
+    'parent-print is not allowed through the parent-mode action gate');
+  ok(/if \(act === 'parent-print'\) \{ window\.print\(\); return; \}/.test(SCRIPT),
+    'the print action does something other than print the page in front of it');
+  // <main> has to stay visible in parent mode or the paper comes out blank — the normal print
+  // rule hides it and shows only overlays, and a parent has no overlays.
+  ok(/@media print \{ body\.parent-mode main \{ display: block !important; \} \}/.test(SCRIPT_CSS),
+    'the family page prints blank');
+});
+
+test('every den prints opened out, however the reader left them on screen', () => {
+  // ⚠ A collapsed den used to `return` before emitting anything, so the breakdown was not in the
+  // DOM and NO print rule could bring it back: paper got the headline figure and none of the
+  // detail, which is most of what the card is for. The toggle now decides only what is SHOWN.
+  const fn = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(fn, 'parentFamilyCost() not found');
+  ok(!/if \(!open\) return;/.test(fn[0]), 'a collapsed den is skipped, so print cannot expand it');
+  ok(/class="pv-cost-detail' \+ \(open \? ' open' : ''\)/.test(fn[0]),
+    'the detail is not wrapped in something a print rule can target');
+  // Both early exits inside the loop have to close the wrapper, or a den with no priced rungs
+  // leaves an unclosed div and swallows every den after it.
+  ok(/if \(!steps\.length\) \{ h \+= '<\/div>'; return; \}/.test(fn[0]),
+    'a den with no priced rungs leaves the detail wrapper unclosed');
+  eq((fn[0].match(/pv-cost-detail/g) || []).length, 1, 'the wrapper is opened more than once per den');
+  ok(/\.pv-cost-detail \{ display: none; \}/.test(SCRIPT_CSS), 'a collapsed den is visible on screen');
+  ok(/@media print \{[\s\S]*?\.pv-cost-detail \{ display: block !important; \}/.test(SCRIPT_CSS),
+    'the detail stays collapsed on paper');
+  // The chevron points at an interaction paper does not have, and would show the collapsed glyph
+  // beside content that is open.
+  ok(/\[data-act="parent-cost-toggle"\] \.mo-chev \{ display: none !important; \}/.test(SCRIPT_CSS),
+    'the disclosure arrow prints beside expanded content');
 });
 
 /* ========================================================================
