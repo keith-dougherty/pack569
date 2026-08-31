@@ -5685,6 +5685,109 @@ test('the source is text, with no control characters hiding in it', () => {
   ok(!bad.length, `${bad.length} control character(s), first at offset ${bad[0] && bad[0][0]} (code ${bad[0] && bad[0][1]})`);
 });
 
+/* ========================================================================
+   The reward tiers, printed for a parents meeting — 2026-08-31
+   ===================================================================== */
+
+// tierSheetRungs is the whole sheet's data. Sliced with stubs for its four dependencies, so a
+// change to the tier model shows up here as a real failure rather than a sandbox that won't boot.
+function tierSheetCtx(tiers, shares, pct) {
+  const ctx = sandbox(['tierSheetRungs', 'arrOf']);
+  vm.runInContext(
+    'var TIERS = ' + JSON.stringify(tiers) + ';' +
+    'var SHARES = ' + JSON.stringify(shares) + ';' +
+    'function sortedTiers() { return TIERS.slice().sort(function (a, b) { return a.thresholdCents - b.thresholdCents; }); }' +
+    'function coverableShares() { return SHARES; }' +
+    'function salesForCommission(c) { return ' + (pct == null ? 'null' : '(c ? Math.ceil(c / (' + pct + ' / 100)) : null)') + '; }',
+    ctx);
+  return vm.runInContext('tierSheetRungs()', ctx);
+}
+
+const SHEET_SHARES = [
+  // The real label shape from coverableShares(), price and all — the thing the sheet must not print.
+  { coverKey: 'dues:scout', who: 'scout', item: { name: 'Pack dues' }, rate: 12000, label: 'Pack dues · $120.00' },
+  { coverKey: 'camp:adult', who: 'adult', item: { name: 'Cub Camp' }, rate: 4000, label: 'Cub Camp · adult · $40.00' }
+];
+
+test('the printed sheet turns each threshold into what a scout has to SELL', () => {
+  // The threshold is commission. Nobody sells commission, and a sheet handed to a family has to
+  // carry the one figure they can act on.
+  const rungs = tierSheetCtx(
+    [{ id: 'b', name: 'Silver', thresholdCents: 15000, reward: '', covers: [], note: '', dueBy: '2026-11-01' },
+     { id: 'a', name: 'Bronze', thresholdCents: 7500, reward: 'Pack t-shirt', covers: ['dues:scout'], note: '', dueBy: '' }],
+    SHEET_SHARES, 30);
+  eq(rungs.map((r) => r.name), ['Bronze', 'Silver'], 'the rungs print out of order');
+  eq(rungs[0].needSales, 25000, 'a $75 commission rung is $250 of sales at 30%');
+  eq(rungs[1].needSales, 50000, 'a $150 commission rung is $500 of sales at 30%');
+  eq(rungs[0].dueBy, '', 'a tier with no deadline invented one');
+  eq(rungs[1].dueBy, '2026-11-01', 'the deadline did not survive onto the sheet');
+});
+
+test('a half-typed tier never reaches the sheet forty families are holding', () => {
+  // Same filter familyYearCostForDen applies to its own ladder: no name and no reward is a row
+  // somebody started and abandoned, and a nameless rung on paper is worse than a missing one.
+  const rungs = tierSheetCtx(
+    [{ id: 'a', name: '', thresholdCents: 5000, reward: '', covers: [], note: '', dueBy: '' },
+     { id: 'b', name: '', thresholdCents: 9000, reward: 'A patch', covers: [], note: '', dueBy: '' }],
+    SHEET_SHARES, 30);
+  eq(rungs.length, 1, 'the empty rung printed');
+  eq(rungs[0].reward, 'A patch', 'the reward-only rung was dropped instead');
+});
+
+test('the pack-wide sheet names the charges a tier covers, and never prices them', () => {
+  // The family view's ladder card carries this ruling in a ⚠ comment (2026-08-04): this sheet has
+  // no den, and a tier can cover a den-limited event, so any money figure in that column is wrong
+  // for somebody. coverableShares' own label has the price baked in — reuse it and the sheet lies.
+  const rungs = tierSheetCtx(
+    [{ id: 'a', name: 'Gold', thresholdCents: 20000, reward: '', covers: ['dues:scout', 'camp:adult'], note: '', dueBy: '' }],
+    SHEET_SHARES, 30);
+  eq(rungs[0].covers, ['Pack dues', 'Cub Camp — adult'], 'the covered charges do not read as a list a parent could follow');
+  ok(!rungs[0].covers.join(' ').includes('$'), 'a price reached the pack-wide column');
+  // And a stale key — a budget line since deleted — drops out rather than printing "undefined".
+  const stale = tierSheetCtx(
+    [{ id: 'a', name: 'Gold', thresholdCents: 20000, reward: 'A patch', covers: ['gone:scout'], note: '', dueBy: '' }],
+    SHEET_SHARES, 30);
+  eq(stale[0].covers, [], 'a deleted budget line still prints on the handout');
+});
+
+test('with no commission rate the Sell column is empty, and the leader is told before printing', () => {
+  const rungs = tierSheetCtx(
+    [{ id: 'a', name: 'Bronze', thresholdCents: 7500, reward: '', covers: [], note: '', dueBy: '' }],
+    SHEET_SHARES, null);
+  eq(rungs[0].needSales, null, 'a sell figure was invented with no rate to derive it from');
+  const src = /function renderTierSheet\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(src, 'renderTierSheet() not found');
+  ok(/tierRateMissing\(\)/.test(src[0]), 'the sheet prints a column of em dashes without saying why');
+  // On screen only: the warning is for the leader about to print, not for the paper.
+  ok(/class="warn no-print"/.test(src[0]), 'the warning prints onto the handout');
+});
+
+test('the handout and the family view cannot tell different stories', () => {
+  // Both the printed sheet and its copy-as-text go through the SAME two functions the family
+  // view publishes from. A second walk over the tiers is how a sheet handed out in September
+  // ends up promising what the app shows differently in October.
+  for (const fn of ['renderTierSheet', 'tierSheetText']) {
+    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
+    ok(src, `${fn}() not found`);
+    ok(/tierSheetRungs\(\)/.test(src[0]), `${fn} walks the tiers itself instead of using tierSheetRungs()`);
+    ok(/familyYearCost\(\)/.test(src[0]), `${fn} prices the ladder itself instead of using familyYearCost()`);
+    ok(/coveredCents > 0/.test(src[0]), `${fn} prints a den table of rungs worth nothing to that den`);
+  }
+});
+
+test('the tier sheet is reachable, printable and copyable', () => {
+  ok(/data-act="tier-sheet"/.test(SCRIPT), 'nothing opens the tier sheet');
+  ok(/if \(act === 'tier-sheet'\) \{ ui\.overlay = \{ kind: 'tiers' \}/.test(SCRIPT),
+    'the open action does not set the overlay');
+  ok(/if \(o\.kind === 'tiers'\) return renderTierSheet\(o\);/.test(SCRIPT),
+    'renderOverlay does not dispatch the tier sheet');
+  ok(/copyText\(tierSheetText\(\)/.test(SCRIPT), 'the sheet cannot be copied as text');
+  // The overlay's own print button — <main> is hidden in print, so an overlay is the only
+  // thing that can reach the paper.
+  const src = /function renderTierSheet\(o\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/data-act="te-print"/.test(src[0]), 'the sheet has no way to print');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
