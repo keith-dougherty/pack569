@@ -14703,11 +14703,25 @@
     lines.push('As of ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
     lines.push('');
     lines.push('Pack total: ' + fmt(pack.sales) + ' sales + ' + fmt(pack.don) + ' donations = ' + fmt(pack.combined));
-    if (pack.commission != null) lines.push('Pack commission (' + pack.pct + '%): ' + fmt(pack.commission));
+    if (pack.commission != null) {
+      // ⚠ Same fix as the printed sheet: pack.pct is the STOREFRONT rate alone, so naming it over
+      // a two-rate commission put one rate on a figure that is the sum of two calculations.
+      lines.push('Pack commission' + ((pack.ratesSplit || pack.pct == null) ? '' : ' (' + pack.pct + '%)') +
+        ': ' + fmt(pack.commission));
+      if (pack.ratesSplit) {
+        lines.push('  storefront & wagon ' + fmt(pack.otherEligible) + ' at ' + pack.pct + '% = ' + fmt(pack.commissionOther || 0));
+        lines.push('  online ' + fmt(pack.onlineEligible) + ' at ' + pack.onlinePct + '% = ' + fmt(pack.commissionOnline || 0));
+      }
+      lines.push('Total to the pack: ' + fmt(pack.cashKept + pack.commission));
+    }
     if (pack.teGoal > 0) {
       lines.push('Trail\'s End goal: ' + fmt(pack.teEligible) + ' of ' + fmt(pack.teGoal) +
         ' (' + Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100)) + '%)' +
         (pack.teTarget != null ? ' — per-scout target ' + fmt(pack.teTarget) : ''));
+    }
+    if (pack.stretch > 0) {
+      lines.push('Stretch goal: ' + fmt(pack.teEligible) + ' of ' + fmt(pack.stretch) +
+        ' (' + Math.min(100, Math.round(pack.teEligible / pack.stretch * 100)) + '%)');
     }
     if (pack.cashGoal > 0) {
       lines.push('Cash donations goal: ' + fmt(pack.cashKept) + ' of ' + fmt(pack.cashGoal) +
@@ -14715,8 +14729,14 @@
     }
     lines.push('');
     lines.push('Standings — sales + online donations:');
+    // The earned rung, from the same map the badges and the budget read, so no two surfaces can
+    // disagree about who reached what.
+    var txTiers = sortedTiers();
+    var txEarned = txTiers.length ? tierEarnedMap() : {};
     rankBy(rows, eligibleOf).forEach(function (r, i) {
-      lines.push((i + 1) + '. ' + r.name + ' — ' + fmt(eligibleOf(r)) + ' (' + fmt(r.t.sales) + ' sales, ' + fmt(r.t.onD) + ' online donations)');
+      var et = txTiers.length ? earnedTierFor(r.id, txTiers, txEarned) : null;
+      lines.push((i + 1) + '. ' + r.name + (et ? ' [' + (et.name || 'Tier') + ']' : '') +
+        ' — ' + fmt(eligibleOf(r)) + ' (' + fmt(r.t.sales) + ' sales, ' + fmt(r.t.onD) + ' online donations)');
     });
     lines.push('');
     lines.push('Standings — cash donations:');
@@ -14864,6 +14884,10 @@
       var pack = computePackTotals();
       var totals = computeScoutTotals();
       var rows = visibleScoutRows(totals);
+      // Wave 8 badges + Wave 21 coverage, the same two calls the on-screen Standings card makes,
+      // so the sheet somebody prints and the board they printed it from name the same tiers.
+      var sumTiers = sortedTiers();
+      var sumCovered = packCoverageByScout();
       var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Share summary"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
         '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
@@ -14880,13 +14904,42 @@
         '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
         (pack.viaTE ? '' :
           '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Cash donations</span></div>') +
-        (pack.commission != null ? '<div class="stat"><span class="v money">' + fmt(pack.commission) + '</span><span class="l">Commission (' + pack.pct + '%)</span></div>' : '') +
+        // ⚠ NOT "Commission (pack.pct%)". pack.pct is the STOREFRONT rate alone, so on a pack with
+        // two rates — 35% at a table, 30% online, which is the ordinary case — that label put one
+        // rate over a figure that is the sum of two calculations. On a sheet that gets handed to a
+        // committee that is simply a wrong number's worth of wrong. The rate moves to the
+        // disclosure line below, where both halves can be shown, exactly as renderTotals does it.
+        (pack.commission != null ? '<div class="stat"><span class="v money">' + fmt(pack.commission) + '</span><span class="l">Pack commission' +
+          (pack.ratesSplit || pack.pct == null ? '' : ' (' + esc(String(pack.pct)) + '%)') + '</span></div>' : '') +
+        // What the pack actually ends up with — the bottom line the on-screen card leads to and
+        // the sheet stopped one figure short of.
+        (pack.commission == null ? '' :
+          '<div class="stat"><span class="v money" style="color:var(--accent-text)">' +
+          fmt(pack.cashKept + pack.commission) + '</span><span class="l">Total to the pack</span></div>') +
         '</div>' +
+        // Two rates means the commission above is a SUM, and anybody checking it against a Trail's
+        // End statement needs both halves. Same sentence as the Standings card.
+        (pack.ratesSplit
+          ? '<p class="small" style="margin:0 0 14px">Storefront &amp; wagon <strong class="money">' + fmt(pack.otherEligible) +
+            '</strong> at ' + esc(String(pack.pct == null ? '—' : pack.pct)) + '% = <strong class="money">' + fmt(pack.commissionOther || 0) + '</strong>' +
+            ' · online <strong class="money">' + fmt(pack.onlineEligible) + '</strong> at ' +
+            esc(String(pack.onlinePct == null ? '—' : pack.onlinePct)) + '% = <strong class="money">' + fmt(pack.commissionOnline || 0) + '</strong>.</p>'
+          : '') +
         (pack.teGoal > 0 ? (function () {
           var gp = Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100));
           return '<p class="eyebrow">Trail’s End goal</p>' +
             '<div class="bar"><div class="bar-fill" style="width:' + gp + '%"></div></div>' +
             '<p class="small" style="margin:6px 0 ' + (pack.cashGoal > 0 ? '10' : '14') + 'px"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teGoal) + '</span> (' + gp + '%)</p>';
+        })() : '') +
+        // Its own bar, never a marker on the one above: two scales on one bar is how "we're at
+        // 100%" and "we're at 76%" end up meaning the same picture (renderTotals, same reason).
+        (pack.stretch > 0 ? (function () {
+          var sp = Math.min(100, Math.round(pack.teEligible / pack.stretch * 100));
+          return '<p class="eyebrow">Stretch goal</p>' +
+            '<div class="bar"><div class="bar-fill" style="width:' + sp + '%"></div></div>' +
+            '<p class="small" style="margin:6px 0 ' + (pack.cashGoal > 0 ? '10' : '14') + 'px"><strong class="money">' + fmt(pack.teEligible) +
+            '</strong> of <span class="money">' + fmt(pack.stretch) + '</span> (' + sp + '%) — ' +
+            fmt(Math.max(0, pack.stretch - pack.teGoal)) + ' beyond what the budget needs</p>';
         })() : '') +
         (pack.cashGoal > 0 ? (function () {
           var cp = Math.min(100, Math.round(pack.cashKept / pack.cashGoal * 100));
@@ -14895,9 +14948,15 @@
             '<p class="small" style="margin:6px 0 14px"><strong class="money">' + fmt(pack.cashKept) + '</strong> of <span class="money">' + fmt(pack.cashGoal) + '</span> (' + cp + '%)</p>';
         })() : '') +
         '<p class="eyebrow">Standings — sales + online donations</p>' +
-        '<div class="tbl-wrap"><table><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Sales</th><th scope="col" class="num">Online don.</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
+        '<div class="tbl-wrap"><table><thead><tr><th scope="col"></th><th scope="col">Scout</th>' +
+        (sumTiers.length ? '<th scope="col">Tier</th>' : '') +
+        '<th scope="col" class="num">Sales</th><th scope="col" class="num">Online don.</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
       rankBy(rows, eligibleOf).forEach(function (r, i) {
-        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + '</td><td class="num">' + fmt(r.t.sales) + '</td>' +
+        // The rung this scout has actually reached, and what it takes off their family's bill.
+        // The badges are the on-screen board's own, so the two cannot name different tiers.
+        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + '</td>' +
+          (sumTiers.length ? '<td style="white-space:normal">' + (tierBadgesFor(r, sumTiers, sumCovered) || '<span class="muted">—</span>') + '</td>' : '') +
+          '<td class="num">' + fmt(r.t.sales) + '</td>' +
           '<td class="num">' + fmt(r.t.onD) + '</td><td class="num" style="font-weight:650">' + fmt(eligibleOf(r)) + '</td></tr>';
       });
       h += '</tbody></table></div>' +

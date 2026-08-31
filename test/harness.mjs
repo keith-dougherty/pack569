@@ -6353,6 +6353,56 @@ test('the tier sheet is reachable, printable and copyable', () => {
   ok(/data-act="te-print"/.test(src[0]), 'the sheet has no way to print');
 });
 
+/* ========================================================================
+   The shared standings sheet, brought level with the board — 2026-08-31
+   ===================================================================== */
+
+test('the shared sheet never puts one rate over a two-rate commission', () => {
+  // ⚠ THE BUG THIS EXISTS FOR. pack.pct is the STOREFRONT rate alone (computePackTotals sets
+  // `pct` from rates.base), so on a pack running 35% at a table and 30% online — the ordinary
+  // case, and this pack's — "Commission (35%)" labelled a figure that is the sum of two separate
+  // calculations. On a sheet that gets handed to a committee that is just a wrong number.
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT);
+  ok(sheet, "the summary overlay branch was not found");
+  ok(!/Commission \(' \+ pack\.pct \+ '%\)/.test(sheet[0]),
+    'the sheet labels a two-rate commission with the storefront rate');
+  ok(/pack\.ratesSplit \|\| pack\.pct == null \? '' :/.test(sheet[0]),
+    'the rate is named unconditionally, so a split-rate pack is mislabelled');
+  // With two rates it discloses both halves instead, exactly as the on-screen card does.
+  ok(/pack\.commissionOther/.test(sheet[0]) && /pack\.commissionOnline/.test(sheet[0]),
+    'a treasurer cannot reconcile the sheet against a Trail’s End statement');
+  // Same fix in the copy-as-text twin, or the two disagree.
+  const txt = /function summaryText\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(!/Pack commission \(' \+ pack\.pct \+ '%\)/.test(txt[0]),
+    'the text version still labels a two-rate commission with one rate');
+  ok(/pack\.ratesSplit/.test(txt[0]), 'the text version does not disclose the two halves');
+});
+
+test('the shared sheet says which tier each scout reached, and what the pack ends up with', () => {
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  // The reward ladder is the pack's main lever and the shared standings sheet never mentioned it,
+  // while the board it is printed from shows a badge per scout.
+  ok(/tierBadgesFor\(r, sumTiers, sumCovered\)/.test(sheet),
+    'the sheet builds its own idea of who earned what, or shows none at all');
+  ok(/var sumTiers = sortedTiers\(\);/.test(sheet) && /var sumCovered = packCoverageByScout\(\);/.test(sheet),
+    'the badges are not taken from the same two calls the Standings card makes');
+  // A pack with no tiers gets no empty column.
+  ok(/sumTiers\.length \? '<th scope="col">Tier<\/th>' : ''/.test(sheet),
+    'a pack with no reward tiers is given an empty Tier column');
+  // The bottom line the sheet used to stop one figure short of.
+  ok(/Total to the pack/.test(sheet), 'the sheet stops at commission and never says what the pack keeps');
+  ok(/fmt\(pack\.cashKept \+ pack\.commission\)/.test(sheet),
+    'the total is not commission plus the cash the pack keeps');
+  // And the stretch goal, which the on-screen card shows and the sheet had dropped — on its own
+  // bar, never a marker on the first one.
+  ok(/Stretch goal/.test(sheet), 'the sheet omits the stretch goal the board shows');
+  ok(/pack\.stretch > 0/.test(sheet), 'the stretch bar is drawn even when there is no stretch goal');
+  const txt = /function summaryText\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/earnedTierFor\(r\.id, txTiers, txEarned\)/.test(txt), 'the text version names no tiers');
+  ok(/Total to the pack/.test(txt) && /Stretch goal/.test(txt),
+    'the text version is behind the printed sheet');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
