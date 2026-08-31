@@ -722,20 +722,41 @@
      classes beats a single-class override, and only measuring the resolved style catches it. */
   .btn.small.tprog-pay { flex: 0 0 auto; min-height: 36px; padding: 4px 10px; font-size: 0.78rem; }
   .tprog-bar { position: relative; margin-top: 5px; height: 6px; }
-  /* Checkpoints: where each rung below the planned tier falls along the bar. Drawn in the TRACK
-     colour rather than a line colour so a notch reads as a gap in the fill — over the unfilled
-     part it disappears into the track, which is right: a rung nobody has reached yet is not a
-     thing to look at. 2px and no border-radius, because .bar clips them to its own pill shape. */
+  /* Checkpoints: where each rung falls along the bar. THREE TREATMENTS, because a notch behind
+     the fill and a notch ahead of it are different things sitting on different backgrounds.
+
+     ⚠ NO SINGLE COLOUR DOES BOTH, and the failures are exactly complementary. Against the empty
+     track / the gold fill / the stretch fill, in light: --surface-2 is 1.00 / 4.77 / 5.19 and
+     --ink-soft is 4.60 / 1.04 / 1.13. Same story in dark and print. So the notch is painted for
+     the ground it lands on, which we always know from anchorPct.
+
+     Behind the fill: the track colour, so it reads as a GAP in the fill. 2px and no
+     border-radius, because .bar clips them to its own pill shape. */
   .tprog-tick {
     position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
     background: var(--surface-2);
   }
+  /* Ahead of the fill: ink on empty track. This comment used to say a rung nobody has reached is
+     "not a thing to look at" — owner, 2026-08-31: it is exactly the thing to look at, and you
+     could not see where the next one was until you had already passed it. --ink-soft clears the
+     3:1 non-text floor on the track in every theme (4.60 light, 4.99 dark, 6.01 print) without
+     shouting over the fill it sits beside. */
+  .tprog-tick.ahead { background: var(--ink-soft); }
+  /* The rung being chased. Darkest and widest, because among the marks ahead this is the only one
+     anybody is working toward this week — the gap between the fill and this notch IS how close
+     they are. --ink on the track: 10.83 light, 10.04 dark, 15.21 print. */
+  .tprog-tick.is-next { width: 3px; margin-left: -1.5px; background: var(--ink); }
   /* THE PLAN NOTCH, on a bar drawn to the stretch scale — the boundary between the two fills.
      Wider than a rung notch because it is the one position on that bar a reader has to be able
      to find: it is where the old scale ended, and everything right of it is beyond what the pack
-     budgeted for. Track-coloured like the others, which is what makes it read as a gap:
-     --surface-2 measures 4.77:1 against the gold fill and 5.19:1 against the stretch fill, so it
-     separates them cleanly in every theme. */
+     budgeted for. Track-coloured, which is what makes it read as a gap: --surface-2 measures
+     4.77:1 against the gold fill and 5.19:1 against the stretch fill, so it separates them
+     cleanly in every theme.
+     It is a wide GAP, where .is-next above is a wide MARK — "pale" and "dark" would be the wrong
+     words for either, since --ink inverts between themes and --surface-2 follows the track. The
+     two never collide,
+     because a plan notch only exists on a bar whose scout is already past the plan, which puts it
+     behind the fill and .is-next always ahead of it. The legends name them apart all the same. */
   .tprog-tick.is-plan { width: 3px; margin-left: -1.5px; }
   /* Progress BEYOND the planned tier.
 
@@ -7173,7 +7194,16 @@
             // measured to the top rung instead, so the board can draw the rest of what they have
             // done rather than pinning them at a full bar for the rest of the season. Absent on an
             // older payload → falsy → the single-scale bar the board has always drawn.
-            pastPlan: !!(p && p.pastPlan)
+            pastPlan: !!(p && p.pastPlan),
+            // HOW CLOSE TO THE RUNG THEY ARE ACTUALLY CHASING, which nextPct above does not answer
+            // whenever that rung is nearer than the bar's anchor. Taken from p.pct — the ratio
+            // tierProgressRows already computes and, until now, no renderer ever used — never
+            // recalculated here, so the board and the leaders' card cannot drift. `nextMarkPct` is
+            // where that rung sits along this row's bar, so its notch can be marked without
+            // matching on a tier NAME (two rungs may share one, and names are all this payload
+            // carries).
+            nextRungPct: (p && p.next && typeof p.pct === 'number') ? p.pct : null,
+            nextMarkPct: (p && typeof p.nextMarkPct === 'number') ? p.nextMarkPct : null
           };
         });
       // WHAT A FULL BAR MEANS, published once. Pack-wide — the anchor and the notches are a
@@ -8486,8 +8516,18 @@
     // Either missing and this is the single-scale bar the board has always drawn.
     var stretch = (ladder && ladder.stretch && typeof ladder.stretch === 'object') ? ladder.stretch : null;
     var past = !!(r && r.pastPlan && stretch);
-    var marks = past ? stretch.marks : (ladder ? ladder.marks : []);
     var planPct = past ? stretch.planPct : null;
+    // The ladder's notches are shared by every row, so which of the three treatments each one gets
+    // is decided HERE, against this scout's own fill, and handed to parentBar already resolved.
+    // parentBar draws; it does not know about cohorts.
+    var nextMark = (r && typeof r.nextMarkPct === 'number') ? r.nextMarkPct : null;
+    var marks = ((past ? stretch.marks : (ladder ? ladder.marks : [])) || []).map(function (m) {
+      return {
+        pct: m.pct, plan: !!m.plan,
+        ahead: typeof m.pct === 'number' && m.pct > pct,
+        next: nextMark != null && m.pct === nextMark
+      };
+    });
     var planName = String((ladder && ladder.anchorName) || '');
     // What the bar is measured against, for the caption and the spoken label. Named, because
     // "43%" with no denominator is not information. Falls back to the next rung's name on a
@@ -8505,19 +8545,36 @@
         '<span class="muted">Nothing left to chase — thank you.</span></p></div>';
     }
     var name = String(r.nextTier);
+    // LEAD WITH THE RUNG BEING CHASED — owner, 2026-08-31: "you can no longer tell how close they
+    // are to their next tier." The caption led with the bar's anchor, so a scout 56% of the way to
+    // Bronze was told "28% of the way to Silver" and the rung actually in front of them was a
+    // muted afterthought. Now the near rung and its own percentage come first, and the ladder
+    // reading follows it, muted and named.
+    //
+    // Both halves are printed only when they name different rungs; where the next rung IS the
+    // anchor — the common case — one figure says it, exactly as before.
+    var nearPct = (typeof r.nextRungPct === 'number') ? r.nextRungPct : null;
+    var split = !!(anchorName && anchorName !== name && nearPct != null);
+    var headPct = split ? nearPct : pct;
+    var headName = split ? name : (anchorName || name);
+    var tail = split ? ' <span class="muted">· ' + pct + '% of ' + esc(anchorName) + '</span>' : '';
     var out = '<div class="pv-prog">' +
-      parentBar(pct, reached + pct + ' percent of the way to ' + (anchorName || name), marks, planPct) +
+      // ⚠ THE BAR IS STILL THE LADDER. Only the caption leads with the near rung; the fill stays
+      // anchorPct and the notches stay ladder positions. Feeding it headPct instead would rescale
+      // every family's bar to whatever rung that scout happens to be chasing — which is exactly
+      // the comparability the planned-tier anchor was introduced to buy, thrown away. How close
+      // they are to the near rung is shown by the gap between the fill and its marked notch.
+      //
+      // The spoken label describes the BAR, for the same reason. The caption below carries both
+      // figures in words and a screen reader reads it like any other paragraph.
+      parentBar(pct, reached + pct + ' percent of the way to ' + anchorName, marks, planPct) +
       '<p class="pv-prog-note">' +
       ((past && planName) ? '<strong>' + esc(planName) + '</strong> met · ' : '') +
-      pct + '% of the way to <strong>' + esc(anchorName || name) + '</strong>' +
-      // Which rung is actually next, when it is not the one the bar ends at. A scout can be 60%
-      // of the way to the planned tier with a nearer rung in front of them, and that nearer rung
-      // is the one worth chasing this week.
-      (anchorName && anchorName !== name ? ' <span class="muted">· next up <strong>' + esc(name) + '</strong></span>' : '');
+      headPct + '% of the way to <strong>' + esc(headName) + '</strong>';
     // The prize in words, where there is room for it: the tier's NAME is a label, its reward is
     // the reason to knock on a door.
     if (r.nextReward) out += ' <span class="muted">— ' + esc(String(r.nextReward)) + '</span>';
-    out += '</p>';
+    out += tail + '</p>';
     // What is left to SELL, and where. The routes are the same list the leaders' card shows —
     // biggest first, which is the safe one — so a family gets the choice rather than one blended
     // figure. Older payloads carry no routes and fall back to the single figure they published.
@@ -8560,6 +8617,7 @@
         : '<div class="bar-fill-stretch" style="left:' + plan + '%;width:' + (p - plan) + '%"></div>') +
       ms.map(function (m) {
         return '<span class="tprog-tick' + (m.plan ? ' is-plan' : '') +
+          (m.ahead ? ' ahead' : '') + (m.next ? ' is-next' : '') +
           '" style="left:' + esc(String(m.pct)) + '%"></span>';
       }).join('') + '</div>';
   }
@@ -8596,10 +8654,12 @@
           esc(String(ladder.anchorName || 'the top tier')) + '</strong>' +
           (ladder.planned ? ' — the level the pack plans on' : ', the top of the ladder') +
           (lmarks.length
-            ? '. The notches are the rungs below it: ' +
+            ? '. Notches are the other rungs (' +
               lmarks.map(function (m) {
                 return esc(String(m.name || 'a tier')) + ' at ' + esc(String(m.pct)) + '%';
-              }).join(', ')
+              }).join(', ') + ') — a <strong>gap</strong> in the bar where your scout has passed one, ' +
+              'a <strong>mark</strong> on the empty track where they have not, and the boldest mark ' +
+              'on the one they are chasing'
             : '') + '.</p>';
         // The second scale, only where the pack has a rung above the plan. Names no colour: the
         // two fills are within 1.09:1 of each other in luminance, so the hatching is what actually
@@ -8610,7 +8670,7 @@
           h += '<p class="small muted" style="margin:0 0 10px">A scout who has passed <strong>' +
             esc(String(ladder.anchorName || 'the planned tier')) + '</strong> is measured to <strong>' +
             esc(String(lstretch.topName || 'the top tier')) + '</strong> instead, so their bar is drawn to a ' +
-            'different scale. The part past the heavy notch is shaded and hatched — that is what ' +
+            'different scale. The part past the wide gap is shaded and hatched — that is what ' +
             'they have done beyond what the pack planned for.</p>';
         }
       }
@@ -10318,6 +10378,19 @@
         // planPct is null off the stretch cohort, which is what tells a renderer to draw the
         // single-fill bar it always drew.
         pastPlan: pastPlan, planPct: pastPlan ? planPct : null,
+        // WHERE THE NEXT RUNG SITS ON THIS ROW'S SCALE, so a renderer can mark that notch without
+        // ids or name matching — two rungs can share a name, and the published payload has only
+        // names in it.
+        //
+        // ⚠ Null when the next rung is at or ABOVE the anchor, which is not a hypothetical: a
+        // make-up payment credits the planned tier while `base` sits below it, so `next` becomes
+        // the rung above the anchor and the honest position for it is 200% — off the end of the
+        // bar. Null instead, and the bar simply carries no next-rung mark; the row still says the
+        // distance in words.
+        nextMarkPct: (next && anchor && anchor.thresholdCents > 0 &&
+          next.thresholdCents > 0 && next.thresholdCents < anchor.thresholdCents)
+          ? Math.round(next.thresholdCents / anchor.thresholdCents * 100)
+          : null,
         // What this scout has brought in, all channels, unfiltered by any tier's deadline — the
         // figure the board is ordered on. Deliberately the SAME expression the parent standings
         // rank by (rankBy over r.t.combined), so the two boards read in the same order.
@@ -10330,6 +10403,11 @@
         // and the second one then adds nothing, because packCoverage unions the keys. Subtracting
         // cumulative totals would have reported that second tier as worth another full fee.
         unlocks: next ? coverValueOfKeys(addedKeys) : 0,
+        // HOW CLOSE TO THE NEXT RUNG, as distinct from anchorPct's "how far along the ladder".
+        // Owner, 2026-08-31: "you can no longer tell what a scout needs, or how close they are to
+        // their next tier." This figure had been computed here and rendered nowhere ever since the
+        // bar was rebased onto the planned tier — the row named the next rung and priced it, but
+        // the only percentage on it answered a different question about a different rung.
         pct: next ? (need > 0 ? Math.min(100, Math.round(base / need * 100)) : 100) : 100
       };
     }).sort(function (a, b) {
@@ -12911,6 +12989,32 @@
   // recomputed here. The row shape follows the budget rows: name and the one number on the first
   // line, a quiet ·-separated sentence under it, and a bar so the column can be scanned as
   // lengths rather than read as digits.
+  // WHICH OF THE THREE TREATMENTS A NOTCH GETS. Decided here rather than baked into the mark,
+  // because `marks` is ONE shared array handed to every row — the checkpoints are a property of
+  // the ladder, not of a scout — while "have you passed it" and "is it the one you are chasing"
+  // are true of a scout, not of the ladder.
+  //
+  // Class order is load-bearing for nothing but readability: is-plan is mutually exclusive with
+  // ahead (a plan notch only exists once a scout is past the plan, which puts it behind the fill),
+  // and is-next is always ahead.
+  function tickClass(m, r) {
+    var cls = 'tprog-tick';
+    if (m.plan) cls += ' is-plan';
+    if (r.anchorPct != null && m.pct > r.anchorPct) cls += ' ahead';
+    if (r.nextMarkPct != null && m.pct === r.nextMarkPct) cls += ' is-next';
+    return cls;
+  }
+  // The tail of a row: how close to the rung being chased, and how far along the ladder. See the
+  // call site for why both are printed and why they collapse to one when they agree.
+  function tierPctLabel(r) {
+    var anchorName = (r.anchor && r.anchor.name) ? r.anchor.name : 'the top tier';
+    var ladderHalf = '<span class="muted">' + r.anchorPct + '% of ' + esc(anchorName) + '</span>';
+    if (!r.next) return ladderHalf;
+    var nextName = r.next.name || 'the next tier';
+    // Same rung both ways round: one figure, and it is the one with somewhere to go.
+    if (r.anchor && r.next.id === r.anchor.id) return r.pct + '% to ' + esc(nextName);
+    return r.pct + '% to ' + esc(nextName) + ' <span class="muted">·</span> ' + ladderHalf;
+  }
   function renderTierProgress() {
     var tiers = sortedTiers();
     var h = '<div class="card"><h2 class="section display">Next reward tier</h2>';
@@ -12960,11 +13064,12 @@
         ? '<p class="small muted" style="margin:0 0 10px">A full bar is <strong>' +
           esc(barAnchor.name || 'the planned tier') + '</strong>' +
           (plannedTier() ? ' — the level the pack plans on' : ', the top of the ladder — no tier is planned on yet') +
-          '. The notches are the rungs below it' +
+          '. Notches are the other rungs' +
           (barMarks.length
-            ? ': ' + barMarks.map(function (m) { return esc(m.name || 'a tier') + ' at ' + m.pct + '%'; }).join(', ')
+            ? ' (' + barMarks.map(function (m) { return esc(m.name || 'a tier') + ' at ' + m.pct + '%'; }).join(', ') + ')'
             : '') +
-          '.</p>' +
+          ' — a <strong>gap</strong> in the bar where a scout has passed one, a <strong>mark</strong> ' +
+          'on the empty track where they have not, and the boldest mark on the one they are chasing.</p>' +
           // The second cohort, only where one can exist. Deliberately does NOT name the colour:
           // the two fills are within 1.09:1 of each other in luminance, so the hatching is what
           // actually distinguishes them and "the green part" would fail the readers the sentence
@@ -12973,7 +13078,7 @@
             ? '<p class="small muted" style="margin:0 0 10px">A scout who has passed <strong>' +
               esc(barAnchor.name || 'the planned tier') + '</strong> is measured to <strong>' +
               esc((lad.top && lad.top.name) || 'the top tier') + '</strong> instead, so their bar is ' +
-              'drawn to a different scale. Everything past the heavy notch — the plan — is shaded ' +
+              'drawn to a different scale. Everything past the wide gap — the plan — is shaded ' +
               'and hatched: that part is beyond what the pack budgeted for.</p>'
             : '')
         : '') +
@@ -13049,10 +13154,17 @@
         '<span class="tprog-fig money">' +
         (r.next ? fmt(r.sellRoutes.length ? r.sellRoutes[0].cents : r.short) : '—') + '</span></div>' +
         '<div class="tprog-meta">' + segs.join(' ') +
-        // The percentage is against the PLANNED tier now, same as the bar, so the two agree. A
-        // scout past the planned level reads 100% and keeps whatever rung is still ahead of them
-        // on the line above — finishing the plan is not the same as finishing the ladder.
-        (r.anchorPct == null ? '' : '<span class="tprog-pct">' + r.anchorPct + '%</span>') + '</div>' +
+        // TWO PERCENTAGES, EACH NAMING ITS OWN RUNG — owner ask, 2026-08-31.
+        //
+        // The row prices the NEXT rung and the bar measures the ANCHOR, and for a scout whose next
+        // rung is not the anchor those are two different tiers. One unlabelled figure at the end
+        // of the row could only ever be one of them, so it was the wrong answer to "how close is
+        // this scout" half the time. Both, both named, and the actionable one first.
+        //
+        // Where they would name the same rung — the common case, a scout below a plan they are
+        // heading straight for — only one is printed. Two identical figures side by side would
+        // read as a mistake.
+        (r.anchorPct == null ? '' : '<span class="tprog-pct">' + tierPctLabel(r) + '</span>') + '</div>' +
         // aria-hidden: the bar is a second reading of the percentage already in the text beside
         // it, so a screen reader would otherwise announce the same fact twice. The notches are
         // decoration for the same reason — each one is a tier already named in the lead-in.
@@ -13069,7 +13181,7 @@
               : '<div class="bar-fill-stretch" style="left:' + r.planPct + '%;width:' +
                 Math.max(0, r.anchorPct - r.planPct) + '%"></div>') +
             r.marks.map(function (m) {
-              return '<span class="tprog-tick' + (m.plan ? ' is-plan' : '') + '" style="left:' + m.pct + '%"></span>';
+              return '<span class="' + tickClass(m, r) + '" style="left:' + m.pct + '%"></span>';
             }).join('') + '</div>') +
         '</div>';
     });

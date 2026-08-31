@@ -1157,9 +1157,15 @@ test('with no tier planned on, a full bar is the top of the ladder', () => {
   ok(/A full bar is <strong>/.test(card), 'the card never says what a full bar means');
   ok(/no tier is planned on yet/.test(card), 'the fallback anchor is presented as the planned tier');
   // The bar and the percentage beside it read off the same figure, or they contradict each other.
+  // The bar's fill is still anchorPct, and the tail still carries anchorPct — but the tail now
+  // NAMES it, because since 2026-08-31 it prints the next rung's percentage beside it and one
+  // unlabelled figure could only ever have been one of the two.
   ok(/\(r\.planPct == null \? r\.anchorPct : r\.planPct\) \+ '%"/.test(card) &&
-     /'<span class="tprog-pct">' \+ r\.anchorPct/.test(card),
+     /'<span class="tprog-pct">' \+ tierPctLabel\(r\)/.test(card),
     'the bar and its percentage are measured differently');
+  const lbl = /function tierPctLabel\(r\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(lbl && /r\.anchorPct \+ '% of ' \+ esc\(anchorName\)/.test(lbl[0]),
+    'the ladder half of the tail is measured against something other than the bar');
   // On the plan scale there is one fill and it runs to anchorPct, exactly as before.
   ok(/r\.planPct == null\s*\n?\s*\? ''/.test(card), 'a plan-scale row is drawn with a stretch segment');
 });
@@ -1231,6 +1237,109 @@ test('the card refuses to guess when tiers cannot be measured', () => {
   ok(r, 'the row disappears when only the sales conversion is unavailable');
   eq(r.shortSales, null, 'a sales figure was invented with no goal rate');
   eq(r.short, 5000, 'the commission gap is still reported');
+});
+
+/* ========================================================================
+   A rung you have not reached yet is exactly the thing to look at — 2026-08-31
+   ===================================================================== */
+
+// Owner, on the bar shipped in ea1ffc2: "you can't see where the lower tier notches are until a
+// scout actually passes it", and "you can no longer tell what a scout needs, or how close they are
+// to their next tier."
+
+test('a notch is a gap behind the fill and a mark ahead of it', () => {
+  const ctx = sandbox(['tickClass']);
+  const row = { anchorPct: 44, nextMarkPct: 50 };
+  eq(ctx.tickClass({ pct: 17, plan: false }, row), 'tprog-tick',
+    'a rung already passed is drawn as something other than a gap in the fill');
+  eq(ctx.tickClass({ pct: 50, plan: false }, row), 'tprog-tick ahead is-next',
+    'the rung being chased is not marked, or not marked as ahead');
+  eq(ctx.tickClass({ pct: 80, plan: false }, row), 'tprog-tick ahead',
+    'a rung further ahead is invisible on the empty track');
+  // Exactly at the fill edge counts as passed — the fill is drawn over it either way.
+  eq(ctx.tickClass({ pct: 44, plan: false }, row), 'tprog-tick', 'a notch under the fill edge is inked');
+  // The plan notch keeps its own class alone. It only exists on a bar whose scout is already past
+  // the plan, which puts it behind the fill, so it can never also be `ahead`.
+  eq(ctx.tickClass({ pct: 30, plan: true }, { anchorPct: 40, nextMarkPct: 60 }), 'tprog-tick is-plan',
+    'the plan boundary gained a treatment that fights the pale gap it is meant to be');
+  // No next rung to chase, and nothing is singled out.
+  eq(ctx.tickClass({ pct: 50, plan: false }, { anchorPct: 44, nextMarkPct: null }), 'tprog-tick ahead',
+    'a rung is marked as the target when there is no target');
+});
+
+test('the next rung is never marked off the end of the bar', () => {
+  // The make-up case, and the only way nextMarkPct can go wrong: a payment credits the planned
+  // tier while `base` sits below it, so `next` is the rung ABOVE the anchor and its honest
+  // position is 200%. A notch there would sit outside the track.
+  const planned = TP_TIERS[1];                       // Silver $150; next would be Gold $300
+  const [r] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' }, s: { a: 'madeUp' } },
+    comm: 9000, keyValue: TP_KEYS, planned });
+  eq(r.anchor.name, 'Silver', 'the anchor moved for a scout who did not sell past the plan');
+  eq(r.next.name, 'Gold', 'the rung ahead of a made-up tier is wrong');
+  eq(r.nextMarkPct, null, 'a notch was placed past the end of the bar');
+  // The ordinary case still gets a position.
+  const [ok2] = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: { b: { a: 'earned' } }, comm: 13160,
+    keyValue: TP_KEYS, planned: TP_TIERS[2] });      // Gold $300 planned, Silver $150 next
+  eq(ok2.nextMarkPct, 50, 'the next rung is not placed at its share of the anchor');
+  eq(ok2.pct, 88, 'the distance to the next rung is wrong');
+  // And it lands exactly on that rung's own notch, or the renderer marks the wrong one.
+  ok(ok2.marks.some((m) => m.pct === ok2.nextMarkPct && m.name === 'Silver'),
+    'the marked position does not coincide with the next rung’s notch');
+});
+
+test('the row prints one percentage when the rungs agree and two when they differ', () => {
+  const ctx = sandbox(['esc', 'tierPctLabel']);
+  const GOLD = { id: 'g', name: 'Gold' }, SILVER = { id: 's', name: 'Silver' };
+  // The common case — heading straight for the tier the bar ends at. One figure; two identical
+  // ones side by side would read as a mistake.
+  eq(ctx.tierPctLabel({ anchor: SILVER, next: SILVER, pct: 70, anchorPct: 70 }), '70% to Silver',
+    'a scout heading straight for the anchor is given the same figure twice');
+  // A nearer rung than the anchor: both, each naming its own, the actionable one first.
+  const split = ctx.tierPctLabel({ anchor: GOLD, next: SILVER, pct: 88, anchorPct: 44 });
+  ok(/^88% to Silver/.test(split), 'the row does not lead with the rung being chased');
+  ok(/44% of Gold/.test(split), 'the ladder reading lost the rung it is measured against');
+  ok(split.indexOf('88% to Silver') < split.indexOf('44% of Gold'),
+    'the ladder figure is printed ahead of the actionable one');
+  // Top of the ladder: nothing to chase, so only the ladder reading, and it still names its rung.
+  eq(ctx.tierPctLabel({ anchor: GOLD, next: null, anchorPct: 100 }),
+    '<span class="muted">100% of Gold</span>', 'a finished scout is told they are 100% of nothing');
+  // A tier name is escaped like everything else a leader typed.
+  ok(/&lt;b&gt;/.test(ctx.tierPctLabel({ anchor: GOLD, next: { id: 'x', name: '<b>' }, pct: 5, anchorPct: 2 })),
+    'a tier name goes into the row unescaped');
+});
+
+test('the three notch treatments are three treatments, not three shades of one', () => {
+  // No single colour survives all three backgrounds a notch lands on, and the failures are exactly
+  // complementary: against the empty track / gold fill / stretch fill in light, --surface-2 is
+  // 1.00 / 4.77 / 5.19 and --ink-soft is 4.60 / 1.04 / 1.13. So the notch is painted for the
+  // ground it lands on, which anchorPct always tells us.
+  ok(/\.tprog-tick \{[^}]*background: var\(--surface-2\)/.test(SCRIPT_CSS),
+    'a notch behind the fill no longer reads as a gap in it');
+  ok(/\.tprog-tick\.ahead \{[^}]*background: var\(--ink-soft\)/.test(SCRIPT_CSS),
+    'a notch ahead of the fill is invisible on the empty track again');
+  ok(/\.tprog-tick\.is-next \{[^}]*background: var\(--ink\)/.test(SCRIPT_CSS),
+    'the rung being chased is not the strongest mark on the bar');
+  ok(/\.tprog-tick\.is-next \{[^}]*width: 3px/.test(SCRIPT_CSS), 'the next rung is not drawn wider');
+  // ⚠ --ink-soft and --ink are the two that clear 3:1 on the TRACK. --surface-2 there is 1.00:1,
+  // which is the whole bug; anything painting an `ahead` notch in a surface token restores it.
+  ok(!/\.tprog-tick\.ahead \{[^}]*var\(--surface/.test(SCRIPT_CSS),
+    'a notch ahead of the fill is painted in a track colour, which is invisible on the track');
+  // Both legends describe all three states — a mark nobody can name is decoration.
+  for (const fn of ['renderTierProgress', 'renderParentStandings']) {
+    const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
+    ok(src, `${fn}() not found`);
+    ok(/gap<\/strong>/.test(src[0]) && /mark<\/strong>/.test(src[0]) && /chasing/.test(src[0]),
+      `${fn} does not say what the three notch states mean`);
+    // ⚠ NOT "pale" and "dark". --ink is #22303F in light and #ECE5D3 in dark, so a notch ahead of
+    // the fill is dark on one theme and light on the other — the words were literally backwards
+    // half the time. What IS true in every theme is that a passed rung reads as a gap in the fill
+    // and one ahead reads as a mark on the track.
+    ok(!/\bpale\b/.test(src[0]) && !/\bdark(est)?\b/.test(src[0]),
+      `${fn} names a lightness that inverts between themes`);
+    // Two WIDE notches exist now — the plan gap and the next-rung mark. "the heavy notch" no
+    // longer identifies either of them.
+    ok(!/the heavy notch/.test(src[0]), `${fn} still calls the plan boundary "the heavy notch"`);
+  }
 });
 
 test('rows are ordered by what a scout has brought in, exactly as the family board is', () => {
@@ -5615,6 +5724,59 @@ test('a family sees the stretch scale as two fills, and is told which rung it en
     { anchorName: 'Gold', planned: true, marks: [] });
   ok(/<div class="bar-fill" style="width:80%">/.test(halfway), 'a half-upgraded payload breaks the bar');
   ok(!/bar-fill-stretch/.test(halfway), 'a stretch segment was drawn with no scale published for it');
+});
+
+test('a family is told how close their scout is to the rung they are chasing', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentTierProgress']);
+  const LADDER = {
+    anchorName: 'Gold', planned: true,
+    marks: [{ name: 'Bronze', pct: 17, plan: false }, { name: 'Silver', pct: 50, plan: false }]
+  };
+  // Ada: 44% of the way to Gold (the bar's anchor) but 88% of the way to Silver, the rung in
+  // front of her. The caption used to lead with Gold and make Silver a muted afterthought.
+  const split = ctx.parentTierProgress({
+    nextTier: 'Silver', nextPct: 44, nextRungPct: 88, nextMarkPct: 50,
+    nextReward: 'Dues covered', nextSalesCents: 6134
+  }, LADDER);
+  ok(/88% of the way to <strong>Silver<\/strong>/.test(split), 'the caption does not lead with the near rung');
+  ok(/44% of Gold/.test(split), 'the ladder reading is gone, or no longer names its rung');
+  ok(split.indexOf('88% of the way to') < split.indexOf('44% of Gold'),
+    'the ladder figure is printed ahead of the actionable one');
+  // ⚠ THE BAR IS STILL THE LADDER — 44%, not 88%. Only the caption leads with the near rung.
+  // Feeding the bar the near-rung figure would rescale every family's bar to whatever rung that
+  // scout happens to be chasing, throwing away the comparability the planned-tier anchor bought.
+  // (I got this wrong first time round; it is the reason this assertion is here.)
+  ok(/<div class="bar-fill" style="width:44%">/.test(split),
+    'the bar was rescaled to the near rung instead of staying on the ladder');
+  ok(!/width:88%/.test(split), 'the near-rung figure reached the bar');
+  // The label describes the BAR. Both figures are in the caption, which a screen reader reads as
+  // an ordinary paragraph — putting them in the label too would say each one twice.
+  ok(/aria-label="44 percent of the way to Gold"/.test(split),
+    'the spoken label no longer describes the bar it is attached to');
+  // Silver at 50% is ahead of a 44% fill, and it is the rung being chased — so both classes. The
+  // gap between the fill and this notch is how close they are.
+  ok(/class="tprog-tick ahead is-next" style="left:50%"/.test(split),
+    'the rung being chased is not singled out on the family bar');
+  ok(/class="tprog-tick" style="left:17%"/.test(split), 'a passed rung is inked as though still ahead');
+
+  // A scout heading straight for the anchor: one figure, exactly as before.
+  const straight = ctx.parentTierProgress({
+    nextTier: 'Gold', nextPct: 44, nextRungPct: 44, nextMarkPct: null, nextSalesCents: 6134
+  }, LADDER);
+  ok(/44% of the way to <strong>Gold<\/strong>/.test(straight), 'the single-rung caption changed');
+  ok(!/% of Gold<\/span>|· 44% of/.test(straight), 'the same figure is printed twice');
+  ok(/aria-label="44 percent of the way to Gold"/.test(straight), 'the spoken label gained a second rung');
+  // Notches ahead of a 44% fill are inked so a family can see what is coming.
+  ok(/class="tprog-tick ahead" style="left:50%"/.test(straight),
+    'a rung ahead of the fill is invisible on the family board');
+
+  // An older payload has neither field. It must render exactly the bar it always did.
+  const oldPayload = ctx.parentTierProgress({ nextTier: 'Silver', nextPct: 43, nextSalesCents: 25000 }, LADDER);
+  ok(/43% of the way to <strong>Gold<\/strong>/.test(oldPayload),
+    'an old payload lost its caption, or invented a near-rung figure it never published');
+  ok(!/is-next/.test(oldPayload), 'a rung was singled out with no position published for it');
+  ok(/class="tprog-tick ahead" style="left:50%"/.test(oldPayload),
+    'ahead/behind needs no new payload field — it is judged against the fill');
 });
 
 test('the two fills are not told apart by colour alone', () => {
