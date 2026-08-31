@@ -6291,6 +6291,31 @@ test('the family page can print itself, and the print reaches a parent’s own d
     'the family page prints blank');
 });
 
+test('paper breaks between facts, never through one', () => {
+  // Owner ask, 2026-08-31: page breaks so the content fits nicer. Before this the print block had
+  // no pagination rules at all, so a scout's bar could land on one sheet with their name on the
+  // previous one, and a standings table running past a page lost its column headings entirely.
+  const pr = /@media print \{[\s\S]*?\n  \}/.exec(SCRIPT_CSS);
+  ok(pr, 'the print block was not found');
+  // ⚠ SCOPED TO THE SMALL UNITS ON PURPOSE. break-inside on a container taller than a sheet
+  // cannot be honoured, and the browser's fallback is to push the whole thing to a fresh page and
+  // leave the previous one half empty. "What a year costs a family" runs well past a page on its
+  // own, so the CARD must stay breakable and the dens are what hold together.
+  ok(/\.pv-scout, \.pv-den, \.block-card, \.pv-stand, \.stat \{ break-inside: avoid; \}/.test(pr[0]),
+    'the atomic units can still be split across a page break');
+  ok(!/\.card \{[^}]*break-inside: avoid/.test(pr[0]),
+    'a card taller than a sheet is marked unbreakable, which strands half a page');
+  // A column of figures with no heading is unreadable on page two.
+  ok(/thead \{ display: table-header-group; \}/.test(pr[0]), 'a long table loses its headings after page one');
+  ok(/tr[^{]*\{ break-inside: avoid; \}/.test(pr[0]), 'a table row can be split in half');
+  // A heading at the foot of a page points at nothing.
+  ok(/h1, h2, h3, \.eyebrow \{ break-after: avoid; \}/.test(pr[0]), 'a heading can be stranded from its content');
+  ok(/orphans: 3; widows: 3/.test(pr[0]), 'a single dangling line can be left at a page edge');
+  // The bars carry meaning through a background colour, which browsers drop by default. Every
+  // figure is also in words, so a viewer who declines still loses nothing.
+  ok(/print-color-adjust: exact/.test(pr[0]), 'the progress bars print as empty outlines');
+});
+
 test('every den prints opened out, however the reader left them on screen', () => {
   // ⚠ A collapsed den used to `return` before emitting anything, so the breakdown was not in the
   // DOM and NO print rule could bring it back: paper got the headline figure and none of the
@@ -6302,9 +6327,16 @@ test('every den prints opened out, however the reader left them on screen', () =
     'the detail is not wrapped in something a print rule can target');
   // Both early exits inside the loop have to close the wrapper, or a den with no priced rungs
   // leaves an unclosed div and swallows every den after it.
-  ok(/if \(!steps\.length\) \{ h \+= '<\/div>'; return; \}/.test(fn[0]),
-    'a den with no priced rungs leaves the detail wrapper unclosed');
+  // TWO wrappers now: .pv-den holds the row and its detail together so a page break cannot land
+  // between them, and .pv-cost-detail is the collapsible part inside it. Both early exits have to
+  // close both, or a den with no priced rungs swallows every den after it and the closing note.
+  ok(/if \(!steps\.length\) \{ h \+= '<\/div><\/div>'; return; \}/.test(fn[0]),
+    'a den with no priced rungs leaves a wrapper unclosed');
   eq((fn[0].match(/pv-cost-detail/g) || []).length, 1, 'the wrapper is opened more than once per den');
+  eq((fn[0].match(/'<div class="pv-den">'/g) || []).length, 1, 'the den wrapper is opened more than once');
+  // Balanced across the whole loop body: one <div class="pv-den"> and one .pv-cost-detail opened,
+  // and every path out closes both.
+  eq((fn[0].match(/<\/div><\/div>/g) || []).length, 2, 'the two exits from the den loop do not close the same tags');
   ok(/\.pv-cost-detail \{ display: none; \}/.test(SCRIPT_CSS), 'a collapsed den is visible on screen');
   ok(/@media print \{[\s\S]*?\.pv-cost-detail \{ display: block !important; \}/.test(SCRIPT_CSS),
     'the detail stays collapsed on paper');

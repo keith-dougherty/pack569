@@ -916,6 +916,33 @@
     .overlay { position: static; padding: 0; background: #fff; }
     .summary-sheet { border: none; box-shadow: none; }
     body { background: #fff; color: #111; }
+
+    /* ---- PAGINATION ----------------------------------------------------------------
+       Break BETWEEN facts, never through one — the same rule .bseg follows on screen,
+       applied to paper. Everything here is scoped to the SMALL units, deliberately:
+       break-inside on a container taller than a sheet cannot be honoured, and the
+       browser's fallback is to shove the whole thing onto a fresh page and leave the
+       previous one half empty. "What a year costs a family" runs well past a page on
+       its own, so it stays breakable and its DENS are what hold together. */
+
+    /* One scout, one den, one shift, one derby placing: each is a unit that reads as
+       nonsense split in half — a progress bar orphaned from the name above it, or a
+       den's line items under someone else's heading. */
+    .pv-scout, .pv-den, .block-card, .pv-stand, .stat { break-inside: avoid; }
+    /* Tables: never split a row, and repeat the header on every sheet a long standings
+       table runs to — a column of figures with no heading is unreadable on page two. */
+    tr, .brow, .tprog { break-inside: avoid; }
+    thead { display: table-header-group; }
+    /* A heading stranded at the foot of a page is pointing at nothing. Same for the
+       small caps labels, which are headings in everything but name, and for the lead-in
+       paragraph of a card. */
+    h1, h2, h3, .eyebrow { break-after: avoid; }
+    h1, h2, h3 { break-inside: avoid; }
+    /* No single dangling line, top or bottom. */
+    p, li { orphans: 3; widows: 3; }
+    /* The bars carry meaning through a background colour, and browsers drop backgrounds
+       by default. Ask for them; a viewer who declines still has every figure in words. */
+    .bar, .bar-fill, .bar-fill-stretch, .pill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .card { transition: border-color 0.15s ease; }
@@ -8455,7 +8482,11 @@
       // safe direction — the line simply does not appear rather than quoting a stale figure.
       var cover = d.coveredCents || 0;
       var after = Math.max(0, expected - cover);
-      h += '<div class="list-row' + (open ? ' open' : '') + '" data-act="parent-cost-toggle" data-name="' +
+      // Wrapped so print can keep a den whole: the row and its breakdown are siblings, and a page
+      // break landing between them puts "Wolf $394.00" at the foot of one sheet and the line items
+      // it heads at the top of the next. No CSS selector depends on them being adjacent.
+      h += '<div class="pv-den">' +
+        '<div class="list-row' + (open ? ' open' : '') + '" data-act="parent-cost-toggle" data-name="' +
         esc(String(d.den || '')) + '" role="button" tabindex="0" aria-expanded="' + open + '"' +
         ' aria-label="' + esc(label + ', ' + fmt(expected) + ' for a scout and one adult') + '">' +
         '<div style="min-width:0"><div class="lr-name">' + esc(label) + ' <strong class="money">' +
@@ -8493,7 +8524,7 @@
       // The ladder, priced for this den. A parent reading the reward tiers card learns what they
       // GET; this is the same rungs answering what they PAY, which is the question underneath it.
       var steps = Array.isArray(d.steps) ? d.steps.filter(function (x) { return x && x.coveredCents > 0; }) : [];
-      if (!steps.length) { h += '</div>'; return; }
+      if (!steps.length) { h += '</div></div>'; return; }
       h += '<p class="eyebrow" style="margin:2px 0 4px">What each reward tier drops it to</p>' +
         '<div class="tbl-wrap"><table><caption class="visually-hidden">Reward tiers and what a ' +
         esc(label) + ' family still pays</caption><thead><tr>' +
@@ -8508,7 +8539,7 @@
         '<p class="small muted" style="margin:6px 0 10px">Each rung includes the ones below it, so ' +
         'reaching a higher tier keeps everything the earlier ones cover. Figures are what a scout ' +
         'needs to <strong>sell</strong>.</p>' +
-        '</div>';
+        '</div></div>';
     });
     return h + '<p class="small muted" style="margin:8px 0 0">These are what the pack plans for, not a bill — ' +
       'ask a pack leader what your family currently owes.</p></div>';
