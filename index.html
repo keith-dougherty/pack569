@@ -13119,7 +13119,12 @@
           segs.push('<span class="bseg">past ' + esc(r.ladder.plan.name || 'the plan') + '</span>');
         }
         if (r.unlocks > 0) segs.push('<span class="bseg">unlocks ' + fmt(r.unlocks) + '</span>');
-        if (r.next.dueBy) segs.push('<span class="bseg">by ' + esc(fmtDateShort(r.next.dueBy)) + '</span>');
+        // ⚠ NO DEADLINE HERE (owner, 2026-08-31). This card is "who to ring and what to tell
+        // them"; a date repeated on every row is a property of the TIER, not of the scout, and it
+        // was the longest segment on the line. It still lives where it belongs: on the rung itself
+        // in Popcorn · Rewards, in the "By" column of the family ladder card, and on the printed
+        // tier sheet. The deadline is not ignored either — tierEarnedMap measures each tier on its
+        // own dueBy, and a missed one still raises the shortfall report on the Rewards card.
       } else {
         segs.push('<span class="bseg">' + (r.earned
           ? 'Top tier reached · ' + esc(r.earned.name || 'top tier')

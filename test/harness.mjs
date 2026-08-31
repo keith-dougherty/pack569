@@ -1308,6 +1308,29 @@ test('the row prints one percentage when the rungs agree and two when they diffe
     'a tier name goes into the row unescaped');
 });
 
+test('the standings row carries no deadline, and the deadline is still enforced', () => {
+  // Owner, 2026-08-31: "we do not need the due by date on the standings." It is a property of the
+  // TIER, not of the scout, so it repeated identically down every row chasing the same rung — and
+  // it was the longest segment on the line.
+  const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(card, 'renderTierProgress() not found');
+  // codeOnly, because the ⚠ comment recording this ruling names the very field it forbids —
+  // the same trap the absence assertions over buildParentView are built around.
+  ok(!/dueBy/.test(codeOnly(card[0])), 'the deadline is back on the standings row');
+  // ⚠ Dropped from THIS card only. It still has to reach a leader somewhere, and it still has to
+  // decide who earned what — removing the display must not have quietly removed the rule.
+  ok(/t\.dueBy \|\| ''/.test(/function tierEarnedMap\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'tiers are no longer measured against their own deadline');
+  ok(/tierDeadlineText\(t\)/.test(/function renderRewardTiers\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'the rung itself no longer states its deadline on Popcorn · Rewards');
+  ok(/dueBy \? esc\(fmtDate\(String\(t\.dueBy\)\)\) : '<span class="muted">any time/.test(SCRIPT),
+    'the family ladder card lost its By column');
+  ok(/dueBy: String\(t\.dueBy \|\| ''\)/.test(SCRIPT), 'the deadline is no longer published to families');
+  // And the printed handout still carries it — that sheet is the one a family takes home.
+  const sheet = /function tierSheetRungs\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(sheet && /dueBy: t\.dueBy \|\| ''/.test(sheet[0]), 'the parents-meeting sheet lost the deadline');
+});
+
 test('the three notch treatments are three treatments, not three shades of one', () => {
   // No single colour survives all three backgrounds a notch lands on, and the failures are exactly
   // complementary: against the empty track / gold fill / stretch fill in light, --surface-2 is
