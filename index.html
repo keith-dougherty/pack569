@@ -721,6 +721,10 @@
      declaration said 36. Same specificity trap as .btiny.armed earlier: a base rule with two
      classes beats a single-class override, and only measuring the resolved style catches it. */
   .btn.small.tprog-pay { flex: 0 0 auto; min-height: 36px; padding: 4px 10px; font-size: 0.78rem; }
+  /* The ✕ that takes a bought tier back, in the same slot. .btiny carries its own 36px square but
+     no flex sizing, and this row is `align-items: baseline` — left to itself it gets squeezed
+     below its own minimum on a narrow phone and sits on the text baseline rather than beside it. */
+  .tprog-main .btiny { flex: 0 0 auto; align-self: center; }
   .tprog-bar { position: relative; margin-top: 5px; height: 6px; }
   /* Checkpoints: where each rung falls along the bar. THREE TREATMENTS, because a notch behind
      the fill and a notch ahead of it are different things sitting on different backgrounds.
@@ -2658,6 +2662,61 @@
     a.leaders = list(a.leaders).map(function (x) { return { name: str(x.name), role: str(x.role) }; });
     return true;
   }
+  // -----------------------------------------------------------------------
+  // MAKE-UP CREDIT MOVES INTO THE LEDGER (2026-09-04, owner: "the tier credit should probably
+  // be re-calculated on each load/refresh as well as when values change in either direction").
+  //
+  // It used to live in `tier.madeUp`, a list of scout ids written once and never revisited. That
+  // made it the only part of a scout's tier standing that was STORED rather than derived: every
+  // other rung is recomputed from sales on each render, so it follows a correction downward as
+  // readily as upward, while a make-up mark only ever went up. Clearing the payment out of the
+  // ledger left the scout holding a tier nobody had bought — on the leaders' board, on the
+  // family board, and in the coverage the budget then pays for.
+  //
+  // So the PAYMENT is now the record. tierMakeupMap() derives the credit from ledger entries
+  // stamped with a tier id, which means it is recomputed on every render and every load and
+  // moves in both directions: delete the entry and the credit goes, undo the delete and it
+  // comes back. There is exactly one fact, and it is the one with money attached.
+  //
+  // Migration matches each stored mark to the entry that paid for it — this app wrote both, so
+  // the description is its own — and stamps it. A mark with no payment behind it is DROPPED,
+  // which is the stuck state being reported rather than a loss: the Pay button reappears on that
+  // row, and one tap (twice) puts it back with an entry to show for it.
+  // -----------------------------------------------------------------------
+  function migrateTierMakeUp(d) {
+    var byTier = {};
+    d.rewardTiers.tiers.forEach(function (tier) {
+      var marks = Array.isArray(tier.madeUp)
+        ? tier.madeUp.filter(function (k) { return typeof k === 'string' && !!k; }) : [];
+      delete tier.madeUp;
+      if (marks.length) byTier[tier.id] = { tier: tier, marks: marks };
+    });
+    var ids = Object.keys(byTier);
+    if (!ids.length) return;
+    // Candidates are the entries this app wrote for exactly this purpose, still unclaimed.
+    var free = d.ledger.filter(function (e) {
+      return !e.tierMakeup && e.direction === 'in' && !!e.scoutId &&
+        e.description.indexOf('Made up the difference to ') === 0;
+    });
+    // Two passes, narrowest first: an entry naming this tier is certainly this tier's, and
+    // claiming it for a differently-named rung in pass two would strand the right one.
+    [true, false].forEach(function (byName) {
+      ids.forEach(function (tid) {
+        var t = byTier[tid].tier;
+        byTier[tid].marks = byTier[tid].marks.filter(function (sid) {
+          var hit = null;
+          free.forEach(function (e) {
+            if (hit || e.tierMakeup || e.scoutId !== sid) return;
+            if (byName && !(t.name && e.description.indexOf(t.name) !== -1)) return;
+            hit = e;
+          });
+          if (!hit) return true;      // still looking; pass two may find it
+          hit.tierMakeup = t.id;
+          return false;
+        });
+      });
+    });
+  }
   // Single normalization seam — used by load(), the JSON-import path, and sync
   // adoption. Returns the normalized object, or null if it isn't a v1 pack record.
   // New additive fields get defaulted here (NEVER bump the version gate).
@@ -2889,6 +2948,11 @@
       // Reserved for Phase 3 (charges + family accounts): normalized so it survives every
       // round-trip now, which is what lets that phase be purely additive later.
       e.scoutId = typeof e.scoutId === 'string' ? e.scoutId : '';
+      // The make-up payment that bought a reward tier carries the tier's id, so the money and the
+      // credit are ONE record rather than two kept in step by memory: tierMakeupMap() reads the
+      // credit back off these entries, so deleting one takes the tier with it. Every other ledger
+      // entry carries '' and behaves exactly as it always has.
+      e.tierMakeup = typeof e.tierMakeup === 'string' ? e.tierMakeup : '';
       e.reconciled = e.reconciled === true;
     });
     if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
@@ -2939,7 +3003,7 @@
         id: uid(), date: line.date || migDate,
         description: line.name || fallbackName,
         amountCents: Math.abs(total), direction: total < 0 ? 'in' : 'out',
-        lineId: line.id, method: '', ref: '', source: '', donor: '', scoutId: '',
+        lineId: line.id, method: '', ref: '', source: '', donor: '', scoutId: '', tierMakeup: '',
         // Migrated money has never been held next to a statement, so it starts unticked.
         reconciled: false
       });
@@ -3162,7 +3226,7 @@
             id: uid(), date: backfillDate,
             description: (line.name || 'Fee') + ' — collected',
             amountCents: each, direction: 'in', lineId: lineId,
-            method: '', ref: '', source: 'family', donor: '', scoutId: sid,
+            method: '', ref: '', source: 'family', donor: '', scoutId: sid, tierMakeup: '',
             reconciled: false
           });
         });
@@ -3303,12 +3367,11 @@
       // not that shape at all: "we reimburse these uniform items next year against an itemised
       // receipt", and then the list of eligible items. Absent → '' , so no tier changes.
       tier.note = typeof tier.note === 'string' ? tier.note : '';
-      // Scouts who paid the difference instead of selling it. Scout ids, never resolved here —
-      // normalizeState does not resolve references; a stale id simply matches nobody.
-      if (!Array.isArray(tier.madeUp)) tier.madeUp = [];
-      else tier.madeUp = tier.madeUp.filter(function (k) { return typeof k === 'string' && !!k; });
+      // `madeUp` — the scouts who paid the difference instead of selling it — is migrated to the
+      // ledger below and then deleted. Left alone here so the migration can still read it.
       return true;
     });
+    migrateTierMakeUp(d);
     // Wave 14: Inventory — Trail's End popcorn order (ordered / on-hand / handed out).
     // { commissionPct:string, orderTotalCents:int>=0, products:[{id,name,perCase,cases,loose,unitPriceCents}],
     //   distributions:[{id,productId,target:{kind,id?,den?},containers,date,note}] }.
@@ -5125,6 +5188,24 @@
     var armed = ui.armed === key;
     return '<button type="button" class="btn small danger' + (armed ? ' armed' : '') + '" data-act="' + key + '" ' + (extra || '') + '>' +
       (armed ? 'Tap again to confirm' : esc(label)) + '</button>';
+  }
+  // "Pay the difference to reach a tier", the one control that WRITES from a board a leader
+  // otherwise only reads. Two taps, same arm() contract as dangerBtn — but keyed on the ACT
+  // string rather than a key of its own, because this button is drawn in two places (the
+  // standings card's Next reward tier rows, and the shortfall list on Popcorn · Rewards) and
+  // arming it in one should light it up in the other rather than leaving a second copy of the
+  // same offer one tap from firing.
+  //
+  // `rest` is the resting appearance, which differs between the two; `keep` is the classes that
+  // survive the armed state — .tprog-pay carries the 36px tap target, and dropping it on the
+  // confirming tap would shrink the one press that actually spends money.
+  function makeupBtn(o) {
+    var key = 'tier-makeup:' + o.tierId + ':' + o.scoutId;
+    var armed = ui.armed === key;
+    return '<button type="button" class="btn small ' + (armed ? 'danger armed' : (o.rest || '')) +
+      (o.keep ? ' ' + o.keep : '') + '" data-act="' + esc(key) + '" title="' +
+      esc(armed ? 'Tap again to confirm' : (o.title || '')) + '">' +
+      (armed ? 'Tap again to confirm' : esc(o.label || '')) + '</button>';
   }
   // ✕-style two-tap confirm for tight rows — same arm() contract as dangerBtn.
   function tinyDangerBtn(key, label) {
@@ -7401,8 +7482,11 @@
       // nobody sells commission. salesForCommission() converts it at the goal rate, and returns
       // null when the pack has typed no rate at all — then the tier is still listed for its
       // reward text, with no target beside it, rather than showing a target of zero.
-      // ⚠ tier.madeUp NEVER publishes. It names the families who paid the difference instead of
-      // selling it, and that is nobody else's business.
+      // ⚠ WHO PAID THEIR WAY IN NEVER PUBLISHES. Since 2026-09-04 that fact rides on the family
+      // payment that bought the rung rather than on the rung itself, which changes nothing here:
+      // the payload is built field by field from the tier, and nothing on the money side is
+      // published at all. Which families paid the difference instead of selling it is nobody
+      // else's business either way.
       var tiers = sortedTiers().map(function (t) {
         return {
           name: String(t.name || ''),
@@ -10169,25 +10253,57 @@
   // than moving the line later. Once the date has passed the tier is CLOSED: whoever did not
   // reach it is billed the fee it would have covered, unless they make up the difference.
   //
-  // `madeUp` is that second path, recorded per tier: a scout who pays the gap counts as
-  // having reached the tier from then on. The money arrives as an ordinary family payment in
-  // the ledger, so it is auditable — the only thing stored here is the pack's decision that
-  // the tier was satisfied. (Total-waived therefore includes fees bought by a makeup payment
-  // as well as by fundraising; the ledger entry names which.)
+  // A MAKE-UP PAYMENT is that second path: a scout who pays the gap counts as having reached the
+  // tier from then on. The money arrives as an ordinary family payment in the ledger carrying the
+  // id of the tier it bought, and that entry is the WHOLE record — there is no separate tick.
+  // (Total-waived therefore includes fees bought by a make-up payment as well as by fundraising;
+  // the ledger entry names which.)
   //
   // ONE map, read by coverage, the waivers, the badges and the deadline report, so those four
   // can never disagree about who earned what.
   // ---------------------------------------------------------------------------
+  // Who holds a make-up payment against which tier, straight off the ledger.
+  //
+  // ⚠ DERIVED, NEVER STORED (owner, 2026-09-04). Every other rung of a scout's standing is
+  // recomputed from sales on each render, so a correction moves it DOWN as readily as up; this
+  // one used to be a list of ids written once, so clearing the payment out of the book left the
+  // scout holding a tier nobody had bought. Reading the entries means the credit is recomputed on
+  // every render and every load, and follows the money in both directions.
+  //
+  // Existence, not amount: what a family pays is capped at the fee the tier saves them, so it is
+  // routinely LESS than the gap it settles. Summing it against the threshold would quietly
+  // un-earn every capped tier in the pack.
+  function tierMakeupMap() {
+    var out = {};
+    state.ledger.forEach(function (e) {
+      if (!e || !e.tierMakeup || !e.scoutId || e.direction !== 'in') return;
+      (out[e.tierMakeup] || (out[e.tierMakeup] = {}))[e.scoutId] = true;
+    });
+    return out;
+  }
+  // What a family actually handed over toward one tier, for the places that report it back to
+  // them. Summed rather than taken from the first entry: a correction is entered as a second
+  // payment, not by editing the first one away.
+  function tierMakeupPaidCents(tierId, scoutId) {
+    var cents = 0;
+    state.ledger.forEach(function (e) {
+      if (e && e.tierMakeup === tierId && e.scoutId === scoutId && e.direction === 'in') {
+        cents += e.amountCents || 0;
+      }
+    });
+    return cents;
+  }
   function tierEarnedMap() {
     var out = {};
     var byDate = {};
     var roster = activeScouts();
+    var made = tierMakeupMap();
     sortedTiers().forEach(function (t) {
       var key = t.dueBy || '';
       if (!byDate[key]) byDate[key] = computeScoutTotals(key || null);
       var totals = byDate[key];
       var set = out[t.id] = {};
-      arrOf(t.madeUp).forEach(function (sid) { set[sid] = 'madeUp'; });
+      Object.keys(made[t.id] || {}).forEach(function (sid) { set[sid] = 'madeUp'; });
       roster.forEach(function (s) {
         var earnedCents = scoutCommissionOf({ t: totals[s.id] });
         if ((earnedCents == null ? 0 : earnedCents) >= t.thresholdCents) set[s.id] = 'earned';
@@ -10491,6 +10607,12 @@
         : null;
       return {
         scout: s, earned: earned, next: next, closedAhead: closedAhead,
+        // HOW the tier they hold was credited — 'earned' by selling, 'madeUp' by paying the
+        // difference. Straight off the shared map, so this cannot disagree with the coverage the
+        // budget pays for. The card needs it because the two look identical on a bar: a scout
+        // credited by a payment sits above a threshold their commission is nowhere near, and
+        // without saying so the board reports a sale that never happened.
+        earnedBy: earned ? ((map[earned.id] || {})[s.id] || '') : '',
         base: base, need: need, short: short,
         cover: cover, makeup: next ? Math.min(short, cover) : 0,
         // The one figure a family can act on. `salesForCommission` is null when the pack has no
@@ -13301,15 +13423,19 @@
               'and hatched: that part is beyond what the pack budgeted for.</p>'
             : '')
         : '') +
-      // Said once here rather than on twelve rows.
-      (rows.some(function (r) { return r.makeup > 0 && r.unlocks > 0; })
+      // Said once here rather than on twelve rows. The second clause is what keeps the UNDO
+      // explained: gated on the offer alone, the paragraph vanished the moment the last family
+      // paid — exactly when somebody is most likely to be looking for the way back out.
+      (rows.some(function (r) { return (r.makeup > 0 && r.unlocks > 0) || r.earnedBy === 'madeUp'; })
         ? '<p class="small muted" style="margin:0 0 10px"><strong>Pay</strong> records that a family ' +
           'covered the difference out of pocket. What they pay is the commission the pack did not get, ' +
           'capped at the fee the tier would have saved them — so the pack ends up exactly where the ' +
           'selling would have left it. It goes in the ledger as a family payment and the scout counts ' +
-          'as having reached the tier from then on. Undo is on ' +
-          '<button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" ' +
-          'data-section="rewards">Popcorn · Rewards</button></p>'
+          'as having reached the tier from then on — so it <strong>asks twice</strong> before it writes ' +
+          'anything. To undo it, delete that ledger entry on ' +
+          '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" ' +
+          'data-section="ledger">Money · Ledger</button> and the tier goes with it, or use the ✕ on ' +
+          'this row to take back the tier and leave the money where it is.</p>'
         : '');
     rows.forEach(function (r) {
       var name = esc(r.scout.name || 'Unnamed scout');
@@ -13353,8 +13479,25 @@
         // deadline creates.
         if (r.closedAhead) segs.push('<span class="bseg">higher tiers have closed</span>');
       }
+      // WHERE THE TIER CAME FROM, on the board the tier is read off (owner report, 2026-09-04:
+      // "the ranking bar and text for that scout does not reset"). A tier bought with a make-up
+      // payment sits at the same height as one that was sold for, so a leader looking at a row
+      // that suddenly says Gold has nothing on screen telling them why, and nothing to undo it
+      // with — the undo lived one tab away on Popcorn · Rewards, findable only if you already knew
+      // it existed. The row now says which it was and carries the same undo.
+      if (r.earnedBy === 'madeUp' && r.earned) {
+        segs.push('<span class="bseg">' + esc(r.earned.name || 'that tier') + ' paid for, not sold</span>');
+      }
       h += '<div class="tprog">' +
         '<div class="tprog-main"><span class="tprog-name">' + name + '</span>' +
+        // The ✕ takes back only the TIER: the entry is unstamped and the money stays in the
+        // ledger as an ordinary family payment, because it happened. Deleting the entry itself is
+        // the other door and takes both — see del-ledger.
+        (r.earnedBy === 'madeUp' && r.earned
+          ? tinyDangerBtn('tier-unmakeup:' + r.earned.id + ':' + r.scout.id,
+              'Undo ' + (r.earned.name || 'the tier') + ' for ' + (r.scout.name || 'this scout') +
+              ' — the payment stays in the ledger')
+          : '') +
         // Pay the rest out of pocket. Offered only where reaching the tier actually saves this
         // scout money — a prize-only tier has `makeup` 0, and `unlocks` 0 catches the other case:
         // a tier pointed at a line they ALREADY have covered by a lower one. The cap's entire
@@ -13364,11 +13507,16 @@
         // Wording is deliberate: "make up the difference", not "buy the tier". What is being paid
         // is the commission the pack did not get, which is why it is capped at the fee and why the
         // pack ends up exactly where the selling would have left it.
+        //
+        // Two taps, via makeupBtn — the first arms it, the second writes. See the handler.
         (r.makeup > 0 && r.unlocks > 0
-          ? '<button type="button" class="btn small ghost tprog-pay" data-act="tier-makeup:' +
-            esc(r.next.id) + ':' + esc(r.scout.id) + '" title="Records ' + fmt(r.makeup) +
-            ' as a family payment in the ledger and counts this scout as having reached ' +
-            esc(r.next.name || 'the tier') + '">Pay ' + fmt(r.makeup) + '</button>'
+          ? makeupBtn({
+              tierId: r.next.id, scoutId: r.scout.id, rest: 'ghost', keep: 'tprog-pay',
+              label: 'Pay ' + fmt(r.makeup),
+              title: 'Records ' + fmt(r.makeup) +
+                ' as a family payment in the ledger and counts this scout as having reached ' +
+                (r.next.name || 'the tier')
+            })
           : '') +
         // The gap in SELLING, at the pack's lower selling rate — the figure a scout can act on,
         // and the one that gets there whatever they sell. Cash is deliberately not a candidate:
@@ -13984,8 +14132,12 @@
                 '</span></span>' +
                 '<span class="small">owes <strong class="money">' + fmt(m.cover) + '</strong></span>' +
                 (m.makeup > 0
-                  ? '<button type="button" class="btn small" data-act="tier-makeup:' + esc(t.id) + ':' + esc(m.scout.id) + '">' +
-                    'Paid ' + fmt(m.makeup) + ' to make the tier</button>'
+                  ? makeupBtn({
+                      tierId: t.id, scoutId: m.scout.id, rest: '',
+                      label: 'Paid ' + fmt(m.makeup) + ' to make the tier',
+                      title: 'Records ' + fmt(m.makeup) + ' as a family payment in the ledger and counts ' +
+                        (m.scout.name || 'this scout') + ' as having reached ' + (t.name || 'the tier')
+                    })
                   : '') +
                 '</div>';
             });
@@ -13993,7 +14145,7 @@
               'whichever the family chooses. The difference is the commission the pack didn’t get, so paying it leaves the pack ' +
               'exactly where the selling would have. It is capped at the fee, because paying more to reach a tier than the tier ' +
               'saves you is not a rule anybody means. Recording it puts the money in the ledger as a family payment and covers ' +
-              'the fee from then on.</p>';
+              'the fee from then on — so the button asks twice first, and deleting that ledger entry takes the tier back with it.</p>';
           }
         }
         // Money the pack owes BACK, where the tier covers something a family paid the council
@@ -14022,14 +14174,27 @@
             'instead \u2014 then no money goes to a family at all.</p>';
         }
         // And who took the second path, with a way back if it was recorded by mistake.
-        var made = arrOf(t.madeUp).map(function (sid) { return getScout(sid); }).filter(Boolean);
+        // Off the shared earned map, whose 'madeUp' marks are read from the ledger — so a scout
+        // whose payment has been deleted or unstamped is simply not on this list any more, and
+        // this card cannot disagree with the board about who bought their way in.
+        var madeSet = tierEarned[t.id] || {};
+        var made = Object.keys(madeSet).filter(function (sid) { return madeSet[sid] === 'madeUp'; })
+          .map(function (sid) { return getScout(sid); }).filter(Boolean)
+          .sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
         if (made.length) {
           h += '<p class="eyebrow" style="margin:10px 0 4px">Paid the difference</p>';
           made.forEach(function (s) {
+            var paid = tierMakeupPaidCents(t.id, s.id);
             h += '<div class="assign-row"><span class="assign-name">' + esc(s.name) +
-              ' <span class="small muted">counts as having reached this tier</span></span>' +
-              tinyDangerBtn('tier-unmakeup:' + t.id + ':' + s.id, 'Undo for ' + (s.name || 'this scout')) + '</div>';
+              ' <span class="small muted">paid <span class="money">' + fmt(paid) +
+              '</span> — counts as having reached this tier</span></span>' +
+              tinyDangerBtn('tier-unmakeup:' + t.id + ':' + s.id,
+                'Undo for ' + (s.name || 'this scout') + ' — the payment stays in the ledger') + '</div>';
           });
+          h += '<p class="small muted" style="margin:6px 0 0">The ✕ takes back the tier and leaves the money ' +
+            'in the ledger as an ordinary family payment. Deleting the entry itself on ' +
+            '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" ' +
+            'data-section="ledger">Money · Ledger</button> takes both.</p>';
         }
         h += '</div>';
       });
@@ -18088,6 +18253,11 @@
       state.ledger.forEach(function (e, i) { if (e.id === dlId) dlIx = i; });
       if (dlIx === -1) return;
       var dlGone = state.ledger.splice(dlIx, 1)[0];
+      // ⚠ NOTHING SPECIAL FOR A MAKE-UP PAYMENT, and that is the point (owner report, 2026-09-04:
+      // "even after clearing the ledger items, the ranking bar and text for that scout does not
+      // reset"). The tier credit such an entry buys is DERIVED from the entry — see
+      // tierMakeupMap() — so deleting it here takes the credit with it and the undo below brings
+      // both back, without this handler knowing tiers exist.
       deleteWithUndo(dlGone.description || 'entry', function () {
         state.ledger.splice(Math.min(dlIx, state.ledger.length), 0, dlGone);
       });
@@ -18183,11 +18353,12 @@
       });
       return;
     }
-    // "Pay the difference to hit the tier" (owner ruling, 2026-07-27). Two things happen, and
-    // they are deliberately different KINDS of record: the money goes in the LEDGER as an
-    // ordinary family payment, because it really arrived and has to be reconcilable; the fact
-    // that the tier is now satisfied goes on the TIER, because that is a decision the pack
-    // made, not a transaction. From here the normal waiver machinery covers the fee.
+    // "Pay the difference to hit the tier" (owner ruling, 2026-07-27). ONE thing happens: the
+    // money goes in the LEDGER as an ordinary family payment — it really arrived and has to be
+    // reconcilable — carrying the id of the tier it bought. That the tier is satisfied is then
+    // read back off the entry rather than stored beside it (2026-09-04; the two records used to
+    // be separate and drifted apart the moment one was deleted). From here the normal waiver
+    // machinery covers the fee.
     if (act.indexOf('tier-due-open:') === 0) {
       ui.tierDueOpen[act.split(':')[1]] = true;
       render(); return;
@@ -18208,16 +18379,28 @@
       if (!mkT || !mkS) return;
       var mkRow = tierShortfallRows(mkT).filter(function (r) { return r.scout.id === mkS.id; })[0];
       if (!mkRow || mkRow.makeup <= 0) return;
-      if (arrOf(mkT.madeUp).indexOf(mkS.id) === -1) mkT.madeUp = arrOf(mkT.madeUp).concat([mkS.id]);
-      state.ledger.push({
-        id: uid(), date: todayISO(),
-        description: 'Made up the difference to ' + (mkT.name || 'a reward tier') + ' — ' + (mkS.name || 'scout'),
-        amountCents: mkRow.makeup, direction: 'in', lineId: '', method: '', ref: '',
-        source: 'family', donor: '', scoutId: mkS.id, reconciled: false
+      // ⚠ TWO TAPS (owner report, 2026-09-04: "if i select a scout tier ranking … it automatically
+      // adds a ledger item"). This is the only control on the standings board that WRITES, and it
+      // sits in a row a leader reads with their thumb: one stray tap put a payment in the book and
+      // moved a scout up the ladder, on a card where everything else is read-only. It asserts that
+      // a family handed over money, and nothing that says that should happen on a single tap.
+      // Same arm() the deletions use, keyed on the act itself so both renderers of this button can
+      // show the confirm state without inventing a second key.
+      arm(act, function () {
+        // ONE write, and it is the money. The tier credit is derived from this entry by
+        // tierMakeupMap(), so there is nothing else to keep in step with it: delete the entry and
+        // the credit goes, undo the delete and it comes back.
+        state.ledger.push({
+          id: uid(), date: todayISO(),
+          description: 'Made up the difference to ' + (mkT.name || 'a reward tier') + ' — ' + (mkS.name || 'scout'),
+          amountCents: mkRow.makeup, direction: 'in', lineId: '', method: '', ref: '',
+          source: 'family', donor: '', scoutId: mkS.id, tierMakeup: mkT.id, reconciled: false
+        });
+        showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
+          (mkT.name || 'the tier') + '. Deleting the ledger entry undoes it.');
+        commit();
       });
-      showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
-        (mkT.name || 'the tier') + '.');
-      commit(); return;
+      return;
     }
     // Reimbursing a council fee a family already paid. Money OUT, against the line, carrying the
     // scout so "who has been paid back" is answerable from the book rather than from memory — and
@@ -18241,14 +18424,27 @@
       commit(); return;
     }
     if (act.indexOf('tier-unmakeup:') === 0) {
-      // Undoing only removes the pack's DECISION. The payment stays in the ledger, because it
-      // happened — deleting somebody's money to correct a tick would be the worse bug.
+      // Undoing only removes the tier CREDIT. The payment stays in the ledger, because it
+      // happened — deleting somebody's money to correct a tick would be the worse bug. With the
+      // credit derived from the entry, that means unstamping it: the money stays exactly where it
+      // is, as an ordinary family payment, and stops buying a tier. Deleting the entry outright is
+      // the other door, on Money · Ledger, and takes both.
       var umP = act.split(':');
       var umT = state.rewardTiers.tiers.find(function (t) { return t.id === umP[1]; });
       if (!umT) return;
-      arm('unmakeup-' + umP[1] + '-' + umP[2], function () {
-        umT.madeUp = arrOf(umT.madeUp).filter(function (sid) { return sid !== umP[2]; });
-        showToast('Removed — the payment stays in the ledger.');
+      // ⚠ ARMED ON THE ACT, not a key of its own. It used to arm on 'unmakeup-<tier>-<scout>',
+      // which no button carries — so tinyDangerBtn's `ui.armed === key` test never matched and the
+      // ✕ never reddened or said "Tap again to confirm". The confirm worked; it just gave no sign
+      // it had, so the first tap read as a dead button. Every other two-tap control in the file
+      // arms on the act string for exactly this reason.
+      arm(act, function () {
+        var n = 0;
+        state.ledger.forEach(function (e) {
+          if (e.tierMakeup === umT.id && e.scoutId === umP[2]) { e.tierMakeup = ''; n++; }
+        });
+        showToast(n
+          ? 'Removed — the payment stays in the ledger as a family payment.'
+          : 'Nothing to remove — no make-up payment is recorded against that tier.');
         commit();
       });
       return;

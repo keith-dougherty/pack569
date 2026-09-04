@@ -44,8 +44,8 @@ const BPV = () => {
   return m[0];
 };
 // Absence assertions ("this key is NEVER published") have to read CODE, not prose. The comments
-// in buildParentView name the very things they forbid — "⚠ tier.madeUp NEVER publishes" — so a
-// naive scan of the source finds `madeUp` and fails on the warning that exists to prevent it.
+// in buildParentView name the very things they forbid — "⚠ noteInternal NEVER publishes" — so a
+// naive scan of the source finds the field and fails on the warning that exists to prevent it.
 // Whole-line comments only: a trailing one is left alone, which errs towards a false FAILURE
 // rather than a false pass.
 const codeOnly = (src) => src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
@@ -626,6 +626,7 @@ function coverageSandbox(setup) {
        return { sales: (store || 0) + on, onS: on, onD: 0, storeD: 0, wagonD: 0 };
      }
      ${setup}
+     ${slice('tierMakeupMap')}
      ${slice('tierEarnedMap')}
      ${slice('packCoverage')}
      ${slice('scoutCommissionOf')}
@@ -640,7 +641,10 @@ function coverageSandbox(setup) {
        commissionPct: typeof RATE === 'undefined' ? '100' : RATE,
        commissionPctOnline: typeof ONLINE_RATE === 'undefined' ? '' : ONLINE_RATE,
        cashScoutPct: typeof CASH_RATE === 'undefined' ? '' : CASH_RATE,
-       cashThroughTrailsEnd: typeof CASH_VIA_TE === 'undefined' ? false : CASH_VIA_TE
+       cashThroughTrailsEnd: typeof CASH_VIA_TE === 'undefined' ? false : CASH_VIA_TE,
+       // Make-up credit is derived from the ledger since 2026-09-04 — a test grants it by
+       // writing a stamped payment into LEDGER, the way the app does.
+       ledger: typeof LEDGER === 'undefined' ? [] : LEDGER
      };
      function sortedTiers() { return TIERS; }
      function arrOf(v) { return Array.isArray(v) ? v : []; }
@@ -831,7 +835,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'normalizeState', 'lineActualCents', 'entrySignedCents'];
+  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'lineActualCents', 'entrySignedCents'];
 
 function preMigrationState() {
   // A pre-Phase-0 pack record, with the two shapes that matter: a flat line and a
@@ -1446,16 +1450,18 @@ test('the amount on the button is the amount written to the ledger', () => {
   ok(/Math\.max\(0, \(t\.thresholdCents \|\| 0\) - base\)/.test(shortfall), 'the handler path computes the gap differently');
   ok(/scoutCommissionOf\(/.test(prog) && /scoutCommissionOf\(/.test(shortfall),
     'one path measures commission and the other does not');
-  // And the button carries the tier the card says is next, not some other tier.
+  // And the button carries the tier the card says is next, not some other tier. Built by
+  // makeupBtn() since 2026-09-04 — the markup moved, the targeting did not.
   const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/data-act="tier-makeup:' \+\s*esc\(r\.next\.id\) \+ ':' \+ esc\(r\.scout\.id\)/.test(card),
+  ok(/makeupBtn\(\{\s*\n?\s*tierId: r\.next\.id, scoutId: r\.scout\.id/.test(card),
     'the pay button targets something other than the next tier and this scout');
   // Anchored to the BUTTON's own condition. A bare /r\.makeup > 0/ also matches the lead-in
   // paragraph's rows.some(...) check, so it passed while the button itself was ungated.
-  // Anchored to the BUTTON's own condition. A bare /r\.makeup > 0/ also matches the lead-in
-  // paragraph's rows.some(...) check, so it passed while the button itself was ungated.
-  ok(/\(r\.makeup > 0 && r\.unlocks > 0\s*\n?\s*\? '<button type="button" class="btn small ghost tprog-pay"/.test(card),
+  ok(/\(r\.makeup > 0 && r\.unlocks > 0\s*\n?\s*\? makeupBtn\(\{/.test(card),
     'the button shows even when there is nothing to pay, or nothing to gain');
+  // .tprog-pay survives the armed state, or the confirming tap — the one that actually spends
+  // the money — drops from a 36px target to .btn.small's 32px.
+  ok(/keep: 'tprog-pay'/.test(card), 'the armed pay button loses its 36px tap target');
   // Both halves matter. makeup>0 alone would offer a payment for a tier that re-covers a line the
   // scout already holds — the cap is justified as "the fee the tier saves you", so where it saves
   // nothing the amount is arbitrary.
@@ -1470,16 +1476,42 @@ test('the amount on the button is the amount written to the ledger', () => {
 
 test('paying the difference is money and a decision, and undo keeps the money', () => {
   // Re-pinned from the progress card's side: the handler is shared, so the new entry point must
-  // not have introduced a second writer of tier credit.
-  const writers = (SCRIPT.match(/\.madeUp = arrOf\(/g) || []).length;
-  eq(writers, 2, 'there is more than one place that grants or revokes tier credit');
+  // not have introduced a second writer of tier credit. There is now exactly ONE — the stamp on
+  // the ledger entry — and the count is of anything that stores a mark of its own.
+  const writers = (SCRIPT.match(/\.madeUp = /g) || []).length;
+  eq(writers, 0, 'tier credit is being stored again instead of derived from the payment');
+  eq((SCRIPT.match(/tierMakeup: mkT\.id/g) || []).length, 1, 'more than one place grants tier credit');
   const mk = /if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/tierShortfallRows\(mkT\)/.test(mk), 'the handler no longer validates against the shared shortfall');
   ok(/if \(!mkRow \|\| mkRow\.makeup <= 0\) return;/.test(mk),
     'the handler would charge a scout who owes nothing');
   const un = /if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(!/state\.ledger = state\.ledger\.filter/.test(un), 'undo deletes the payment');
-  ok(/arm\('unmakeup-/.test(un), 'undo is a single tap');
+  ok(/arm\(act,/.test(un), 'undo is a single tap');
+});
+
+test('a bought tier says so on the board, and can be taken back there', () => {
+  // Owner report, 2026-09-04: "the ranking bar and text for that scout does not reset". A tier
+  // credited by a payment sits at the same height on the bar as one that was sold for, so a row
+  // that suddenly reads Gold had nothing on screen saying why — and the undo lived one tab away
+  // on Popcorn · Rewards, findable only if you already knew it was there.
+  const card = /function renderTierProgress\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/r\.earnedBy === 'madeUp' && r\.earned/.test(card), 'the row does not say how the tier was credited');
+  ok(/paid for, not sold/.test(card), 'a bought tier reads exactly like one that was sold for');
+  ok(/tinyDangerBtn\('tier-unmakeup:' \+ r\.earned\.id \+ ':' \+ r\.scout\.id/.test(card),
+    'there is no way back from the board the credit shows on');
+  // …and it comes off the shared map, not off a second calculation of its own.
+  const rows = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/earnedBy: earned \? \(\(map\[earned\.id\] \|\| \{\}\)\[s\.id\] \|\| ''\) : '',/.test(rows),
+    'the row works out how a tier was credited on its own instead of reading the shared map');
+  // The explanation has to outlive the offer: gated on `makeup` alone the paragraph vanished the
+  // moment the last family paid, which is when somebody starts looking for the way out.
+  ok(/\(r\.makeup > 0 && r\.unlocks > 0\) \|\| r\.earnedBy === 'madeUp'/.test(card),
+    'the make-up explanation disappears once every family has paid');
+  // Popcorn · Rewards lists the same scouts off the same map rather than a stored list.
+  const rewards = /function renderRewardTiers\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/madeSet\[sid\] === 'madeUp'/.test(rewards), 'the Rewards card reads a stored list of who paid');
+  ok(/tierMakeupPaidCents\(t\.id, s\.id\)/.test(rewards), 'it does not report what the family actually paid');
 });
 
 test('the tier-progress card states each reason it can say nothing', () => {
@@ -4109,12 +4141,41 @@ test('a tier with no deadline still counts the whole season', () => {
 });
 
 test('paying the difference counts as reaching the tier', () => {
+  // The credit is the LEDGER ENTRY since 2026-09-04, not a stored list of ids — so the tier is
+  // granted by a stamped payment, exactly as the handler writes one.
   const ctx = coverageSandbox(`
-     var TIERS = [{ id:'t1', thresholdCents: 30000, covers:['dues'], dueBy: '2025-11-01', madeUp: ['late'] }];
+     var TIERS = [{ id:'t1', thresholdCents: 30000, covers:['dues'], dueBy: '2025-11-01' }];
+     var LEDGER = [{ id:'L1', direction:'in', scoutId:'late', tierMakeup:'t1', amountCents: 2000 }];
      var SALES    = { early: tot(40000), late: tot(40000) };
      var SALES_AT = { '2025-11-01': { early: tot(35000), late: tot(10000) } };`);
   eq(Object.keys(ctx.RESULT.dues).sort(), ['early', 'late'], 'a makeup payment did not satisfy the tier');
   eq(ctx.EARNED.t1.late, 'madeUp', 'the two ways in are not told apart');
+});
+
+test('the tier credit follows the payment in BOTH directions', () => {
+  // Owner, 2026-09-04: "the tier credit should probably be re-calculated on each load/refresh as
+  // well as when values change in either direction." Every other rung is recomputed from sales, so
+  // a correction moves it down as readily as up; the make-up mark used to be write-once, and
+  // clearing the payment out of the book left a scout holding a tier nobody had bought.
+  const setup = (ledger) => `
+     var TIERS = [{ id:'t1', thresholdCents: 30000, covers:['dues'], dueBy: '' }];
+     var LEDGER = ${ledger};
+     var SALES = { late: tot(1000) };`;
+  const paid = coverageSandbox(setup(`[{ id:'L1', direction:'in', scoutId:'late', tierMakeup:'t1', amountCents: 2000 }]`));
+  eq(paid.EARNED.t1.late, 'madeUp', 'a stamped payment does not grant the tier');
+  eq(Object.keys(paid.RESULT.dues), ['late'], 'the coverage does not follow the credit');
+  // The entry deleted — the state this bug report was filed from.
+  const gone = coverageSandbox(setup('[]'));
+  ok(!gone.EARNED.t1.late, 'the credit outlives the payment that bought it');
+  eq(gone.RESULT.dues, undefined, 'the pack is still covering a fee nobody paid for');
+  // The entry kept but unstamped, which is what the ✕ does: money stays, credit goes.
+  const unstamped = coverageSandbox(setup(`[{ id:'L1', direction:'in', scoutId:'late', tierMakeup:'', amountCents: 2000 }]`));
+  ok(!unstamped.EARNED.t1.late, 'an unstamped family payment still buys a tier');
+  // An entry pointing at another tier, or at nobody, must not leak across.
+  const other = coverageSandbox(setup(`[{ id:'L1', direction:'in', scoutId:'late', tierMakeup:'t9', amountCents: 2000 },
+                                        { id:'L2', direction:'in', scoutId:'', tierMakeup:'t1', amountCents: 2000 },
+                                        { id:'L3', direction:'out', scoutId:'late', tierMakeup:'t1', amountCents: 2000 }]`));
+  ok(!other.EARNED.t1.late, "another tier's payment, an unattributed one, or money OUT granted the tier");
 });
 
 test('the shortfall is the gap, capped at the fee it buys', () => {
@@ -4147,20 +4208,31 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
     'the fee counts lines a tier cannot be pointed at in the first place');
 });
 
-test('making up the difference records money and a decision, separately', () => {
+test('making up the difference records money, and the money IS the decision', () => {
   const fn = /if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(fn, 'the makeup handler was not found');
   ok(/source: 'family'/.test(fn[0]), 'the payment is not recorded as family money');
   ok(/scoutId: mkS\.id/.test(fn[0]), "the payment does not settle that scout's account");
   ok(/amountCents: mkRow\.makeup/.test(fn[0]), 'it records something other than the capped shortfall');
-  ok(/mkT\.madeUp = arrOf\(mkT\.madeUp\)\.concat\(\[mkS\.id\]\)/.test(fn[0]), 'the tier is not marked satisfied');
+  // ONE write. The tier the payment bought rides on the entry, so there is no second record to
+  // fall out of step with it — that drift is the bug this replaced.
+  ok(/tierMakeup: mkT\.id/.test(fn[0]), 'the payment does not name the tier it bought');
+  ok(!/\.madeUp/.test(fn[0]), 'the handler still writes a stored tier mark alongside the payment');
   ok(/if \(!mkRow \|\| mkRow\.makeup <= 0\) return;/.test(fn[0]),
     'a scout who did not miss the tier, or owes nothing, can still be charged a makeup');
-  // Undoing the decision must never delete the money.
+  // It asserts a family handed over money, on a board that is otherwise read-only. Two taps.
+  ok(/arm\(act, function \(\) \{/.test(fn[0]), 'a single stray tap writes a payment to the ledger');
+  ok(/arm\(act, function \(\) \{[\s\S]*state\.ledger\.push/.test(fn[0]),
+    'the ledger write happens outside the confirm');
+  // Undoing the credit must never delete the money: it unstamps the entry and leaves it standing
+  // as an ordinary family payment.
   const un = /if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(un, 'there is no way to undo a makeup');
-  ok(!/state\.ledger/.test(un[0]), 'undoing a makeup deletes the payment out of the ledger');
-  ok(/arm\(/.test(un[0]), 'undoing a makeup is a single unguarded tap');
+  ok(!/state\.ledger\s*=|splice|filter\(function \(e\)/.test(un[0]),
+    'undoing a makeup removes the payment from the ledger instead of unstamping it');
+  ok(/e\.tierMakeup = ''/.test(un[0]), 'undo no longer unstamps the entry');
+  ok(/arm\(act,/.test(un[0]),
+    'undo arms on a key no button carries, so the confirm state never shows');
 });
 
 test('the deadline drives coverage, waivers, badges and the counts from ONE map', () => {
@@ -5570,6 +5642,70 @@ test('a reward tier can carry the small print the covers list cannot hold', () =
   ok(chBlock && /else if \(ch === 'tier-note'\) tier\.note = el\.value;/.test(chBlock[0]),
     'the note is not saved, or is trimmed on the way in');
   ok(/h \+= tierNoteBlock\(t\);/.test(SCRIPT), 'the block is never rendered');
+});
+
+test('a stored make-up mark migrates onto the payment that bought it', () => {
+  // The mark used to be `tier.madeUp`, written once and never revisited — the one part of a
+  // scout's standing that did not follow a correction. Migration moves it onto the entry that
+  // paid for it, and the credit is read off the entry from then on.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const run = (tiers, ledger) => {
+    const d = preMigrationState();
+    d.rewardTiers = { duesCents: 0, planOnTierId: '', tiers: tiers };
+    d.ledger = ledger;
+    const after = ctx.normalizeState(d);
+    return { tiers: after.rewardTiers.tiers, ledger: after.ledger };
+  };
+  const entry = (id, scoutId, desc) => ({
+    id: id, date: '2025-11-02', description: desc, amountCents: 2000, direction: 'in',
+    lineId: '', method: '', ref: '', source: 'family', donor: '', scoutId: scoutId, reconciled: false
+  });
+  // The ordinary case: one mark, one entry this app wrote, stamped.
+  const one = run(
+    [{ id: 't1', name: 'Bronze', thresholdCents: 30000, madeUp: ['s1'] }],
+    [entry('L1', 's1', 'Made up the difference to Bronze — Ada')]);
+  eq(one.ledger[0].tierMakeup, 't1', 'the payment was not stamped with the tier it bought');
+  ok(!('madeUp' in one.tiers[0]), 'the stored mark survived the migration');
+  // Two rungs, two payments: each entry goes to the tier it NAMES, not to whichever asked first.
+  const two = run(
+    [{ id: 't1', name: 'Bronze', thresholdCents: 30000, madeUp: ['s1'] },
+     { id: 't2', name: 'Silver', thresholdCents: 60000, madeUp: ['s1'] }],
+    [entry('L2', 's1', 'Made up the difference to Silver — Ada'),
+     entry('L1', 's1', 'Made up the difference to Bronze — Ada')]);
+  eq(two.ledger.find((e) => e.id === 'L1').tierMakeup, 't1', 'Bronze claimed the wrong entry');
+  eq(two.ledger.find((e) => e.id === 'L2').tierMakeup, 't2', 'Silver claimed the wrong entry');
+  // A mark whose payment has been deleted — the reported bug — is dropped rather than carried,
+  // and no unrelated family payment is stamped to cover for it.
+  const orphan = run(
+    [{ id: 't1', name: 'Bronze', thresholdCents: 30000, madeUp: ['s1'] }],
+    [entry('L1', 's1', 'Dues')]);
+  eq(orphan.ledger[0].tierMakeup, '', 'an unrelated family payment was stamped as a make-up');
+  ok(!('madeUp' in orphan.tiers[0]), 'a mark with no payment behind it was kept');
+  // Idempotent: normalizing again must not re-stamp or double up.
+  const again = ctx.normalizeState(JSON.parse(JSON.stringify(
+    (() => { const d = preMigrationState();
+      d.rewardTiers = { duesCents: 0, planOnTierId: '', tiers: [{ id: 't1', name: 'Bronze', thresholdCents: 30000, madeUp: ['s1'] }] };
+      d.ledger = [entry('L1', 's1', 'Made up the difference to Bronze — Ada')];
+      return ctx.normalizeState(d); })())));
+  eq(again.ledger.filter((e) => e.tierMakeup === 't1').length, 1, 'a second normalize re-stamped the book');
+});
+
+test('the ledger entry carries the tier it bought, and survives a round trip', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = preMigrationState();
+  d.ledger = [{ id: 'k', date: '2025-11-02', description: 'Made up the difference to Bronze — Ada',
+    amountCents: 2000, direction: 'in', lineId: '', method: '', ref: '', source: 'family',
+    donor: '', scoutId: 's1', tierMakeup: 't1', reconciled: false }];
+  const after = ctx.normalizeState(d);
+  const e = after.ledger.find((x) => x.id === 'k');
+  eq(e.tierMakeup, 't1', 'the stamp was dropped on the way through normalization');
+  // Every other entry gets the field as '', so the shape is uniform and a stale value cannot
+  // linger as undefined and read as truthy somewhere.
+  ok(after.ledger.every((x) => typeof x.tierMakeup === 'string'), 'tierMakeup is not normalized to a string');
+  const junk = ctx.normalizeState(Object.assign(preMigrationState(), {
+    ledger: [{ id: 'j', description: '', direction: 'in', tierMakeup: 42 }]
+  }));
+  eq(junk.ledger[0].tierMakeup, '', 'a non-string stamp was trusted');
 });
 
 test('the prose renderer is not named after the first thing that used it', () => {
