@@ -2599,6 +2599,36 @@
     ['Sea Salt Popcorn', 12],
     ['Microwave Butter Popcorn', 6]
   ];
+  /* ---------------- Weather constants ---------------- */
+  // ⚠ THESE LIVE UP HERE, ABOVE freshState, ON PURPOSE. `var state = load()` runs partway down
+  // this file and calls freshState/normalizeState, both of which read WEATHER_TAGS and
+  // WX_DEFAULT_LOC. A `var` initialiser does not hoist its VALUE — only its name — so declaring
+  // these beside the weather functions further down left them undefined at load time and threw
+  // on every boot. The functions that use them may live anywhere (declarations do hoist); these
+  // three may not.
+  // ONE location for the whole pack, not one per store. Every storefront this pack works is
+  // inside the same town; a per-store lat/lon would be four decimal places of false precision
+  // on a figure that is identical for all of them, and one more field to get wrong.
+  var WX_DEFAULT_LOC = {
+    label: 'Gainesville, GA',
+    lat: 34.2979,
+    lon: -83.8241
+  };
+  // The cut points, named once. Set for a Georgia popcorn season (September to November),
+  // which is the only weather these storefronts ever see — 85° in October is a hot day here
+  // and 60° is a cold one, and neither number would mean the same thing in Minnesota.
+  var WX_LIMITS = {
+    hotF: 85,
+    coldF: 60,
+    wetIn: 0.10
+  };
+  var WEATHER_TAGS = [
+    { id: 'hot', label: 'Hot' },
+    { id: 'mild', label: 'Mild' },
+    { id: 'cold', label: 'Cold' },
+    { id: 'rain', label: 'Rain' }
+  ];
+
   function freshState() {
     return {
       version: 1, packName: 'Pack 569', commissionPct: '', commissionPctOnline: '',
@@ -2606,6 +2636,9 @@
       stretchGoalCents: 0, cashGoalCents: 0,
       cashThroughTrailsEnd: false,
       cashScoutPct: '',                // credit a scout earns on cash the pack keeps (blank = none)
+      packLoc: {                       // Wave 22 — one lat/lon for the pack, used ONLY to look up storefront weather
+        label: WX_DEFAULT_LOC.label, lat: WX_DEFAULT_LOC.lat, lon: WX_DEFAULT_LOC.lon
+      },
       scouts: [], storefronts: [], entries: [], meetings: [], leaders: [], budget: freshBudget(),
       events: [],                      // Phase 2 — the calendar record; meetings[] is legacy
       charges: [],                     // Phase 3b — what each family owes, per head
@@ -2866,6 +2899,13 @@
       }
     }
     if (!d.packName) d.packName = 'Pack 569';
+    // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature
+    // works on an existing pack record without anyone visiting a settings screen first; every
+    // field is editable, and an out-of-range number falls back rather than being kept.
+    if (!d.packLoc || typeof d.packLoc !== 'object' || Array.isArray(d.packLoc)) d.packLoc = {};
+    if (typeof d.packLoc.label !== 'string' || !d.packLoc.label.trim()) d.packLoc.label = WX_DEFAULT_LOC.label;
+    if (typeof d.packLoc.lat !== 'number' || !isFinite(d.packLoc.lat) || Math.abs(d.packLoc.lat) > 90) d.packLoc.lat = WX_DEFAULT_LOC.lat;
+    if (typeof d.packLoc.lon !== 'number' || !isFinite(d.packLoc.lon) || Math.abs(d.packLoc.lon) > 180) d.packLoc.lon = WX_DEFAULT_LOC.lon;
     if (!d.budget || typeof d.budget !== 'object') d.budget = freshBudget();
     if (typeof d.budget.programYear !== 'number') d.budget.programYear = defaultProgramYear();
     if (typeof d.budget.startingBalance !== 'number') d.budget.startingBalance = 0;
@@ -3520,6 +3560,22 @@
           // A reconciliation aid only — no other math consumes it.
           b.cardCents = (typeof b.cardCents === 'number' && isFinite(b.cardCents) && b.cardCents > 0) ? Math.round(b.cardCents) : 0;
         });
+        // Wave 22 — recorded weather, shape-checked here and nowhere else. A record whose tag
+        // isn't one of the four is DROPPED rather than kept as a broken half-value:
+        // weatherComparisonFrom groups on the tag, so a junk one would open a junk bucket and
+        // the table would report a kind of day that does not exist.
+        if (sf.weather && typeof sf.weather === 'object' && !Array.isArray(sf.weather)) {
+          var wTag = typeof sf.weather.tag === 'string' ? sf.weather.tag : '';
+          if (!WEATHER_TAGS.some(function (t) { return t.id === wTag; })) delete sf.weather;
+          else sf.weather = {
+            tag: wTag,
+            highF: numOrNull(sf.weather.highF),
+            precipIn: numOrNull(sf.weather.precipIn),
+            // Anything unrecognised lands on 'auto'. Only 'manual' is load-bearing (it is what
+            // stops a lookup overwriting a leader), so an unknown value must never inherit it.
+            source: (sf.weather.source === 'manual' || sf.weather.source === 'forecast') ? sf.weather.source : 'auto'
+          };
+        } else if (sf.weather !== undefined) delete sf.weather;
       });
     }
     return d;
@@ -4175,6 +4231,235 @@
     var sales = 0, don = 0;
     sf.blocks.forEach(function (b) { sales += b.salesCents || 0; don += b.donationsCents || 0; });
     return { sales: sales, don: don, combined: sales + don };
+  }
+
+  /* ---------------- Weather ---------------- */
+  // Wave 22 — "do we do better on a cold clear Saturday than a warm wet one?" is a question a
+  // pack can only answer if somebody wrote the weather down at the time, and nobody ever
+  // does. So it is looked up afterwards, from the date and one pack-wide location, and the
+  // leader keeps the last word.
+  //
+  // Two numbers in, one of the four tags out.
+  //
+  // ⚠ RAIN WINS OVER TEMPERATURE, and that ordering is the entire point of the function. A wet
+  // 88° afternoon behaves like rain at a folding table, not like heat. Filing it under "hot"
+  // because the thermometer said so would drop the pack's two worst kinds of day into one
+  // bucket, where they average out into something that looks unremarkable.
+  //
+  // No temperature → no tag, even when the rainfall is known and dry: '' means "not recorded",
+  // and a guess returned here would be indistinguishable from a measurement everywhere else.
+  function weatherBucket(highF, precipIn) {
+    var wet = (typeof precipIn === 'number' && isFinite(precipIn)) ? precipIn : null;
+    var hot = (typeof highF === 'number' && isFinite(highF)) ? highF : null;
+    if (wet != null && wet >= WX_LIMITS.wetIn) return 'rain';
+    if (hot == null) return '';
+    if (hot >= WX_LIMITS.hotF) return 'hot';
+    if (hot < WX_LIMITS.coldF) return 'cold';
+    return 'mild';
+  }
+  // 'HH:MM' → minutes past midnight, or null. Deliberately stricter than parseLegacyTime:
+  // block times are already canonical by the time anything here reads them, and a lenient
+  // parse would let a junk value through as a plausible duration.
+  function hhmmMinutes(t) {
+    if (typeof t !== 'string') return null;
+    var m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
+    if (!m) return null;
+    var h = +m[1], mi = +m[2];
+    if (h > 23 || mi > 59) return null;
+    return h * 60 + mi;
+  }
+  // A block's length in hours. 0 when either time is missing or the pair doesn't make sense —
+  // an untimed block contributes nothing to a rate rather than quietly counting as some
+  // default length, which is the kind of assumption that produces a confident wrong number.
+  function blockHours(b) {
+    var s = hhmmMinutes(b && b.start), e = hhmmMinutes(b && b.end);
+    if (s == null || e == null || e <= s) return 0;
+    return (e - s) / 60;
+  }
+  // Storefront money grouped by the weather it was earned in — the question this whole
+  // feature exists to answer.
+  //
+  // TWO CHOICES HERE MATTER MORE THAN THE WEATHER TAG DOES:
+  //   * The unit is a SHIFT, not a date. A season is ten or fifteen storefront dates; split
+  //     across four kinds of day that is three dates a bucket, which is not a comparison, it
+  //     is an anecdote. Counting blocks roughly doubles the sample for free.
+  //   * The rate is per SCOUT-HOUR. A raw total compares a four-hour Saturday worked by six
+  //     scouts against a two-hour Sunday worked by one, and the gap between those two is far
+  //     larger than any weather effect. Dividing by scout-hours is the only thing that makes
+  //     "rain" and "hot" comparable at all.
+  //
+  // A block with no money is not a data point and is skipped entirely — an unworked shift on
+  // a rainy day is a scheduling fact, not evidence about rain. A block that HAS money but no
+  // times or nobody assigned counts in the totals but is left out of the rate, and is
+  // reported in `thin` so the screen can say so instead of silently shrinking the denominator.
+  //
+  // Pure (takes the storefronts) so the Node harness can exercise it without a DOM.
+  function weatherComparisonFrom(storefronts) {
+    var by = {};
+    WEATHER_TAGS.forEach(function (w) {
+      by[w.id] = { id: w.id, label: w.label, dates: 0, shifts: 0, scoutHours: 0, sales: 0, don: 0 };
+    });
+    var thin = 0, untagged = 0;
+    arrOf(storefronts).forEach(function (sf) {
+      if (!sf || typeof sf !== 'object') return;
+      var tag = sf.weather && sf.weather.tag;
+      // An unknown tag opens no bucket: normalizeState already drops junk, and inventing a
+      // row here would hide the fact that it got through.
+      if (!tag || !by[tag]) { untagged += 1; return; }
+      by[tag].dates += 1;
+      arrOf(sf.blocks).forEach(function (b) {
+        if (!b || typeof b !== 'object') return;
+        var sales = b.salesCents || 0, don = b.donationsCents || 0;
+        if (!(sales + don)) return;
+        var hrs = blockHours(b), heads = arrOf(b.assignments).length;
+        by[tag].shifts += 1;
+        by[tag].sales += sales;
+        by[tag].don += don;
+        if (hrs > 0 && heads > 0) by[tag].scoutHours += hrs * heads;
+        else thin += 1;
+      });
+    });
+    var rows = WEATHER_TAGS.map(function (w) {
+      var r = by[w.id];
+      r.combined = r.sales + r.don;
+      // null, not 0, when there is nothing to divide by: "$0.00 / scout-hour" reads as a
+      // catastrophic day rather than as an absent measurement.
+      r.perScoutHour = r.scoutHours > 0 ? Math.round(r.combined / r.scoutHours) : null;
+      return r;
+    }).filter(function (r) { return r.dates > 0; });
+    return { rows: rows, untagged: untagged, thin: thin };
+  }
+  function weatherComparison() {
+    return weatherComparisonFrom(state.storefronts);
+  }
+  // Say out loud how thin the evidence is, because a four-row table looks exactly as
+  // authoritative at eight shifts as at eight hundred. The thresholds are deliberately
+  // unflattering: with a single season of storefronts the honest answer is almost always
+  // "not yet", and a leader who reschedules the season off six shifts has been misled by
+  // this feature rather than helped by it.
+  function weatherCaveat(wx) {
+    var shifts = wx.rows.reduce(function (n, r) { return n + r.shifts; }, 0);
+    var kinds = wx.rows.filter(function (r) { return r.perScoutHour != null; }).length;
+    if (kinds < 2) {
+      return 'Only one kind of day has a rate so far, so there is nothing to compare it against yet.';
+    }
+    if (shifts < 12) {
+      return shifts + ' shifts across ' + kinds + ' kinds of day — far too few to be a pattern. ' +
+        'Treat this as a note to look at again next year, not as a reason to change anything.';
+    }
+    if (shifts < 30) {
+      return shifts + ' shifts across ' + kinds + ' kinds of day. Suggestive at best: which store it was and ' +
+        'which scouts worked still move this number more than the weather does. It starts being worth ' +
+        'trusting after two or three seasons.';
+    }
+    return shifts + ' shifts across ' + kinds + ' kinds of day — enough to be worth reading, though store ' +
+      'and staffing still explain more of the gap than weather does.';
+  }
+
+  /* ----- Looking the weather up ----- */
+  // Open-Meteo: free, no account, no API key, and it answers with
+  // `access-control-allow-origin: *` — which is the only reason a page like this one can call
+  // it from the browser at all. The date and the pack's coordinates are the only things sent;
+  // nothing about the pack, the scouts or the money leaves the device.
+  //
+  // TWO ENDPOINTS, because they cover different windows:
+  //   forecast   today−92 … today+15   actuals for the season so far, and a genuine FORECAST
+  //                                    for a storefront that hasn't happened yet
+  //   archive    1940 … today          everything older — i.e. previous seasons
+  // A popcorn season fits entirely inside the first, so that is the default and archive is
+  // what backfills history. Picking by date rather than trying one and falling back keeps a
+  // failed lookup down to a single request.
+  function weatherUrl(iso, lat, lon) {
+    var q = 'latitude=' + encodeURIComponent(lat) + '&longitude=' + encodeURIComponent(lon) +
+      '&daily=temperature_2m_max,precipitation_sum' +
+      '&temperature_unit=fahrenheit&precipitation_unit=inch&timezone=auto' +
+      '&start_date=' + encodeURIComponent(iso) + '&end_date=' + encodeURIComponent(iso);
+    var d = daysFromToday(iso);
+    return (isFinite(d) && d >= -90 && d <= 14)
+      ? 'https://api.open-meteo.com/v1/forecast?' + q
+      : 'https://archive-api.open-meteo.com/v1/archive?' + q;
+  }
+  // Whole days between today and an ISO date, negative for the past. Both sides are pinned to
+  // midday UTC so a daylight-saving boundary can't round the gap to the wrong day.
+  function daysFromToday(iso) {
+    var t = Date.parse(String(iso) + 'T12:00:00Z'), n = Date.parse(todayISO() + 'T12:00:00Z');
+    if (!isFinite(t) || !isFinite(n)) return NaN;
+    return Math.round((t - n) / 86400000);
+  }
+  function numOrNull(v) {
+    return (typeof v === 'number' && isFinite(v)) ? v : null;
+  }
+  // Pull the one day we asked for out of the response.
+  // ⚠ MATCHED BY DATE, NEVER BY INDEX. Both endpoints can return a wider window than the range
+  // requested, and in that case row 0 is a different day — silently, and by a plausible-looking
+  // amount, which is the worst way for this to be wrong.
+  function readWeatherPayload(j, iso) {
+    var d = j && j.daily;
+    if (!d || !Array.isArray(d.time)) return null;
+    var i = d.time.indexOf(iso);
+    if (i === -1) return null;
+    var hi = numOrNull(d.temperature_2m_max && d.temperature_2m_max[i]);
+    var pr = numOrNull(d.precipitation_sum && d.precipitation_sum[i]);
+    var tag = weatherBucket(hi, pr);
+    if (!tag) return null;
+    return { tag: tag, highF: hi, precipIn: pr, source: 'auto' };
+  }
+  function packLoc() {
+    var q = state.packLoc || {};
+    return {
+      label: q.label || WX_DEFAULT_LOC.label,
+      lat: typeof q.lat === 'number' ? q.lat : null,
+      lon: typeof q.lon === 'number' ? q.lon : null
+    };
+  }
+  // Storefronts a lookup would actually change: dated, and not already answered by hand.
+  function weatherLookupable(sfs, includeFilled) {
+    return arrOf(sfs).filter(function (sf) {
+      if (!sf || !sf.date) return false;
+      // ⚠ A MANUAL TAG IS NEVER OVERWRITTEN. Somebody who stood at the table outranks a grid
+      // model that thinks it knows what the parking lot was like, and a lookup that quietly
+      // replaced their answer would make the manual control worthless.
+      if (sf.weather && sf.weather.source === 'manual') return false;
+      return includeFilled || !(sf.weather && sf.weather.tag);
+    });
+  }
+  // Fill in the weather for a list of storefronts. Every request is independent and a failure
+  // is per-storefront, so a network that drops halfway leaves the ones that landed saved
+  // rather than rolling the whole batch back.
+  function fetchWeather(sfs, doneMsg) {
+    var loc = packLoc();
+    if (loc.lat == null || loc.lon == null) {
+      showToast('Set the pack’s location first — it’s under the Weather table on Standings.');
+      return;
+    }
+    var todo = weatherLookupable(sfs, sfs.length === 1);
+    if (!todo.length) { showToast('Nothing to look up — those are already recorded.'); return; }
+    ui.wxBusy = (ui.wxBusy || 0) + todo.length;
+    render();
+    var got = 0, failed = 0;
+    Promise.all(todo.map(function (sf) {
+      return fetch(weatherUrl(sf.date, loc.lat, loc.lon))
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          var w = readWeatherPayload(j, sf.date);
+          if (!w) throw new Error('no-data');
+          // A storefront still in the future gets a FORECAST, and is labelled one everywhere
+          // it is shown. Worth having — a rainy Saturday is a staffing decision — but once
+          // both are reduced to the word "Rain" a guess and a record look identical, and only
+          // this flag tells them apart afterwards.
+          w.source = daysFromToday(sf.date) > 0 ? 'forecast' : 'auto';
+          sf.weather = w;
+          got++;
+        })
+        .catch(function () { failed++; });
+    })).then(function () {
+      ui.wxBusy = Math.max(0, (ui.wxBusy || 0) - todo.length);
+      // Only a lookup that changed something is worth persisting and syncing.
+      if (got) commit(); else render();
+      if (!got) showToast('Couldn’t reach the weather service — check the connection and try again.');
+      else if (failed) showToast('Filled in ' + got + ', couldn’t get ' + failed + '.');
+      else showToast(doneMsg || 'Weather filled in.');
+    });
   }
 
   /* ---------------- Budget ---------------- */
@@ -9236,6 +9521,7 @@
       '<div class="sf-main"><div class="lr-name">' + esc(sf.name) + '</div>' +
       '<div class="small muted">' + esc(fmtDate(sf.date)) + ' · ' + sf.blocks.length + ' block' + (sf.blocks.length === 1 ? '' : 's') +
       ' · ' + covSeg +
+      (function () { var wc = weatherChip(sf); return wc ? ' · ' + wc : ''; })() +
       (function () { var rp = rsvpPill('sf:' + sf.id); return rp ? ' · ' + rp : ''; })() + '</div>' +
       storefrontShiftLines(sf) + '</div>' +
       '<div class="money" style="font-weight:650">' + (t.combined ? fmt(t.combined) : '<span class="muted">—</span>') + '</div></div>';
@@ -9919,9 +10205,74 @@
     // Wave 2 — RSVP / headcount for this storefront shift
     h += '<div class="card"><p class="eyebrow">RSVP / headcount</p>' + renderRsvpBlock('sf:' + sf.id) + '</div>';
 
+    h += renderWeatherCard(sf);
+
     blocksInDayOrder(sf).forEach(function (b) { h += renderBlock(sf, b); });
     h += '<button type="button" class="btn" data-act="add-block" data-id="' + sf.id + '">+ Add another block</button>';
     return h;
+  }
+
+  // Wave 22 — the weather this shift was worked in. Two controls only: the tag, which is the
+  // thing the comparison groups on, and a lookup that fills it from the date.
+  function renderWeatherCard(sf) {
+    var w = sf.weather || {};
+    var busy = (ui.wxBusy || 0) > 0;
+    var manual = w.source === 'manual';
+    var h = '<div class="card"><div class="spread">' +
+      '<p class="eyebrow" style="margin:0">Weather</p>' +
+      (canEdit()
+        ? '<button type="button" class="btn small ghost" data-act="sf-weather-fetch" data-id="' + sf.id + '"' +
+          (busy || !sf.date || manual ? ' disabled' : '') + '>' + (busy ? 'Looking up…' : 'Look it up') + '</button>'
+        : '') + '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<label class="fld">Conditions<select data-ch="sf-weather" data-id="' + sf.id + '"' +
+      (canEdit() ? '' : ' disabled') + '>' +
+      '<option value="">Not recorded</option>' +
+      WEATHER_TAGS.map(function (t) {
+        return '<option value="' + t.id + '"' + (w.tag === t.id ? ' selected' : '') + '>' + esc(t.label) + '</option>';
+      }).join('') +
+      '</select></label></div>' +
+      '<p class="small muted" style="margin:8px 0 0">' + esc(weatherLine(sf)) + '</p>';
+    return h + '</div>';
+  }
+  // One sentence saying what is recorded and where it came from.
+  // A FORECAST IS CALLED A FORECAST EVERY TIME IT IS SHOWN. Once an upcoming Saturday's guess
+  // and a worked Saturday's record are both reduced to the word "Rain" they are
+  // indistinguishable on screen, and only this line separates them.
+  function weatherLine(sf) {
+    var w = sf.weather;
+    if (!w || !w.tag) {
+      return sf.date
+        ? 'Nothing recorded yet. Pick the conditions, or look them up from the date — past dates work too, so a season already worked can be filled in.'
+        : 'Give this storefront a date and its weather can be looked up.';
+    }
+    var bits = [];
+    if (w.highF != null) bits.push('high ' + Math.round(w.highF) + '°F');
+    if (w.precipIn != null) bits.push(w.precipIn > 0 ? w.precipIn.toFixed(2) + '" of rain' : 'no rain');
+    var nums = bits.length ? ' — ' + bits.join(', ') : '';
+    if (w.source === 'manual') {
+      // A hand-set tag can disagree with numbers a lookup left behind, and it is worth SAYING
+      // so rather than printing "Rain — no rain" and letting the reader wonder which is
+      // broken. The disagreement is information: a leader who stood in a downpour the grid
+      // model recorded as dry has just told you the model is wrong for this spot.
+      var implied = weatherBucket(w.highF, w.precipIn);
+      if (implied && implied !== w.tag && bits.length) {
+        return 'Recorded by hand. The lookup for that day said ' + bits.join(', ') +
+          ', which does not match — yours is the one that counts, and a lookup will not overwrite it.';
+      }
+      return 'Recorded by hand' + nums + '. A lookup will not overwrite this.';
+    }
+    if (w.source === 'forecast') return 'Forecast for ' + fmtDate(sf.date) + nums + ' — not a record of what happened.';
+    return 'Looked up for ' + fmtDate(sf.date) + nums + '.';
+  }
+  // The tag as a chip for a list row, or '' when nothing is recorded. Short on purpose: this
+  // sits in a line that already carries the date, the block count and the coverage.
+  function weatherChip(sf) {
+    var w = sf && sf.weather;
+    if (!w || !w.tag) return '';
+    var t = WEATHER_TAGS.filter(function (x) { return x.id === w.tag; })[0];
+    if (!t) return '';
+    return esc(t.label) + (w.source === 'forecast' ? ' <span class="muted">(forecast)</span>' : '');
   }
 
   function renderBlock(sf, b) {
@@ -11155,6 +11506,77 @@
   // (Wave 17 first gathered these knobs here from the old Totals tab.)
   // collapsed=true renders it behind a disclosure, which is how Popcorn shows it — present
   // and editable, but not competing with the standings you came to look at.
+  // Wave 22 — storefront money by kind of day. Deliberately says more about how little it
+  // knows than about what it found: the table is four rows either way, and four rows look
+  // equally convincing at eight shifts and at eight hundred.
+  function weatherComparisonCard() {
+    if (!state.storefronts.length) return '';
+    var wx = weatherComparison();
+    var loc = packLoc();
+    var missing = weatherLookupable(state.storefronts, false).length;
+    var busy = (ui.wxBusy || 0) > 0;
+
+    var h = '<div class="card"><div class="spread">' +
+      '<h2 class="section display" style="margin-bottom:0">Weather</h2>' +
+      (canEdit() && missing
+        ? '<button type="button" class="btn small" data-act="wx-fetch-all"' + (busy ? ' disabled' : '') + '>' +
+          (busy ? 'Looking up…' : 'Look up ' + missing + ' missing') + '</button>'
+        : '') + '</div>' +
+      '<p class="small muted" style="margin:6px 0 10px">How the pack does in each kind of day. ' +
+      'The unit is a <strong>shift</strong>, not a date, and the rate is per <strong>scout-hour</strong> — ' +
+      'a four-hour block worked by six scouts and a two-hour one worked by a single scout are not ' +
+      'otherwise comparable, and that gap is much larger than anything the weather does.</p>';
+
+    if (!wx.rows.length) {
+      h += '<p class="small muted">No storefront has its weather recorded yet. Open one and pick the ' +
+        'conditions, or use the lookup — it works on past dates, so a season already worked can be ' +
+        'filled in in one go.</p>';
+    } else {
+      h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Storefront money by weather</caption>' +
+        '<thead><tr><th scope="col">Conditions</th><th scope="col" class="num">Dates</th>' +
+        '<th scope="col" class="num">Shifts</th><th scope="col" class="num">Scout-hours</th>' +
+        '<th scope="col" class="num">Combined</th><th scope="col" class="num">Per scout-hour</th></tr></thead><tbody>';
+      wx.rows.forEach(function (r) {
+        h += '<tr><td>' + esc(r.label) + '</td>' +
+          '<td class="num">' + r.dates + '</td>' +
+          '<td class="num">' + r.shifts + '</td>' +
+          '<td class="num">' + (Math.round(r.scoutHours * 10) / 10) + '</td>' +
+          '<td class="num" style="font-weight:650">' + fmt(r.combined) + '</td>' +
+          '<td class="num">' + (r.perScoutHour == null ? '<span class="muted">—</span>' : fmt(r.perScoutHour)) + '</td></tr>';
+      });
+      h += '</tbody></table></div>';
+      // The caveat sits WITH the number, not in a design doc nobody opens.
+      h += '<p class="small muted" style="margin:8px 0 0">' + esc(weatherCaveat(wx)) + '</p>';
+      if (wx.thin) {
+        h += '<p class="small muted" style="margin:4px 0 0">' + wx.thin + ' shift' + (wx.thin === 1 ? '' : 's') +
+          ' recorded money but had no times or nobody assigned, so ' + (wx.thin === 1 ? 'it counts' : 'they count') +
+          ' in the totals and not in the per-scout-hour rate.</p>';
+      }
+      if (wx.untagged) {
+        h += '<p class="small muted" style="margin:4px 0 0">' + wx.untagged + ' storefront' +
+          (wx.untagged === 1 ? ' has' : 's have') + ' no weather recorded and ' +
+          (wx.untagged === 1 ? 'is' : 'are') + ' left out entirely.</p>';
+      }
+    }
+    return h + wxLocationRow(loc) + '</div>';
+  }
+  // One location for the whole pack. It lives inside this card rather than in a settings screen
+  // because this table is the only thing that uses it — a wrong number here would be invisible
+  // anywhere else, and would show up only as weather that quietly belonged to another town.
+  function wxLocationRow(loc) {
+    if (!canEdit()) return '';
+    return '<details style="margin-top:12px"><summary class="small muted">Looked up for ' +
+      esc(loc.label || 'the pack’s location') + '</summary>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<label class="fld">Town<input data-ch="wx-label" value="' + esc(loc.label) + '" style="width:180px"></label>' +
+      '<label class="fld">Latitude<input class="weight-in" type="number" step="0.0001" inputmode="decimal" data-ch="wx-lat" value="' + (loc.lat == null ? '' : loc.lat) + '"></label>' +
+      '<label class="fld">Longitude<input class="weight-in" type="number" step="0.0001" inputmode="decimal" data-ch="wx-lon" value="' + (loc.lon == null ? '' : loc.lon) + '"></label>' +
+      '</div>' +
+      '<p class="small muted" style="margin:6px 0 0">Every storefront the pack works is in the same town, so ' +
+      'one set of coordinates covers all of them. Weather comes from Open-Meteo, which needs no account — ' +
+      'the date and these coordinates are the only things that leave this device.</p></details>';
+  }
+
   function seasonSetupCard(opts) {
     var packT = computePackTotals();
     var goalFs = fundingSummary();
@@ -13964,6 +14386,9 @@
         'storefront and it lines up on its own.</p></div>';
     }
     }
+
+    // Wave 22 — the same season cut a different way: by the weather each shift was worked in.
+    h += weatherComparisonCard();
 
     // Wave 21 — three boards, in the order the money makes sense: what went through
     // Trail's End, what came in as cash, and the two added up.
@@ -18799,6 +19224,16 @@
       return;
     }
     // Wave 19(15) — storefront day sheet overlay + copy.
+    if (act === 'sf-weather-fetch') {
+      var wxSf = getStorefront(el.dataset.id);
+      if (wxSf) fetchWeather([wxSf], 'Weather filled in.');
+      return;
+    }
+    if (act === 'wx-fetch-all') {
+      // Only the ones with nothing recorded — a re-run must never quietly re-write a season.
+      fetchWeather(weatherLookupable(state.storefronts, false), 'Weather filled in.');
+      return;
+    }
     if (act === 'sf-day-sheet') { ui.overlay = { kind: 'day-sheet', id: el.dataset.id }; render(); return; }
     if (act === 'copy-day-sheet') {
       var dsSf = getStorefront(ui.overlay && ui.overlay.id);
@@ -19377,16 +19812,44 @@
       commit(); return;
     }
 
-    if (ch === 'sf-name' || ch === 'sf-date') {
+    if (ch === 'sf-name' || ch === 'sf-date' || ch === 'sf-weather') {
       var sf = getStorefront(el.dataset.id);
       if (!sf) return;
-      if (ch === 'sf-name') {
+      if (ch === 'sf-weather') {
+        // Choosing by hand marks the record 'manual', which is the flag that stops a later
+        // lookup replacing it. Any measured numbers are KEPT as context — re-picking the tag
+        // a lookup already chose shouldn't throw away a real temperature reading — but the
+        // tag itself is now the leader's, and it is the tag the comparison groups on.
+        if (!el.value) delete sf.weather;
+        else {
+          var wPrev = sf.weather || {};
+          sf.weather = {
+            tag: el.value, highF: numOrNull(wPrev.highF), precipIn: numOrNull(wPrev.precipIn), source: 'manual'
+          };
+        }
+      } else if (ch === 'sf-name') {
         // Wave 18(32) — an emptied name reverts, but SAY so (change fires once on
         // blur, not per keystroke, so this toasts once).
         var sfNm = el.value.trim();
         if (sfNm) sf.name = sfNm;
         else showToast('Name can’t be empty — kept the old one.');
       } else { sf.date = el.value; sortStorefronts(); }
+      commit(); return;
+    }
+    // Wave 22 — the pack's weather lookup location.
+    if (ch === 'wx-label' || ch === 'wx-lat' || ch === 'wx-lon') {
+      if (!state.packLoc || typeof state.packLoc !== 'object') state.packLoc = {};
+      if (ch === 'wx-label') {
+        state.packLoc.label = el.value.trim() || WX_DEFAULT_LOC.label;
+      } else {
+        // Out of range is REFUSED and said out loud rather than stored. A silent 340° longitude
+        // would return weather for somewhere real, just not here — the one failure mode of this
+        // feature that produces confident, plausible, wrong data.
+        var wxN = parseFloat(el.value);
+        var wxMax = ch === 'wx-lat' ? 90 : 180;
+        if (isFinite(wxN) && Math.abs(wxN) <= wxMax) state.packLoc[ch === 'wx-lat' ? 'lat' : 'lon'] = wxN;
+        else showToast(ch === 'wx-lat' ? 'Latitude has to be between −90 and 90.' : 'Longitude has to be between −180 and 180.');
+      }
       commit(); return;
     }
     // Wave 14: Inventory

@@ -957,7 +957,10 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'lineActualCents', 'entrySignedCents'];
+  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'lineActualCents', 'entrySignedCents',
+  // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
+  // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
+  'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 
 function preMigrationState() {
   // A pre-Phase-0 pack record, with the two shapes that matter: a flat line and a
@@ -6980,6 +6983,235 @@ test('the family bill is grouped rung by rung, with the floor last', () => {
   ok(!/eyebrow/.test(old), 'an old payload is given a heading claiming nothing is covered');
   ok(/Registration/.test(old) && /Spring camp/.test(old), 'an old payload lost its lines');
   eq(ctx.parentCostLines({ lines: [] }), '', 'a den with no priced lines still drew an empty list');
+});
+
+/* ================================================================
+   Wave 22 — storefront weather
+   ================================================================ */
+const WX = sandbox([
+  'WX_LIMITS', 'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'arrOf', 'pad2', 'todayISO',
+  'weatherBucket', 'hhmmMinutes', 'blockHours', 'weatherComparisonFrom', 'weatherCaveat',
+  'numOrNull', 'daysFromToday', 'weatherUrl', 'readWeatherPayload'
+]);
+
+test('rain beats temperature, which is the whole point of the bucket rule', () => {
+  // A wet 88° day behaves like rain at a folding table, not like heat. Filing it under 'hot'
+  // would put the pack's two worst kinds of day in one bucket and average them into nothing.
+  eq(WX.weatherBucket(88, 0.4), 'rain', 'a hot wet day');
+  eq(WX.weatherBucket(45, 0.4), 'rain', 'a cold wet day');
+  eq(WX.weatherBucket(88, 0), 'hot', 'a hot dry day');
+  eq(WX.weatherBucket(55, 0), 'cold', 'a cold dry day');
+  eq(WX.weatherBucket(70, 0), 'mild', 'a mild dry day');
+  // Exactly on each threshold: hot and wet are inclusive, cold is strictly below.
+  eq(WX.weatherBucket(WX.WX_LIMITS.hotF, 0), 'hot', 'exactly the hot threshold');
+  eq(WX.weatherBucket(WX.WX_LIMITS.coldF, 0), 'mild', 'exactly the cold threshold is not cold');
+  eq(WX.weatherBucket(70, WX.WX_LIMITS.wetIn), 'rain', 'exactly the wet threshold');
+  // A trace of rain is not a rainy day — that is what the threshold is for.
+  eq(WX.weatherBucket(70, 0.01), 'mild', 'a trace of rain');
+});
+
+test('no temperature means no tag — never a guess that reads like a measurement', () => {
+  eq(WX.weatherBucket(null, 0), '', 'dry but no temperature');
+  eq(WX.weatherBucket(undefined, undefined), '', 'nothing at all');
+  eq(WX.weatherBucket(NaN, 0), '', 'NaN is not a temperature');
+  // Rain is still decidable without a temperature, because the precipitation alone settles it.
+  eq(WX.weatherBucket(null, 0.5), 'rain', 'wet with no temperature');
+});
+
+test('a block with no usable times is worth zero hours, not a default length', () => {
+  eq(WX.blockHours({ start: '10:00', end: '12:00' }), 2, 'a two-hour block');
+  eq(WX.blockHours({ start: '10:00', end: '11:30' }), 1.5, 'a ninety-minute block');
+  eq(WX.blockHours({ start: '', end: '12:00' }), 0, 'no start');
+  eq(WX.blockHours({ start: '12:00', end: '10:00' }), 0, 'end before start');
+  eq(WX.blockHours({ start: '10:00', end: '10:00' }), 0, 'zero length');
+  eq(WX.blockHours({ start: '9 AM', end: '11 AM' }), 0, 'free text is not canonical HH:MM');
+  eq(WX.blockHours(null), 0, 'no block at all');
+  eq(WX.hhmmMinutes('25:00'), null, 'hour out of range');
+  eq(WX.hhmmMinutes('10:75'), null, 'minute out of range');
+});
+
+// A season shaped to make the point the feature exists for: the rainy DAY took more money in
+// total than the mild one, because it was staffed twice as heavily for twice as long.
+// Per scout-hour it is the worse day by a distance, and only the rate can see that.
+function wxSeason() {
+  return [
+    {
+      id: 'a', name: 'Kroger', date: '2025-10-04', weather: { tag: 'rain', source: 'auto' },
+      blocks: [
+        { start: '09:00', end: '13:00', assignments: [{ scoutId: 's1' }, { scoutId: 's2' }, { scoutId: 's3' }], salesCents: 24000, donationsCents: 0 },
+        { start: '13:00', end: '17:00', assignments: [{ scoutId: 's1' }, { scoutId: 's2' }, { scoutId: 's3' }], salesCents: 24000, donationsCents: 0 }
+      ]
+    },
+    {
+      id: 'b', name: 'Publix', date: '2025-10-11', weather: { tag: 'mild', source: 'auto' },
+      blocks: [
+        { start: '10:00', end: '12:00', assignments: [{ scoutId: 's1' }], salesCents: 18000, donationsCents: 2000 }
+      ]
+    }
+  ];
+}
+
+test('the comparison is per scout-hour, so a big day worked by a crowd cannot fake a good one', () => {
+  const wx = WX.weatherComparisonFrom(wxSeason());
+  const rain = wx.rows.filter((r) => r.id === 'rain')[0];
+  const mild = wx.rows.filter((r) => r.id === 'mild')[0];
+  // The raw totals say rain won: $480 against $200.
+  eq(rain.combined, 48000, 'rain combined');
+  eq(mild.combined, 20000, 'mild combined');
+  // The rate says the opposite, which is the number that is actually comparable.
+  eq(rain.scoutHours, 24, 'rain scout-hours');   // 2 blocks x 4h x 3 scouts
+  eq(mild.scoutHours, 2, 'mild scout-hours');    // 1 block x 2h x 1 scout
+  eq(rain.perScoutHour, 2000, 'rain per scout-hour');   // $20.00
+  eq(mild.perScoutHour, 10000, 'mild per scout-hour');  // $100.00
+  ok(mild.perScoutHour > rain.perScoutHour,
+    'the rate failed to see past the bigger day being the more heavily staffed one');
+});
+
+test('the unit is a shift, not a date', () => {
+  const wx = WX.weatherComparisonFrom(wxSeason());
+  const rain = wx.rows.filter((r) => r.id === 'rain')[0];
+  eq(rain.dates, 1, 'one storefront date');
+  eq(rain.shifts, 2, 'but two shifts, which is the sample the rate is built on');
+});
+
+test('an unworked shift is a scheduling fact, not evidence about the weather', () => {
+  const sfs = wxSeason();
+  // A third block nobody staffed and that took nothing must not drag the rain rate down.
+  sfs[0].blocks.push({ start: '17:00', end: '19:00', assignments: [], salesCents: 0, donationsCents: 0 });
+  const rain = WX.weatherComparisonFrom(sfs).rows.filter((r) => r.id === 'rain')[0];
+  eq(rain.shifts, 2, 'an empty block was counted as a shift');
+  eq(rain.perScoutHour, 2000, 'an empty block moved the rate');
+});
+
+test('money with no times or nobody assigned counts in the total but not in the rate', () => {
+  const sfs = wxSeason();
+  sfs[1].blocks.push({ start: '', end: '', assignments: [{ scoutId: 's9' }], salesCents: 5000, donationsCents: 0 });
+  const wx = WX.weatherComparisonFrom(sfs);
+  const mild = wx.rows.filter((r) => r.id === 'mild')[0];
+  eq(mild.combined, 25000, 'the money was dropped from the total');
+  eq(mild.scoutHours, 2, 'an untimed block invented scout-hours');
+  eq(wx.thin, 1, 'the untimed block was not reported as thin');
+  // Reported rather than silently shrinking the denominator — that is the whole reason
+  // `thin` exists, so the screen can say so.
+  ok(wx.thin > 0, 'a shift left out of the rate has to be visible somewhere');
+});
+
+test('storefronts with no weather are left out and counted, not quietly folded in', () => {
+  const sfs = wxSeason();
+  sfs.push({ id: 'c', name: 'Ace', date: '2025-10-18', blocks: [{ start: '10:00', end: '12:00', assignments: [{ scoutId: 's1' }], salesCents: 9900, donationsCents: 0 }] });
+  sfs.push({ id: 'd', name: 'Bad', date: '2025-10-25', weather: { tag: 'blizzard' }, blocks: [] });
+  const wx = WX.weatherComparisonFrom(sfs);
+  eq(wx.untagged, 2, 'an untagged and a junk-tagged storefront');
+  eq(wx.rows.length, 2, 'a junk tag opened a bucket of its own');
+  eq(wx.rows.reduce((n, r) => n + r.combined, 0), 68000, 'untagged money leaked into a bucket');
+});
+
+test('a bucket with no rate reports null, never $0.00', () => {
+  // $0.00 per scout-hour reads as a catastrophic day rather than as an absent measurement.
+  const wx = WX.weatherComparisonFrom([
+    { id: 'a', name: 'K', date: '2025-10-04', weather: { tag: 'cold' },
+      blocks: [{ start: '', end: '', assignments: [], salesCents: 1000, donationsCents: 0 }] }
+  ]);
+  eq(wx.rows.length, 1, 'the bucket');
+  eq(wx.rows[0].perScoutHour, null, 'a rate was computed against no scout-hours');
+});
+
+test('empty and junk input produce no rows rather than throwing', () => {
+  eq(WX.weatherComparisonFrom([]).rows, [], 'empty season');
+  eq(WX.weatherComparisonFrom(null).rows, [], 'no season at all');
+  eq(WX.weatherComparisonFrom([null, 'x', { id: 'a' }]).rows, [], 'junk entries');
+});
+
+test('the caveat gets less hedged as the sample grows, and never claims more than it has', () => {
+  const one = WX.weatherCaveat({ rows: [{ shifts: 4, perScoutHour: 100 }], untagged: 0, thin: 0 });
+  ok(/nothing to compare/.test(one), 'a single kind of day was presented as a comparison');
+  const few = WX.weatherCaveat({ rows: [{ shifts: 3, perScoutHour: 1 }, { shifts: 3, perScoutHour: 1 }], untagged: 0, thin: 0 });
+  ok(/too few/.test(few), '6 shifts did not read as too few');
+  const some = WX.weatherCaveat({ rows: [{ shifts: 10, perScoutHour: 1 }, { shifts: 10, perScoutHour: 1 }], untagged: 0, thin: 0 });
+  ok(/Suggestive/.test(some), '20 shifts did not read as suggestive');
+  const many = WX.weatherCaveat({ rows: [{ shifts: 20, perScoutHour: 1 }, { shifts: 20, perScoutHour: 1 }], untagged: 0, thin: 0 });
+  ok(/worth reading/.test(many), '40 shifts did not read as worth a look');
+  // Even at the top of the scale it still says staffing explains more than weather.
+  ok(/staffing/.test(many), 'the largest sample dropped the confound it exists to flag');
+});
+
+test('the response is read by date, never by index', () => {
+  // Both endpoints can return a wider window than asked for. Taking row 0 would be wrong
+  // silently, and by a plausible-looking amount.
+  const payload = {
+    daily: {
+      time: ['2025-10-02', '2025-10-03', '2025-10-04'],
+      temperature_2m_max: [95, 40, 72],
+      precipitation_sum: [0, 0, 0]
+    }
+  };
+  const w = WX.readWeatherPayload(payload, '2025-10-04');
+  eq(w.highF, 72, 'the wrong day was read out of the response');
+  eq(w.tag, 'mild', 'the wrong day set the tag');
+  eq(WX.readWeatherPayload(payload, '2025-10-09'), null, 'a day that is not in the response');
+  eq(WX.readWeatherPayload({}, '2025-10-04'), null, 'an empty response');
+  eq(WX.readWeatherPayload({ daily: { time: ['2025-10-04'], temperature_2m_max: [null], precipitation_sum: [null] } }, '2025-10-04'),
+    null, 'a response whose numbers are null must not become a tag');
+});
+
+test('the endpoint is chosen by how far back the date is', () => {
+  const iso = (delta) => {
+    const d = new Date(Date.parse(WX.todayISO() + 'T12:00:00Z') + delta * 86400000);
+    return d.toISOString().slice(0, 10);
+  };
+  ok(/api\.open-meteo\.com\/v1\/forecast/.test(WX.weatherUrl(iso(-7), 34, -83)), 'last week should use the forecast endpoint');
+  ok(/api\.open-meteo\.com\/v1\/forecast/.test(WX.weatherUrl(iso(7), 34, -83)), 'next week is a forecast');
+  ok(/archive-api\.open-meteo\.com/.test(WX.weatherUrl(iso(-400), 34, -83)), 'last season should use the archive');
+  ok(/archive-api\.open-meteo\.com/.test(WX.weatherUrl('not-a-date', 34, -83)), 'an unparseable date falls to the archive');
+  eq(WX.daysFromToday(WX.todayISO()), 0, 'today is zero days from today');
+  // Fahrenheit and inches are requested explicitly — the thresholds in WX_LIMITS are in those
+  // units, and the API's default is Celsius and millimetres.
+  const u = WX.weatherUrl(iso(-7), 34.2979, -83.8241);
+  ok(/temperature_unit=fahrenheit/.test(u), 'temperature was not requested in Fahrenheit');
+  ok(/precipitation_unit=inch/.test(u), 'precipitation was not requested in inches');
+  ok(u.indexOf('start_date=' + iso(-7)) !== -1 && u.indexOf('end_date=' + iso(-7)) !== -1, 'the day was not pinned');
+});
+
+test('normalizeState drops a junk weather tag rather than keeping half of it', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const out = ctx.normalizeState({
+    version: 1, packName: 'Pack 569', scouts: [],
+    storefronts: [
+      { id: 'a', name: 'K', date: '2025-10-04', blocks: [], weather: { tag: 'blizzard', highF: 70 } },
+      { id: 'b', name: 'P', date: '2025-10-11', blocks: [], weather: { tag: 'rain', highF: '72', precipIn: 0.4, source: 'nonsense' } },
+      { id: 'c', name: 'A', date: '2025-10-18', blocks: [], weather: 'sunny' },
+      { id: 'd', name: 'B', date: '2025-10-25', blocks: [], weather: { tag: 'cold', highF: 50, precipIn: 0, source: 'manual' } }
+    ]
+  });
+  eq(out.storefronts[0].weather, undefined, 'a junk tag survived normalisation');
+  eq(out.storefronts[2].weather, undefined, 'a non-object weather survived');
+  // A recognised tag is kept, its numbers coerced, and an unknown source lands on 'auto' —
+  // never on 'manual', which is the flag that protects a record from being overwritten.
+  eq(out.storefronts[1].weather, { tag: 'rain', highF: null, precipIn: 0.4, source: 'auto' }, 'the coerced record');
+  eq(out.storefronts[3].weather.source, 'manual', 'a real manual record lost its protection');
+});
+
+test('normalizeState defaults the weather lookup location and refuses an impossible one', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const bare = ctx.normalizeState({ version: 1, packName: 'Pack 569', scouts: [] });
+  eq(bare.packLoc.lat, ctx.WX_DEFAULT_LOC.lat, 'an existing pack record got no location');
+  eq(bare.packLoc.label, ctx.WX_DEFAULT_LOC.label, 'no label');
+  // Out of range falls back rather than being kept: a 340° longitude returns weather for
+  // somewhere real, just not here, which is the worst failure this feature can have.
+  const bad = ctx.normalizeState({ version: 1, packName: 'Pack 569', scouts: [], packLoc: { label: '  ', lat: 91, lon: 340 } });
+  eq(bad.packLoc.lat, ctx.WX_DEFAULT_LOC.lat, 'an impossible latitude was kept');
+  eq(bad.packLoc.lon, ctx.WX_DEFAULT_LOC.lon, 'an impossible longitude was kept');
+  eq(bad.packLoc.label, ctx.WX_DEFAULT_LOC.label, 'a blank label was kept');
+  const good = ctx.normalizeState({ version: 1, packName: 'Pack 569', scouts: [], packLoc: { label: 'Athens, GA', lat: 33.96, lon: -83.38 } });
+  eq(good.packLoc, { label: 'Athens, GA', lat: 33.96, lon: -83.38 }, 'a real location was not kept as given');
+});
+
+test('a manual tag is never overwritten by a lookup', () => {
+  // The rule lives in weatherLookupable, and it is what makes the manual control worth having.
+  const src = SCRIPT.slice(SCRIPT.indexOf('function weatherLookupable('));
+  const body = src.slice(0, src.indexOf('\n  }'));
+  ok(/source === 'manual'/.test(body) && /return false/.test(body),
+    'weatherLookupable no longer exempts a hand-recorded tag');
 });
 
 /* ---------------- report ---------------- */
