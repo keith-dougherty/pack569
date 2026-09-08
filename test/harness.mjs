@@ -6950,7 +6950,7 @@ test('the family bill is grouped rung by rung, with the floor last', () => {
     steps: steps,
     lines: [{ name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 0, coverAdultStep: 1 }]
   });
-  ok(/the adult’s place at Gold/.test(split), 'a line half-bought by a higher rung says nothing about it');
+  ok(/the adult’s cost comes off at Gold/.test(split), 'a line half-bought by a higher rung says nothing about it');
   const stuck = ctx.parentCostLines({
     steps: steps,
     lines: [{ name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 0, coverAdultStep: -1 }]

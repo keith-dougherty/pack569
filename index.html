@@ -8699,7 +8699,12 @@
     var note = '';
     if (gi >= 0 && (x.adultCents || 0) > 0 && ai !== gi) {
       note = (ai >= 0 && ai < steps.length)
-        ? ' <span class="muted">\u00b7 the adult\u2019s place at ' + esc(parentStepName(steps[ai])) + '</span>'
+        // "Comes off at Gold" is the heading standing directly over this line, and the clause
+        // qualifying it now uses those same words (owner ask, 2026-09-07). "The adult's place at
+        // Gold" read as though the place were AT the tier — something the tier includes — which
+        // is the opposite of what it says: that half of this line is not bought until a rung
+        // further up.
+        ? ' <span class="muted">\u00b7 the adult\u2019s cost comes off at ' + esc(parentStepName(steps[ai])) + '</span>'
         : ' <span class="muted">\u00b7 the adult\u2019s place stays yours</span>';
     }
     return '<li>' + esc(String(x.name || '')) + ' \u2014 <span class="money">' +
