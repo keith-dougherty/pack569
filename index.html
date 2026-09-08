@@ -880,6 +880,15 @@
   .assign-row:last-of-type { border-bottom: none; }
   .assign-name { flex: 1 1 120px; font-weight: 600; }
   .block-card { background: var(--surface-2); border-radius: 10px; padding: 12px; margin-top: 10px; }
+  /* The tier heading over a run of .assign-row items — which rung bought the fees under it, and
+     what that rung came to. Same flex shape as .assign-row on purpose, so its money column lands
+     on the same right edge as the rows it heads. No border of its own: the previous group's last
+     .assign-row already draws one, and a second line 14px above it reads as a mistake. */
+  .cov-tier { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 14px 0 2px; }
+  .cov-tier:first-of-type { margin-top: 2px; }
+  .cov-tier-name { flex: 1 1 130px; font-weight: 700; }
+  .cov-tier .money { font-weight: 650; }
+  .cov-reward { margin: 0 0 6px; }
 
   /* ---------- Overlays ---------- */
   .overlay {
@@ -9965,17 +9974,39 @@
     // Wave 21 — what a reward tier is picking up for this scout, itemised. The collapsed
     // row only has space for the total, and "pack covers $95.00" invites the question of
     // which charges — this is where a parent asking gets answered.
-    if (coveredCents > 0) {
-      var covMap = tierCoverageConfigured() ? packCoverage() : {};
-      var covLines = coverableShares().filter(function (c) { return (covMap[c.coverKey] || {})[s.id]; });
-      h += '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Covered by a reward tier</p>' +
-        covLines.map(function (c) {
-          return '<div class="assign-row"><span class="assign-name">' +
-            esc((c.item.name || ('Untitled ' + c.kind)) + (c.who === 'scout' ? '' : ' · ' + c.who)) + '</span>' +
-            '<span class="money">' + fmt(c.rate) + '</span></div>';
+    // WHICH TIER BOUGHT WHICH FEE — owner ask, 2026-09-07 ("sort these and show the rewards
+    // earned by tier"). The list was one flat run in budget-line order, which answered "what is
+    // covered" and nothing else: the reward a scout actually earned was never on it, and a
+    // fourteen-row block gave a parent no way to see that four of those rows arrived at Bronze
+    // and the other ten at Gold. Grouped by the tier that unlocked each row, lowest rung first,
+    // biggest fee first inside a rung — so the block reads as the climb it was.
+    var covGroups = tierCoverageConfigured() ? coveredSharesByTier(s.id) : [];
+    if (covGroups.length) {
+      h += '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Reward tiers earned</p>' +
+        covGroups.map(function (g) {
+          return '<div class="cov-tier"><span class="cov-tier-name">' + esc(g.tier.name || 'Reward tier') + '</span>' +
+            // A tier a family PAID for reads identically to one that was sold for — same rows,
+            // same money — so it says which it was here too, the way the standings row does.
+            (g.how === 'madeUp' ? '<span class="pill navy">paid for, not sold</span>' : '') +
+            (g.total > 0 ? '<span class="money">' + fmt(g.total) + '</span>' : '') + '</div>' +
+            (g.tier.reward ? '<p class="small muted cov-reward">' + esc(g.tier.reward) + '</p>' : '') +
+            (g.lines.length
+              ? g.lines.map(function (c) {
+                  return '<div class="assign-row"><span class="assign-name">' + esc(c.name) + '</span>' +
+                    '<span class="money">' + fmt(c.rate) + '</span></div>';
+                }).join('')
+              // Two different nothings, and a parent asking "so what did this level get us?"
+              // deserves the right one. A rung pointed at fees a LOWER rung already pays is not
+              // the same as a rung that was only ever prizes and a patch.
+              : '<p class="small muted cov-reward">' + (arrOf(g.tier.covers).length
+                  ? 'Every fee this level covers is already paid by a level below it.'
+                  : 'No fees at this level — the reward is the reward.') + '</p>');
         }).join('') +
-        '<p class="small muted" style="margin:8px 0 0">The pack pays these, so ' + esc(s.name || 'this scout') +
-        '’s family isn’t billed for them. <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="rewards">Reward tiers</button></p></div>';
+        '<p class="small muted" style="margin:8px 0 0">' +
+        (coveredCents > 0
+          ? 'The pack pays these, so ' + esc(s.name || 'this scout') + '’s family isn’t billed for them. '
+          : '') +
+        '<button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="rewards">Reward tiers</button></p></div>';
     }
 
     // Wave 19(4/23/24) — per-scout roster fields: renewal month (drives the amber pill +
@@ -10102,6 +10133,62 @@
       Object.keys(cov[s.coverKey] || {}).forEach(function (sid) {
         out[sid] = (out[sid] || 0) + s.rate;
       });
+    });
+    return out;
+  }
+  // ---------------------------------------------------------------------------
+  // ONE SCOUT'S COVERAGE, BROKEN BACK OUT BY THE TIER THAT UNLOCKED IT.
+  //
+  // packCoverage() deliberately UNIONS every reached tier's keys — a scout at Gold must never
+  // end up with less than a scout at Bronze, so the map it returns has no idea which rung any
+  // key arrived on. That is right for "what does this scout owe"; it is exactly wrong for
+  // "what did this scout earn", which is the question the itemised block is answering.
+  //
+  // So: walk the tiers the scout reached, LOWEST FIRST, and give each key to the first rung
+  // that pays it. Attributing it to the lowest is the only reading that doesn't lie — two rungs
+  // can name the same line (Bronze and Silver both covering dues), and crediting the higher one
+  // would report a fee as newly won at a level where reaching it changed nothing. It is the same
+  // set-difference rule `unlocks` already uses on the standings card.
+  //
+  // Rungs that unlock nothing are kept, not dropped: a prizes-and-a-patch tier IS a reward
+  // earned, and a rung whose fees a lower rung already pays is a real thing to have reached.
+  // The caller decides what to say about each — see the two messages in renderScoutRow.
+  // ---------------------------------------------------------------------------
+  function coveredSharesByTier(scoutId) {
+    var tiers = sortedTiers();
+    if (!tiers.length) return [];
+    var earned = tierEarnedMap();
+    var byKey = {};
+    coverableShares().forEach(function (c) { byKey[c.coverKey] = c; });
+    var claimed = {};
+    var out = [];
+    tiers.forEach(function (t) {
+      // 'earned' by selling, 'madeUp' by paying the difference; anything falsy is a rung this
+      // scout has not reached, and an unreached rung claims nothing for the ones above it.
+      var how = (earned[t.id] || {})[scoutId];
+      if (!how) return;
+      var lines = [];
+      arrOf(t.covers).forEach(function (k) {
+        if (claimed[k]) return;
+        claimed[k] = true;
+        var c = byKey[k];
+        // A key with no share behind it any more — the line was deleted, or its rate went to
+        // zero. It is covering nothing, so it is worth nothing here. The tier keeps the key so
+        // that restoring the rate restores the coverage.
+        if (!c) return;
+        lines.push({
+          coverKey: k, rate: c.rate,
+          // Named exactly as the flat list named them, so nothing a parent already recognises
+          // changes shape — only where it sits.
+          name: (c.item.name || ('Untitled ' + c.kind)) + (c.who === 'scout' ? '' : ' · ' + c.who)
+        });
+      });
+      // Biggest fee first, name to break the tie — which keeps a scout share and the adult share
+      // of the same event (identical rate, adjacent names) side by side rather than scattered.
+      lines.sort(function (a, b) { return b.rate - a.rate || a.name.localeCompare(b.name); });
+      var total = 0;
+      lines.forEach(function (c) { total += c.rate; });
+      out.push({ tier: t, how: how, lines: lines, total: total });
     });
     return out;
   }

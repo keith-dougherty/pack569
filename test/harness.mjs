@@ -709,6 +709,113 @@ test('coverage is derived, never written into state.collected', () => {
   ok(!/state\.collected/.test(fn[0]), 'packCoverage writes or reads state.collected');
 });
 
+/* ---- the same coverage, broken back out by the rung that unlocked it ---- */
+// coveredSharesByTier() is what the itemised block on a scout row renders. The stubs are the
+// three things it reads: the ladder, who reached what, and the shares that exist.
+function tierGroupSandbox(setup) {
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    `${setup}
+     function arrOf(v) { return Array.isArray(v) ? v : []; }
+     function sortedTiers() {
+       return TIERS.slice().sort(function (a, b) { return a.thresholdCents - b.thresholdCents; });
+     }
+     function tierEarnedMap() { return EARNED; }
+     function coverableShares() { return SHARES; }
+     ${slice('coveredSharesByTier')}
+     var RESULT = coveredSharesByTier('kid');`, ctx);
+  return ctx;
+}
+const SHARES_STUB = `var SHARES = [
+   { coverKey: 'dues', rate: 9600, who: 'scout', kind: 'expense', item: { name: 'Youth registration' } },
+   { coverKey: 'act:g', rate: 2500, who: 'scout', kind: 'activity', item: { name: 'Gladiators' } },
+   { coverKey: 'act:g#adult', rate: 2500, who: 'adult', kind: 'activity', item: { name: 'Gladiators' } },
+   { coverKey: 'act:c', rate: 1800, who: 'scout', kind: 'activity', item: { name: 'Camping trip' } }
+ ];`;
+
+test('a covered fee is credited to the LOWEST rung that pays it', () => {
+  // Coverage stacks, so Silver naming a line Bronze already covers adds nothing. Crediting it
+  // to Silver would report a fee as newly won at a level where reaching it changed nothing —
+  // the same set-difference rule the standings card's `unlocks` uses.
+  const ctx = tierGroupSandbox(`
+     ${SHARES_STUB}
+     var TIERS = [
+       { id: 'b', name: 'Bronze', thresholdCents: 10000, covers: ['dues'] },
+       { id: 's', name: 'Silver', thresholdCents: 20000, covers: ['dues', 'act:g'] }
+     ];
+     var EARNED = { b: { kid: 'earned' }, s: { kid: 'earned' } };`);
+  const g = ctx.RESULT;
+  eq(g.map((x) => x.tier.id), ['b', 's'], 'the rungs come out lowest first');
+  eq(g[0].lines.map((l) => l.coverKey), ['dues'], 'Bronze keeps the fee it unlocked');
+  eq(g[1].lines.map((l) => l.coverKey), ['act:g'], 'Silver is credited only what it ADDED');
+  eq(g[0].total + g[1].total, 12100, 'the groups add up to what the pack actually covers');
+});
+
+test('rows inside a rung run biggest fee first, name to break the tie', () => {
+  // Which keeps a scout share and the adult share of the same event — identical rate, adjacent
+  // names — side by side instead of scattered through the block.
+  const ctx = tierGroupSandbox(`
+     ${SHARES_STUB}
+     var TIERS = [{ id: 'g', name: 'Gold', thresholdCents: 10000,
+                    covers: ['act:c', 'act:g#adult', 'act:g', 'dues'] }];
+     var EARNED = { g: { kid: 'earned' } };`);
+  eq(ctx.RESULT[0].lines.map((l) => l.name),
+    ['Youth registration', 'Gladiators', 'Gladiators · adult', 'Camping trip'],
+    'the covered rows are not sorted');
+});
+
+test('an unreached rung claims nothing for the rungs above it', () => {
+  const ctx = tierGroupSandbox(`
+     ${SHARES_STUB}
+     var TIERS = [
+       { id: 'b', name: 'Bronze', thresholdCents: 10000, covers: ['dues'] },
+       { id: 's', name: 'Silver', thresholdCents: 20000, covers: ['dues', 'act:g'] }
+     ];
+     var EARNED = { s: { kid: 'earned' } };`);
+  const g = ctx.RESULT;
+  eq(g.map((x) => x.tier.id), ['s'], 'a rung the scout never reached is on the list');
+  eq(g[0].lines.map((l) => l.coverKey), ['dues', 'act:g'],
+    'the fee a skipped rung named must fall to the rung that was actually reached');
+});
+
+test('a rung that unlocks nothing is still a reward earned', () => {
+  // Prizes and a patch is a real thing to have reached, and a make-up payment says so.
+  const ctx = tierGroupSandbox(`
+     ${SHARES_STUB}
+     var TIERS = [
+       { id: 'p', name: 'Patch', thresholdCents: 5000, covers: [], reward: 'Pack patch' },
+       { id: 'b', name: 'Bronze', thresholdCents: 10000, covers: ['dues'] }
+     ];
+     var EARNED = { p: { kid: 'earned' }, b: { kid: 'madeUp' } };`);
+  const g = ctx.RESULT;
+  eq(g.length, 2, 'a reward-only rung was dropped');
+  eq(g[0].lines.length, 0, 'a reward-only rung invented a covered fee');
+  eq(g[0].total, 0, 'a reward-only rung is worth money');
+  eq(g[1].how, 'madeUp', 'how the rung was credited is not carried through');
+});
+
+test('a cover key with no share behind it is worth nothing', () => {
+  // The line was deleted, or its rate went to zero. The tier keeps the key — restoring the
+  // rate restores the coverage — but the block must not price a row it cannot name.
+  const ctx = tierGroupSandbox(`
+     ${SHARES_STUB}
+     var TIERS = [{ id: 'b', name: 'Bronze', thresholdCents: 10000, covers: ['gone', 'dues'] }];
+     var EARNED = { b: { kid: 'earned' } };`);
+  eq(ctx.RESULT[0].lines.map((l) => l.coverKey), ['dues'], 'a dead cover key rendered a row');
+  eq(ctx.RESULT[0].total, 9600, 'a dead cover key changed the total');
+});
+
+test('the scout row renders the covered block grouped, not flat', () => {
+  const row = /function renderScoutRow\(s, t, covered\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(row, 'renderScoutRow() not found');
+  ok(/coveredSharesByTier\(s\.id\)/.test(row[0]), 'the block no longer groups by tier');
+  ok(!/coverableShares\(\)\.filter/.test(row[0]), 'the old flat, unsorted list is still being built');
+  // The trailing "the pack pays these" line is only true where the pack is paying something —
+  // a rung that was only ever prizes bills the family for nothing and saves them nothing.
+  ok(/coveredCents > 0\s*\n?\s*\? 'The pack pays these/.test(row[0]),
+    'the covered-fees sentence is shown for a reward-only tier');
+});
+
 /* ================================================================
    Money redesign — Phase 0 (the ledger) and Phase 1 (actual = sum of ledger).
    See DESIGN-money.md sections 3.3 and 5.
