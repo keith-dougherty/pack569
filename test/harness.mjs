@@ -816,6 +816,21 @@ test('the scout row renders the covered block grouped, not flat', () => {
     'the covered-fees sentence is shown for a reward-only tier');
 });
 
+test('a rung is set apart from its rows by more than a font weight', () => {
+  // The first cut leaned on 700-against-600, which down a fourteen-row block made the tier
+  // heading read as one more line item. Two structural separations replaced it, and both are
+  // load-bearing: a different TYPEFACE, and the rows sitting on their own recessed ground.
+  ok(/\.cov-tier-name \{[^}]*Rockwell/.test(SCRIPT_CSS),
+    'the tier heading is no longer set in the display serif');
+  // --surface, NOT --surface-2: the panel has to differ from the .block-card it sits inside,
+  // and this pair inverts correctly in both themes (dark #202935 in #293442, light the reverse).
+  ok(/\.cov-lines \{[^}]*background: var\(--surface\)/.test(SCRIPT_CSS),
+    'the covered rows are not on their own inset ground');
+  const row = /function renderScoutRow\(s, t, covered\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(/class="cov-group"/.test(row[0]) && /class="cov-lines"/.test(row[0]),
+    'the rows of one rung are not wrapped, so nothing scopes them to it');
+});
+
 /* ================================================================
    Money redesign — Phase 0 (the ledger) and Phase 1 (actual = sum of ledger).
    See DESIGN-money.md sections 3.3 and 5.

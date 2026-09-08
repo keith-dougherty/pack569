@@ -880,15 +880,27 @@
   .assign-row:last-of-type { border-bottom: none; }
   .assign-name { flex: 1 1 120px; font-weight: 600; }
   .block-card { background: var(--surface-2); border-radius: 10px; padding: 12px; margin-top: 10px; }
-  /* The tier heading over a run of .assign-row items — which rung bought the fees under it, and
-     what that rung came to. Same flex shape as .assign-row on purpose, so its money column lands
-     on the same right edge as the rows it heads. No border of its own: the previous group's last
-     .assign-row already draws one, and a second line 14px above it reads as a mistake. */
-  .cov-tier { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 14px 0 2px; }
-  .cov-tier:first-of-type { margin-top: 2px; }
-  .cov-tier-name { flex: 1 1 130px; font-weight: 700; }
-  .cov-tier .money { font-weight: 650; }
+  /* ONE RUNG OF THE LADDER: the tier heading, what it rewards, and the fees it bought.
+     The first cut set the heading a shade bolder than the rows under it (700 against 600) and
+     left them on the same ground — which, read down a fourteen-row block, made "Bronze $133.00"
+     look like one more line item rather than the thing three of them belong to.
+     Two changes, both structural rather than a heavier weight:
+       * the heading is SET IN THE DISPLAY SERIF, the same face as every h2.section in the app.
+         A different typeface separates at a glance in a way another 50 units of weight cannot.
+       * its rows sit in their own INSET PANEL on --surface, the card ground the block-card is
+         itself sitting on. That reads as recessed in both themes without either one needing its
+         own rule (dark: #202935 inside #293442; light: #FFFDF7 inside #EFE6D2). */
+  .cov-group + .cov-group { margin-top: 14px; }
+  .cov-tier { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 2px; }
+  .cov-tier-name {
+    flex: 1 1 130px;
+    font-family: Rockwell, "Roboto Slab", serif; font-size: 1rem; font-weight: 700;
+  }
+  .cov-tier .money { font-weight: 700; }
   .cov-reward { margin: 0 0 6px; }
+  /* Padding, not margin, on the sides: the rows' hairlines are meant to run the full width of
+     the panel, the way they do in every other .assign-row list. */
+  .cov-lines { background: var(--surface); border-radius: 8px; padding: 2px 10px; }
 
   /* ---------- Overlays ---------- */
   .overlay {
@@ -10107,23 +10119,28 @@
     if (covGroups.length) {
       h += '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Reward tiers earned</p>' +
         covGroups.map(function (g) {
-          return '<div class="cov-tier"><span class="cov-tier-name">' + esc(g.tier.name || 'Reward tier') + '</span>' +
+          // One .cov-group per rung, so the rungs are separable in the stylesheet — and so
+          // .assign-row:last-of-type clears the hairline at the foot of EACH rung's list rather
+          // than only the very last row in the block.
+          return '<div class="cov-group">' +
+            '<div class="cov-tier"><span class="cov-tier-name">' + esc(g.tier.name || 'Reward tier') + '</span>' +
             // A tier a family PAID for reads identically to one that was sold for — same rows,
             // same money — so it says which it was here too, the way the standings row does.
             (g.how === 'madeUp' ? '<span class="pill navy">paid for, not sold</span>' : '') +
             (g.total > 0 ? '<span class="money">' + fmt(g.total) + '</span>' : '') + '</div>' +
             (g.tier.reward ? '<p class="small muted cov-reward">' + esc(g.tier.reward) + '</p>' : '') +
             (g.lines.length
-              ? g.lines.map(function (c) {
+              ? '<div class="cov-lines">' + g.lines.map(function (c) {
                   return '<div class="assign-row"><span class="assign-name">' + esc(c.name) + '</span>' +
                     '<span class="money">' + fmt(c.rate) + '</span></div>';
-                }).join('')
+                }).join('') + '</div>'
               // Two different nothings, and a parent asking "so what did this level get us?"
               // deserves the right one. A rung pointed at fees a LOWER rung already pays is not
               // the same as a rung that was only ever prizes and a patch.
               : '<p class="small muted cov-reward">' + (arrOf(g.tier.covers).length
                   ? 'Every fee this level covers is already paid by a level below it.'
-                  : 'No fees at this level — the reward is the reward.') + '</p>');
+                  : 'No fees at this level — the reward is the reward.') + '</p>') +
+            '</div>';
         }).join('') +
         '<p class="small muted" style="margin:8px 0 0">' +
         (coveredCents > 0
