@@ -6814,6 +6814,159 @@ test('the shared sheet says which tier each scout reached, and what the pack end
     'the text version is behind the printed sheet');
 });
 
+/* ================================================================
+   2026-09-07 — the printed sheet, and what each rung buys
+   ================================================================ */
+
+test('the printed sheet drops the pack goal and opens a fresh page at the ladder', () => {
+  // Owner ask, 2026-09-07: every scout on the first two sheets. The pack goal bar was spending a
+  // card at the top of sheet one on a figure that is read aloud at the meeting the handout is
+  // given out at, and pushing the last scouts onto a third sheet to do it.
+  const stand = /function renderParentStandings\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(stand, 'renderParentStandings() not found');
+  ok(/<div class="card pv-packgoal">/.test(stand[0]),
+    'the pack goal card carries no print hook, so it cannot come off the paper');
+  ok(/@media print \{ \.pv-packgoal \{ display: none !important; \} \}/.test(SCRIPT_CSS),
+    'the pack goal still prints');
+  // ...and it is hidden on PAPER only. It is a live figure a parent checks between meetings, and
+  // deleting it from the page would be answering a print question with a screen change. Every
+  // rule that names the class has to sit inside an @media print, so: it is named exactly once.
+  eq(SCRIPT_CSS.match(/\.pv-packgoal\b/g).length, 1,
+    'the pack goal class is styled somewhere besides the one print rule — check it still shows on screen');
+
+  // The ladder is the reference half of the handout. Run under the last scout's bar across a fold
+  // it reads as one continuing list, and sheet three opens on a table of money with no heading.
+  const lad = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(lad, 'parentTierLadder() not found');
+  ok(/<div class="card pv-ladder">/.test(lad[0]), 'the ladder card carries no page-break hook');
+  const brk = /\.pv-ladder \{([^}]*)\}/.exec(SCRIPT_CSS);
+  ok(brk, '.pv-ladder has no print rule');
+  ok(/break-before: page/.test(brk[1]) && /page-break-before: always/.test(brk[1]),
+    'the break is not stated in both spellings — most of what is attached to a pack printer is old');
+});
+
+test('each line of the family bill names the rung that buys it', () => {
+  // Owner ask, 2026-09-07: show the items broken down by the tier level that covers them. The
+  // card already said what a family pays and what the year drops to at each rung; what it never
+  // said is WHICH lines a rung takes off, which is the difference between "sell $175" and
+  // "sell $175 and camp is paid for".
+  const ctx = vm.createContext({ state: { rewardTiers: { tiers: [] } } });
+  vm.runInContext(
+    `${slice('scoutsInDens')}
+     ${slice('linePerHead')}
+     ${slice('linePerFamily')}
+     ${slice('lineThroughPack')}
+     ${slice('lineFamilyFunded')}
+     ${slice('arrOf')}
+     ${slice('sortedTiers')}
+     ${slice('coverKeyOf')}
+     ${slice('allTierCoverKeys')}
+     ${slice('familyYearCostForDen')}
+     ${slice('DENS')}
+     function activeScouts() { return SCOUTS; }
+     function allBudgetLines() { return LINES.map(function (l) { return { kind: 'activity', line: l, key: l.name }; }); }
+     function lineDens(l) { return l.dens || []; }
+     function salesForCommission(c) { return c * 3; }`, ctx);
+  ctx.SCOUTS = [{ id: 'a', den: 'Wolf' }];
+  ctx.LINES = [
+    { name: 'Registration', basis: 'per-head', scoutRateCents: 8500, fundedBy: 'families', dens: [] },
+    { name: 'Blue & Gold', basis: 'per-head', scoutRateCents: 4200, adultRateCents: 5600, fundedBy: 'families', dens: [] },
+    { name: 'Spring camp', basis: 'per-head', scoutRateCents: 3500, fundedBy: 'families', dens: [] }
+  ];
+  ctx.state.rewardTiers.tiers = [
+    { id: 'a', name: 'a', thresholdCents: 15000, covers: ['Registration'] },
+    { id: 'b', name: 'b', thresholdCents: 33000, covers: ['Blue & Gold'] },
+    { id: 'c', name: 'c', thresholdCents: 41500, covers: ['Blue & Gold#adult'] }
+  ];
+  const w = vm.runInContext("familyYearCostForDen('Wolf')", ctx);
+  const by = Object.fromEntries(w.lines.map((l) => [l.name, l]));
+  eq(by['Registration'].coverScoutStep, 0, 'registration is bought by the lowest rung');
+  // The two halves of one line, bought by two different rungs. Grouping the line under "b" and
+  // calling it covered would quote a family a year that is $56 short.
+  eq([by['Blue & Gold'].coverScoutStep, by['Blue & Gold'].coverAdultStep], [1, 2],
+    'the banquet’s scout and adult shares are not attributed to their own rungs');
+  eq([by['Spring camp'].coverScoutStep, by['Spring camp'].coverAdultStep], [-1, -1],
+    'a line no rung names was attributed to one anyway');
+  // A share that costs nothing has no rung to name, however many tiers point at it.
+  eq(by['Registration'].coverAdultStep, -1, 'a line with no adult price was given an adult rung');
+  // The cover keys are an internal handle; a parent payload must never carry them.
+  ok(!('keyScout' in by['Registration']) && !('keyAdult' in by['Registration']),
+    'the internal cover keys survived onto the published line');
+
+  // A rung the ladder HIDES (no name, no reward) is not in steps, and its money is banked into
+  // the next rung that is shown — so its lines have to land there too, or the items and the
+  // figure they explain end up in different places.
+  ctx.state.rewardTiers.tiers.splice(1, 0, { id: 'x', thresholdCents: 20000, covers: ['Spring camp'] });
+  const w2 = vm.runInContext("familyYearCostForDen('Wolf')", ctx);
+  eq(w2.steps.map((s) => s.name), ['a', 'b', 'c'], 'an unnamed rung was listed');
+  eq(w2.lines.find((l) => l.name === 'Spring camp').coverScoutStep, 1,
+    'a hidden rung’s line did not carry forward to the rung its money did');
+});
+
+test('the family bill is grouped rung by rung, with the floor last', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentStepName', 'parentCostLine', 'parentCostLines']);
+  const steps = [
+    { name: 'Bronze', salesCents: 45000, afterCents: 16300 },
+    { name: 'Gold', salesCents: 99000, afterCents: 6500 }
+  ];
+  const html = ctx.parentCostLines({
+    steps: steps,
+    lines: [
+      { name: 'Registration', scoutCents: 8500, coverScoutStep: 0, coverAdultStep: -1 },
+      { name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 1, coverAdultStep: 1 },
+      { name: 'Spring camp', scoutCents: 3500, coverScoutStep: -1, coverAdultStep: -1 }
+    ]
+  });
+  const heads = [...html.matchAll(/<p class="eyebrow"[^>]*>(.*?)<\/p>/g)].map((m) => m[1]);
+  eq(heads.length, 3, 'a group is missing a heading');
+  ok(/^Comes off at Bronze/.test(heads[0]) && /^Comes off at Gold/.test(heads[1]),
+    'the rungs are not listed lowest first');
+  // The floor LAST, and named. It is what the year costs however much a scout sells, and it is
+  // the figure a family has to be able to afford before they agree to any of this.
+  ok(/whatever your scout sells/.test(heads[2]), 'the lines no rung buys are not called out, or not last');
+  ok(html.indexOf('Registration') < html.indexOf('Blue &amp; Gold')
+    && html.indexOf('Blue &amp; Gold') < html.indexOf('Spring camp'),
+    'a line is not under its own rung');
+  ok(/sell \$450\.00/.test(heads[0]), 'a rung heading does not say what it takes to reach it');
+
+  // HALF A LINE. A banquet whose adult share is bought two rungs up sits with the scout share —
+  // and says so, at the point the heading claims it is covered.
+  const split = ctx.parentCostLines({
+    steps: steps,
+    lines: [{ name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 0, coverAdultStep: 1 }]
+  });
+  ok(/the adult’s place at Gold/.test(split), 'a line half-bought by a higher rung says nothing about it');
+  const stuck = ctx.parentCostLines({
+    steps: steps,
+    lines: [{ name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 0, coverAdultStep: -1 }]
+  });
+  ok(/the adult’s place stays yours/.test(stuck),
+    'a line whose adult half no rung ever buys reads as fully covered');
+
+  // A line that prices no scout at all has no scout share to group on, and sits with the rung
+  // that buys the adult rather than falling to the floor beside the things nobody covers.
+  const adultOnly = ctx.parentCostLines({
+    steps: steps,
+    lines: [
+      { name: 'Banquet seat', scoutCents: 0, adultCents: 5600, coverScoutStep: -1, coverAdultStep: 1 },
+      { name: 'Spring camp', scoutCents: 3500, coverScoutStep: -1, coverAdultStep: -1 }
+    ]
+  });
+  ok(adultOnly.indexOf('Banquet seat') < adultOnly.indexOf('Spring camp'),
+    'an adult-only line fell to the floor instead of sitting with the rung that buys it');
+
+  // A payload published before the step indices existed. Every line falls to the floor, and one
+  // group prints no heading — the flat list it has always been, not a list under a heading
+  // announcing that nothing is covered.
+  const old = ctx.parentCostLines({
+    steps: steps,
+    lines: [{ name: 'Registration', scoutCents: 8500 }, { name: 'Spring camp', scoutCents: 3500 }]
+  });
+  ok(!/eyebrow/.test(old), 'an old payload is given a heading claiming nothing is covered');
+  ok(/Registration/.test(old) && /Spring camp/.test(old), 'an old payload lost its lines');
+  eq(ctx.parentCostLines({ lines: [] }), '', 'a den with no priced lines still drew an empty list');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

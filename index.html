@@ -1422,6 +1422,21 @@
   /* The normal print sheet hides <main> (only overlays print). Parents have no overlays,
      so let their schedule print instead of a blank page. */
   @media print { body.parent-mode main { display: block !important; } }
+  /* THE SHEET, PAGINATED — owner ask, 2026-09-07. Two things, both about where the paper folds.
+     The standings are why this gets printed at all, and a pack of any size wants every scout
+     inside the first two sheets. The pack goal bar was spending a whole card at the top of sheet
+     one to say a figure that is announced aloud at every meeting this is handed out at, and it
+     was pushing the last few scouts onto a third sheet to do it. It stays on screen, where it
+     costs nothing, and comes off the paper. */
+  @media print { .pv-packgoal { display: none !important; } }
+  /* And the reward ladder opens a sheet of its own. Standings are the news — how is my scout
+     doing — and the ladder is the reference beside it; run together across a fold they read as
+     one continuing list, and the first thing a parent sees on sheet three is a table of money
+     with no heading in sight. page-break-before as well as break-before for the older engines,
+     which is most of what is actually attached to a pack's printer. */
+  @media print {
+    .pv-ladder { page-break-before: always; break-before: page; }
+  }
 
   /* ---------- Join link ---------- */
   /* Self-serve parent sign-up: the three link gates (welcome / waiting / closed) and the
@@ -4828,7 +4843,10 @@
       if (direct) out.direct += sc + ad; else out.throughPack += sc + ad;
       out.lines.push({
         name: l.name || ('Untitled ' + r.kind), scout: sc, adult: ad, sibling: sb,
-        direct: direct, payee: l.paidDirectTo || '', perFamily: linePerFamily(l)
+        direct: direct, payee: l.paidDirectTo || '', perFamily: linePerFamily(l),
+        // Carried only as far as the rung walk below, which turns them into step indices and
+        // deletes them again — a cover key is an internal handle and means nothing to a parent.
+        keyScout: coverKeyOf(r.key, 'scout'), keyAdult: ad ? coverKeyOf(r.key, 'adult') : ''
       });
     });
     // What a family with one scout actually pays: the scout and the adult who brings them.
@@ -4842,17 +4860,40 @@
     // moves a Webelos family's figure and nobody else's.
     var seenKeys = {};
     var run = 0;
+    // WHICH RUNG BUYS WHICH LINE — owner ask, 2026-09-07. The steps below say what the year drops
+    // TO; a family reading them still cannot see what a rung actually took off the bill, which is
+    // the question a parent asks second. Attribution is by INDEX into out.steps rather than by
+    // tier name: two rungs can carry the same name, and the far end has to be able to lay the
+    // groups out in ladder order without matching strings.
+    var keyStep = {};
+    var pending = [];
     sortedTiers().forEach(function (t) {
       arrOf(t.covers).forEach(function (k) {
         if (seenKeys[k]) return;
         seenKeys[k] = true;
+        pending.push(k);
         run += mine[k] || 0;
       });
       if (!t.name && !t.reward) return;                     // the ladder card hides these too
+      // A hidden rung's keys stay pending and land on the next rung that IS shown. That is where
+      // its money already went — `run` is banked into the next step's afterCents — so the items
+      // and the figure they explain stay in the same place. Keys still pending after the last
+      // shown rung belong to no step and stay unattributed, which is again what the money does.
+      pending.forEach(function (k) { keyStep[k] = out.steps.length; });
+      pending = [];
       out.steps.push({
         name: String(t.name || ''), salesCents: salesForCommission(t.thresholdCents),
         coveredCents: run, afterCents: Math.max(0, out.expected - run)
       });
+    });
+    // Two rungs per line, not one: a tier can buy a scout's place at an event and leave the
+    // accompanying adult's to a higher one. Telling a family a line is "covered" when half of it
+    // is still theirs to pay is the kind of quote they find out about at the gate. -1 is "no rung
+    // buys this share", and a share that costs nothing has no rung to name.
+    out.lines.forEach(function (x) {
+      x.coverScoutStep = (x.scout > 0 && keyStep[x.keyScout] != null) ? keyStep[x.keyScout] : -1;
+      x.coverAdultStep = (x.adult > 0 && keyStep[x.keyAdult] != null) ? keyStep[x.keyAdult] : -1;
+      delete x.keyScout; delete x.keyAdult;
     });
     out.lines.sort(function (a, b) {
       return (b.scout + b.adult) - (a.scout + a.adult) || a.name.localeCompare(b.name);
@@ -7538,7 +7579,13 @@
             return {
               name: String(x.name || ''), scoutCents: x.scout, adultCents: x.adult,
               siblingCents: x.sibling, direct: !!x.direct,
-              payee: String(x.payee || ''), perFamily: !!x.perFamily
+              payee: String(x.payee || ''), perFamily: !!x.perFamily,
+              // Which rung buys each half of this line, as an index into `steps` above; -1 for a
+              // share no tier ever touches. Published rather than derived, for the same reason
+              // `steps` is: only this side knows which lines a den actually attends, and what a
+              // tier's cover keys point at. A payload written before 2026-09-07 carries neither,
+              // and the parent app then draws the one flat list it always did.
+              coverScoutStep: x.coverScoutStep, coverAdultStep: x.coverAdultStep
             };
           })
         };
@@ -8593,7 +8640,9 @@
   function parentTierLadder(pv) {
     var tiers = Array.isArray(pv.tiers) ? pv.tiers : [];
     if (!tiers.length) return '';
-    var h = '<div class="card"><h2 class="section display">Reward tiers</h2>' +
+    // pv-ladder: the fold. Everything from here down is the reference half of the handout, and
+    // it starts on a fresh sheet rather than under the last scout's bar — see the print block.
+    var h = '<div class="card pv-ladder"><h2 class="section display">Reward tiers</h2>' +
       '<div class="tbl-wrap"><table><thead><tr>' +
       '<th scope="col">Sell</th><th scope="col">Tier</th>' +
       '<th scope="col">What it gets you</th><th scope="col">By</th>' +
@@ -8618,6 +8667,89 @@
       'to reach each tier, and each rung keeps everything the ones below it cover. What that is worth ' +
       'in money is under your den in <strong>What a year costs a family</strong>. Ask a pack leader if ' +
       'you are not sure where your scout stands.</p></div>';
+  }
+  // What to call a rung where the tier's own name has to carry the sentence. A tier can hold a
+  // reward and no name — the ladder prints those with an empty Tier cell, which a table column
+  // survives and a heading does not — so the sell figure stands in, and a rung with neither says
+  // plainly that it is a tier without pretending to identify which.
+  function parentStepName(st) {
+    var n = String((st && st.name) || '');
+    if (n) return n;
+    return (st && typeof st.salesCents === 'number') ? 'the ' + fmt(st.salesCents) + ' rung' : 'a reward tier';
+  }
+  // One line of the bill, with one clause the flat list never needed: what the rung heading above
+  // it is NOT buying. A line sitting under "Comes off at Gold" whose accompanying adult is still
+  // the family's to pay, or is not bought until a rung higher up, has to say so at the point the
+  // claim is made. A parent reads the heading over the line they are looking at; they do not
+  // cross-reference the ladder two cards down, and they should not have to.
+  function parentCostLine(x, gi, steps) {
+    var ai = (typeof x.coverAdultStep === 'number') ? x.coverAdultStep : -1;
+    var note = '';
+    if (gi >= 0 && (x.adultCents || 0) > 0 && ai !== gi) {
+      note = (ai >= 0 && ai < steps.length)
+        ? ' <span class="muted">\u00b7 the adult\u2019s place at ' + esc(parentStepName(steps[ai])) + '</span>'
+        : ' <span class="muted">\u00b7 the adult\u2019s place stays yours</span>';
+    }
+    return '<li>' + esc(String(x.name || '')) + ' \u2014 <span class="money">' +
+      fmt((x.scoutCents || 0) + (x.adultCents || 0)) + '</span>' +
+      ((x.adultCents || 0) ? ' <span class="muted">(scout ' + fmt(x.scoutCents || 0) +
+        ' + adult ' + fmt(x.adultCents) + ')</span>' : '') +
+      (x.perFamily ? ' <span class="muted">one fee per family</span>' : '') +
+      ((x.siblingCents || 0) ? ' <span class="muted">\u00b7 sibling ' + fmt(x.siblingCents) + '</span>' : '') +
+      (x.direct ? ' <span class="pill navy">' + esc(String(x.payee || 'paid direct')) + '</span>' : '') +
+      note + '</li>';
+  }
+  // THE BILL, GROUPED BY THE RUNG THAT BUYS IT — owner ask, 2026-09-07. This card already said
+  // what a family pays, and the table under it says what the year drops to at each tier. What
+  // neither said is WHICH of these lines a rung actually takes off, and that is the difference
+  // between a sales target and a reason to go out on a Saturday: "sell $175" means nothing,
+  // "sell $175 and camp is paid for" is a decision a family can make.
+  //
+  // Ladder order, lowest rung first, and everything no tier touches LAST under its own heading.
+  // That final group is the floor — what the year costs however much a scout sells — and it is
+  // the figure a family has to be able to afford before they agree to any of this, so it is the
+  // one the list ends on rather than buries.
+  //
+  // A payload published before the step indices existed carries none, every line falls into the
+  // floor group, and headings are suppressed when there is only one group — so an old payload
+  // renders as exactly the flat list it always did, rather than one list under a heading
+  // announcing that nothing is covered.
+  function parentCostLines(d) {
+    var lines = Array.isArray(d.lines) ? d.lines : [];
+    if (!lines.length) return '';
+    var steps = Array.isArray(d.steps) ? d.steps : [];
+    var buckets = {};
+    lines.forEach(function (x) {
+      var si = (typeof x.coverScoutStep === 'number') ? x.coverScoutStep : -1;
+      var ai = (typeof x.coverAdultStep === 'number') ? x.coverAdultStep : -1;
+      // A line sits with the rung that buys the SCOUT's share, because that is the share every
+      // family pays. A line that prices no scout at all — an adult's own seat at a banquet — has
+      // no scout share to group on and sits with the rung that buys the adult instead.
+      var g = si >= 0 ? si : (((x.scoutCents || 0) > 0) ? -1 : ai);
+      if (!(g >= 0 && g < steps.length)) g = -1;
+      (buckets[g] = buckets[g] || []).push(x);
+    });
+    var order = [];
+    steps.forEach(function (st, i) { if (buckets[i]) order.push(i); });
+    if (buckets[-1]) order.push(-1);
+    var solo = order.length < 2;
+    return order.map(function (i) {
+      var st = i >= 0 ? steps[i] : null;
+      var head = '';
+      if (!solo) {
+        if (!st) head = '<p class="eyebrow" style="margin:8px 0 2px">You pay these whatever your scout sells</p>';
+        else {
+          // The sell figure rides along with a NAMED rung only. Where the name is already the
+          // figure, printing it twice would read as two different numbers to anyone skimming.
+          var sell = (String(st.name || '') && typeof st.salesCents === 'number')
+            ? ' <span class="muted">\u2014 sell ' + fmt(st.salesCents) + '</span>' : '';
+          head = '<p class="eyebrow" style="margin:8px 0 2px">Comes off at ' +
+            esc(parentStepName(st)) + sell + '</p>';
+        }
+      }
+      return head + '<ul class="small" style="margin:2px 0 8px;padding-left:18px;line-height:1.7">' +
+        buckets[i].map(function (x) { return parentCostLine(x, i, steps); }).join('') + '</ul>';
+    }).join('');
   }
   // Owner ask, 2026-08-02: what a year costs a family, and what the tiers take off it. The
   // joining-meeting question, and the only frame in which "sell $175" means anything — a target
@@ -8669,18 +8801,7 @@
       //
       // display:none keeps it out of the accessibility tree too, so a screen reader still follows
       // aria-expanded rather than reading every den's line items whether or not they are open.
-      h += '<div class="pv-cost-detail' + (open ? ' open' : '') + '">' +
-        '<ul class="small" style="margin:2px 0 8px;padding-left:18px;line-height:1.7">' +
-        (d.lines || []).map(function (x) {
-          return '<li>' + esc(String(x.name || '')) + ' — <span class="money">' +
-            fmt((x.scoutCents || 0) + (x.adultCents || 0)) + '</span>' +
-            ((x.adultCents || 0) ? ' <span class="muted">(scout ' + fmt(x.scoutCents || 0) +
-              ' + adult ' + fmt(x.adultCents) + ')</span>' : '') +
-            (x.perFamily ? ' <span class="muted">one fee per family</span>' : '') +
-            ((x.siblingCents || 0) ? ' <span class="muted">· sibling ' + fmt(x.siblingCents) + '</span>' : '') +
-            (x.direct ? ' <span class="pill navy">' + esc(String(x.payee || 'paid direct')) + '</span>' : '') +
-            '</li>';
-        }).join('') + '</ul>';
+      h += '<div class="pv-cost-detail' + (open ? ' open' : '') + '">' + parentCostLines(d);
       // The ladder, priced for this den. A parent reading the reward tiers card learns what they
       // GET; this is the same rungs answering what they PAY, which is the question underneath it.
       var steps = Array.isArray(d.steps) ? d.steps.filter(function (x) { return x && x.coveredCents > 0; }) : [];
@@ -8852,7 +8973,9 @@
     // internal decision that moved money between two bars without any family having done
     // anything differently.
     if (g && (g.goalCents || 0) > 0) {
-      h += '<div class="card"><h2 class="section display">Pack goal</h2>' +
+      // pv-packgoal: on screen, off the paper — see the print block. The bar is a live thing a
+      // parent checks between meetings; on a handout it is a stale figure taking a scout's place.
+      h += '<div class="card pv-packgoal"><h2 class="section display">Pack goal</h2>' +
         parentGoalBar('Raised so far', g.raisedCents, g.goalCents, g.pct) + '</div>';
     }
     var rows = Array.isArray(pv.standings) ? pv.standings : [];
