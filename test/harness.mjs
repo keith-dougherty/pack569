@@ -6863,6 +6863,37 @@ test('the printed sheet drops the pack goal and opens a fresh page at the ladder
     'the break is not stated in both spellings — most of what is attached to a pack printer is old');
 });
 
+test('the year cost card opens a sheet, and so does every den after the first', () => {
+  // Owner ask, 2026-09-09: the same fold the ladder gets, one card further on, and again at each
+  // den. A den runs longer than a page, so the break-inside rule up in the pagination block can
+  // never hold one together; what CAN be guaranteed is that a family looking for Wolf finds Wolf
+  // starting at the top of a sheet instead of four line items under somebody else's tier table.
+  const cost = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cost, 'parentFamilyCost() not found');
+  ok(/<div class="card pv-yearcost">/.test(cost[0]), 'the year cost card carries no page-break hook');
+  const yc = /\.pv-yearcost \{([^}]*)\}/.exec(SCRIPT_CSS);
+  ok(yc, '.pv-yearcost has no print rule');
+  ok(/break-before: page/.test(yc[1]) && /page-break-before: always/.test(yc[1]),
+    'the year cost break is not stated in both spellings');
+
+  // Per den, and the FIRST one excepted: it belongs under the heading and the paragraph that says
+  // what these figures are, and a sheet holding those two alone is a wasted page.
+  const den = /\.pv-den \+ \.pv-den \{([^}]*)\}/.exec(SCRIPT_CSS);
+  ok(den, 'the dens still run one into the next on paper');
+  ok(/break-before: page/.test(den[1]) && /page-break-before: always/.test(den[1]),
+    'the den break is not stated in both spellings');
+  ok(!/\n    \.pv-den \{[^}]*break-before: page/.test(SCRIPT_CSS),
+    'every den breaks, including the first — the heading gets a sheet to itself');
+
+  // Both breaks are PAPER only. Named inside @media print and nowhere else, or the screen grows
+  // page breaks it has no use for.
+  const printBlocks = SCRIPT_CSS.match(/@media print \{[\s\S]*?\n  \}/g) || [];
+  const inPrint = printBlocks.join('\n');
+  eq((inPrint.match(/\.pv-yearcost\b/g) || []).length,
+    (SCRIPT_CSS.match(/\.pv-yearcost\b/g) || []).length,
+    'the year cost card is styled outside the print block');
+});
+
 test('each line of the family bill names the rung that buys it', () => {
   // Owner ask, 2026-09-07: show the items broken down by the tier level that covers them. The
   // card already said what a family pays and what the year drops to at each rung; what it never

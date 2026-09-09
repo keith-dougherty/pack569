@@ -1446,8 +1446,18 @@
      one continuing list, and the first thing a parent sees on sheet three is a table of money
      with no heading in sight. page-break-before as well as break-before for the older engines,
      which is most of what is actually attached to a pack's printer. */
+  /* The same fold again, one card further on — owner ask, 2026-09-09. The ladder answers what a
+     scout GETS and the year's cost answers what a family PAYS, and the second question is the one
+     a parent takes home; started halfway down the ladder's sheet it reads as the ladder's own
+     small print. And each den opens a sheet of its own: a den runs longer than a page, so
+     break-inside cannot hold one together, but break-BEFORE can at least guarantee that a family
+     looking for Wolf finds the whole of Wolf starting at the top of a sheet rather than four line
+     items below somebody else's tier table. First den excluded — it belongs under the heading and
+     the paragraph that says what these figures are. */
   @media print {
     .pv-ladder { page-break-before: always; break-before: page; }
+    .pv-yearcost { page-break-before: always; break-before: page; }
+    .pv-den + .pv-den { page-break-before: always; break-before: page; }
   }
 
   /* ---------- Join link ---------- */
@@ -9062,7 +9072,9 @@
   function parentFamilyCost(pv) {
     var dens = Array.isArray(pv.familyCost) ? pv.familyCost : [];
     if (!dens.length) return '';
-    var h = '<div class="card"><h2 class="section display">What a year costs a family</h2>' +
+    // pv-yearcost: the second fold. Like the ladder above it, this card opens a sheet of its
+    // own on paper — see the print block.
+    var h = '<div class="card pv-yearcost"><h2 class="section display">What a year costs a family</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Out of pocket for <strong>one scout and the adult who ' +
       'brings them</strong>, across the whole year, if the scout earns <strong>no reward tier at all</strong>. ' +
       'It counts everything families pay, whether the pack collects it or a council does. Siblings are extra ' +
