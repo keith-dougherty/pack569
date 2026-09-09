@@ -1453,11 +1453,20 @@
      break-inside cannot hold one together, but break-BEFORE can at least guarantee that a family
      looking for Wolf finds the whole of Wolf starting at the top of a sheet rather than four line
      items below somebody else's tier table. First den excluded — it belongs under the heading and
-     the paragraph that says what these figures are. */
+     the paragraph that says what these figures are.
+
+     Two more, from printing it: a den is two questions — what the year costs line by line, then
+     what each rung takes off the total — and the second one gets the second sheet, so the tier
+     table stops breaking across the fold with its heading on one page and half its rungs on the
+     next. And the ladder's closing note comes off the paper the way the pack goal bar did: three
+     lines that spilled past the table were taking a whole sheet to say them, and what they point
+     at — what a rung is worth in money, under your den — starts on the very next page anyway. */
   @media print {
     .pv-ladder { page-break-before: always; break-before: page; }
     .pv-yearcost { page-break-before: always; break-before: page; }
     .pv-den + .pv-den { page-break-before: always; break-before: page; }
+    .pv-den-drops { page-break-before: always; break-before: page; }
+    .pv-ladder-note { display: none !important; }
   }
 
   /* ---------- Join link ---------- */
@@ -8969,8 +8978,12 @@
         '<td style="white-space:nowrap">' + (t && t.dueBy ? esc(fmtDate(String(t.dueBy))) : '<span class="muted">any time</span>') +
         '</td></tr>';
     });
+    // pv-ladder-note: on screen, off the paper — owner ask, 2026-09-09, and the same ruling the
+    // pack goal bar got. Three lines of it were spilling past the ladder's table and taking a
+    // whole sheet to say them, and the one thing the note points at — what a rung is worth in
+    // money, under your den — is the card that begins on the very next page.
     return h + '</tbody></table></div>' +
-      '<p class="small muted" style="margin:10px 0 0">Figures are what a scout needs to <strong>sell</strong> ' +
+      '<p class="small muted pv-ladder-note" style="margin:10px 0 0">Figures are what a scout needs to <strong>sell</strong> ' +
       'to reach each tier, and each rung keeps everything the ones below it cover. What that is worth ' +
       'in money is under your den in <strong>What a year costs a family</strong>. Ask a pack leader if ' +
       'you are not sure where your scout stands.</p></div>';
@@ -9120,7 +9133,12 @@
       // GET; this is the same rungs answering what they PAY, which is the question underneath it.
       var steps = Array.isArray(d.steps) ? d.steps.filter(function (x) { return x && x.coveredCents > 0; }) : [];
       if (!steps.length) { h += '</div></div>'; return; }
-      h += '<p class="eyebrow" style="margin:2px 0 4px">What each reward tier drops it to</p>' +
+      // pv-den-drops: the fold inside a den — owner ask, 2026-09-09. A den is two questions, and
+      // they are different questions: what the year costs line by line, then what each rung
+      // takes off the total. Run together they land wherever the line items happen to end, and
+      // the table was breaking across the fold with its heading on one sheet and half its rungs
+      // on the next. One sheet each, so a den is two sheets every time.
+      h += '<p class="eyebrow pv-den-drops" style="margin:2px 0 4px">What each reward tier drops it to</p>' +
         '<div class="tbl-wrap"><table><caption class="visually-hidden">Reward tiers and what a ' +
         esc(label) + ' family still pays</caption><thead><tr>' +
         '<th scope="col">Sell</th><th scope="col">Tier</th><th scope="col">Your year drops to</th>' +

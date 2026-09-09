@@ -6894,6 +6894,34 @@ test('the year cost card opens a sheet, and so does every den after the first', 
     'the year cost card is styled outside the print block');
 });
 
+test('a den folds at its tier table, and the ladder note comes off the paper', () => {
+  // Owner ask, 2026-09-09, printing it a second time. A den asks two questions — what the year
+  // costs line by line, then what each rung takes off the total — and the table answering the
+  // second was breaking across the fold, heading on one sheet and half its rungs on the next.
+  const cost = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cost, 'parentFamilyCost() not found');
+  ok(/class="eyebrow pv-den-drops"/.test(cost[0]),
+    'the tier table heading carries no page-break hook');
+  const drops = /\.pv-den-drops \{([^}]*)\}/.exec(SCRIPT_CSS);
+  ok(drops, '.pv-den-drops has no print rule');
+  ok(/break-before: page/.test(drops[1]) && /page-break-before: always/.test(drops[1]),
+    'the tier table break is not stated in both spellings');
+  // The heading has to travel WITH the table it opens, or the fold just moves down one line.
+  ok(/h1, h2, h3, \.eyebrow \{ break-after: avoid; \}/.test(SCRIPT_CSS),
+    'an eyebrow can be stranded at the foot of a page again');
+
+  // The ladder's closing note took a whole sheet to say three lines, and the one thing it points
+  // at — what a rung is worth in money, under your den — begins on the next page regardless.
+  const lad = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(lad, 'parentTierLadder() not found');
+  ok(/class="small muted pv-ladder-note"/.test(lad[0]), 'the ladder note carries no print hook');
+  ok(/\.pv-ladder-note \{ display: none !important; \}/.test(SCRIPT_CSS), 'the ladder note still prints');
+  // PAPER only, like the pack goal bar. A parent reading online still gets the note, so the class
+  // is named exactly once in the stylesheet and that one mention is the print rule.
+  eq((SCRIPT_CSS.match(/\.pv-ladder-note\b/g) || []).length, 1,
+    'the ladder note is styled somewhere besides the one print rule — check it still shows on screen');
+});
+
 test('each line of the family bill names the rung that buys it', () => {
   // Owner ask, 2026-09-07: show the items broken down by the tier level that covers them. The
   // card already said what a family pays and what the year drops to at each rung; what it never
