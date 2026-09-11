@@ -5667,9 +5667,16 @@ test('a year of Scouting, priced for a family that earns no tier', () => {
   eq(lion.expected - wolf.expected, 2000, 'the Lion should pay Tigermania and the Wolf should not');
   const none = vm.runInContext("familyYearCostForDen('')", ctx);
   eq(none.expected, wolf.expected, 'a scout with no den is in no den-limited event, like the Wolf');
-  // One row per den that HAS scouts — never a price for an empty rank.
+  // Every den the pack offers — owner ask, 2026-09-11. Nobody here is a Tiger, Bear, Webelos or
+  // Arrow of Light, and each of them is still priced: an empty den is the one a recruiting family
+  // needs a figure for. "No den set" only while an active scout is actually missing a den.
   const rows = vm.runInContext('familyYearCost()', ctx);
-  eq(rows.map((r) => r.den), ['Lion', 'Wolf', ''], 'a den with nobody in it was quoted a price');
+  eq(rows.map((r) => r.den), ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light', ''],
+    'a den with nobody in it yet was left unpriced');
+  ctx.SCOUTS = [{ id: 'a', den: 'Wolf' }];
+  eq(vm.runInContext('familyYearCost()', ctx).some((r) => r.den === ''), false,
+    '"No den set" was priced when every active scout has a den');
+  ctx.SCOUTS = [{ id: 'a', den: 'Wolf' }, { id: 'b', den: 'Lion' }, { id: 'c', den: '' }];
   eq(wolf.covered, 0, 'a pack with no tiers covers nothing');
 
   // WHAT THE LADDER TAKES OFF IT. Three rungs that stack, two of them pointed at the same

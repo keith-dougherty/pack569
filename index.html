@@ -5216,12 +5216,15 @@
     });
     return out;
   }
-  // One row per den that actually has scouts. An empty den is left out: quoting a year's cost
-  // for a rank nobody holds invites planning around a scout who does not exist.
+  // One row per den the pack offers, whether or not anybody holds it yet — owner ask, 2026-09-11.
+  // This used to skip a den with no active scouts, and that is exactly how Arrow of Light fell off
+  // the parent page: this is the joining-meeting figure, and a den with nobody in it yet is the one
+  // a recruiting family most needs priced. "No den set" is different — it is not a rank anybody
+  // joins — so it still appears only while an active scout is actually missing a den.
+  // familyDirectPerDen keeps the old rule on purpose: that is a newsletter figure for current families.
   function familyYearCost() {
-    var seen = {};
-    activeScouts().forEach(function (s) { seen[s.den || ''] = true; });
-    return DENS.concat(['']).filter(function (dn) { return seen[dn]; })
+    var noDen = activeScouts().some(function (s) { return !s.den; });
+    return DENS.concat(noDen ? [''] : [])
       .map(function (dn) { return familyYearCostForDen(dn); })
       .filter(function (r) { return r.expected > 0 || r.sibling > 0; });
   }
